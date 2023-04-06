@@ -6,4 +6,13 @@ declare namespace App {
 	// interface Locals {}
 	// interface PageData {}
 	// interface Platform {}
+
+	// https://github.com/mvasigh/sveltekit-mdsvex-blog/blob/main/src/app.d.ts
+	interface MdsvexFile {
+		default: import('svelte/internal').SvelteComponent;
+		metadata: Record<string, string>;
+	}
+
+	// https://github.com/mvasigh/sveltekit-mdsvex-blog/blob/main/src/app.d.ts
+	type MdsvexResolver = () => Promise<MdsvexFile>;
 }
