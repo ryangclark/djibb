@@ -8,6 +8,16 @@ declare namespace App {
 	// interface Platform {}
 
 	// https://github.com/mvasigh/sveltekit-mdsvex-blog/blob/main/src/app.d.ts
+	interface BlogPostMetadata {
+		author_name: string;
+		created_at: string;
+		description: string;
+		published: boolean;
+		slug: string;
+		title: string;
+	}
+
+	// https://github.com/mvasigh/sveltekit-mdsvex-blog/blob/main/src/app.d.ts
 	interface MdsvexFile {
 		default: import('svelte/internal').SvelteComponent;
 		metadata: Record<string, string>;
