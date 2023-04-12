@@ -11,7 +11,7 @@ export const load: PageServerLoad = async () => {
 	const posts_metadata = Array(posts.length);
 
 	for (let i = 0; i < posts.length; i++) {
-		posts_metadata[i] = posts[i].metadata;
+		posts_metadata[i] = posts[posts.length - 1 - i].metadata;
 	}
 
 	return { posts_metadata };
