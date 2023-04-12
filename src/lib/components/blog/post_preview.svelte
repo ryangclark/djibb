@@ -10,18 +10,14 @@
 	});
 </script>
 
-<div data-component-name="post_preview" id="post-preview-{slug}">
-	<a href="/posts/{slug}"><h3 class="mt-8 text-2xl">{title}</h3></a>
-	<div class="mb-2 flex gap-6">
-		<p class="text-sm uppercase text-gray-600">
-			{formatter.format(new Date(created_at))}
-		</p>
-		{#if author_name}
-			<p class="text-sm text-gray-600">
-				<span class="text-xs uppercase">By:</span>
-				{author_name}
-			</p>
-		{/if}
-	</div>
+<div
+	class="mt-8 mb-8 bg-gray-100 p-4 lg:p-6"
+	data-component-name="post_preview"
+	id="post-preview-{slug}"
+>
+	<p class="text-sm uppercase text-gray-600">
+		{formatter.format(new Date(created_at))}
+	</p>
+	<a href="/posts/{slug}"><h3 class="mb-3 mt-1 text-2xl">{title}</h3></a>
 	<p>{description}</p>
 </div>
