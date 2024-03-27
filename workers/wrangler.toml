@@ -1,0 +1,26 @@
+name = "wandering-snowflake-2716"
+main = "src/index.ts"
+compatibility_date = "2024-02-08"
+
+#kv_namespaces = [
+  # namespace = "djibb_auth_dev"
+  # I named it "dev" before I realized that it runs locally unless you 
+  # use the "-remote" flag. Oops.
+#  { binding = "KV_AUTH", id = "444794b9d1e8414880006307d2dc635a" }
+#]
+
+# [env.production]
+# d1_databases = [
+#    { binding = "DJIBB_AUTH", database_name = "djibb-auth", database_id = "f839093e-e2d9-4861-8a3f-05dca1d1a749" },
+# ]
+
+[durable_objects]
+bindings = [
+  { name = "DJIBB_LIST", class_name = "DjibbList" },
+]
+
+# Durable Object migrations.
+# Docs: https://developers.cloudflare.com/workers/learning/using-durable-objects#configure-durable-object-classes-with-migrations
+[[migrations]]
+tag = "v1"
+new_classes = ["MyDurableObject"]

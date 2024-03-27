@@ -1,8 +1,9 @@
 .DS_Store
 node_modules
-/build
-/.svelte-kit
-/package
+/pages/build
+/pages/.svelte-kit
+/pages/package
+/workers/.wrangler
 .env
 .env.*
 !.env.example
