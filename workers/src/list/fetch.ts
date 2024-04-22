@@ -18,6 +18,7 @@ import {
 } from '../replicache';
 import { mutators } from './mutators';
 import { WS_MESSAGE_PULL_PLS, WS_STATE } from '../websocket/constants';
+import { init } from './init_data';
 
 const zPullRequest = z.object({
     pullVersion: z.literal(1),
@@ -68,9 +69,23 @@ export class DjibbList {
         )) as ListElement;
 
         if (!element) {
+            if (elementRef === REF_LIST) {
+                // Initialize the list.
+                await init(this.state.storage);
+
+                // // Return a call to this function, that will rerun
+                // // through the logic, now that the data is initialized.
+                // return this.getElementsByVersion(
+                //     accumulator,
+                //     version,
+                //     elementRef
+                // );
+            }
+
             console.warn(
                 `\`getElementsByVersion()\` error: element not found for ref "${elementRef}".`
             );
+
             return;
         }
 
