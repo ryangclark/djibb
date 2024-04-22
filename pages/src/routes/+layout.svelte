@@ -1,5 +1,9 @@
 <script>
 	import '../app.css';
+
+	// import { setContext } from 'svelte';
+
+	let { children, data } = $props();
 </script>
 
 <header class="m-8 flex gap-10">
@@ -10,4 +14,4 @@
 	</nav>
 </header>
 
-<slot />
+{@render children()}
