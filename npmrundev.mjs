@@ -24,32 +24,38 @@ const wranglerDevPromise = new Promise(
     resolve => (wranglerDevResolve = resolve)
 );
 
+const controller = new AbortController();
+const { signal } = controller;
+
 const wranglerDevProcess = fork(
-    // Navigate to the file where we can call `wrangler` like from the
-    // command line.
+    // Navigate to the file where we can invoke `wrangler` programmatially.
     join(
         __dirname,
-        'node_modules',
-        '@djibb',
-        'workers',
         'node_modules',
         'wrangler',
         'bin',
         'wrangler.js'
     ),
     // The args we'll pass to the module (aka `wrangler`).
-    ['dev', '--local', `--port=0`],
+    ['dev', '--port=8787'],
     // Options. No idea what these are all about.
     {
         cwd: resolve(__dirname, 'workers'),
         env: { BROWSER: 'none', ...process.env },
-        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+        signal,
+        stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     }
 ).on('message', () => {
     wranglerDevResolve();
 });
 
+wranglerDevProcess.on('error', error => {
+    controller.abort();
+    console.error('wranglerDevProcess:', error);
+});
+
 wranglerDevProcess.on('SIGINT', () => {
+    controller.abort();
     wranglerDevProcess.exit();
 });
 
