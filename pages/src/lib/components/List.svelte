@@ -5,7 +5,7 @@
 	 * @typedef Props
 	 * @property {*} data List data
 	 * @property {import('$djibb/list').List} list
-	 * @property {*} mutators
+	 * @property {import('$lib/replicache/types').ClientListMutators} mutators
 	 */
 
 	/** @type {Props} */
@@ -24,6 +24,10 @@
 
 		const elem_id = event.target.getAttribute('data-elem-id');
 
+		if (!elem_id) {
+			throw new Error('invalid `elem_id`!');
+		}
+
 		// NOTE: hard-coded the element type to `item` for now.
 		const elemData = data[`item/${elem_id}`];
 
@@ -35,6 +39,7 @@
 		}
 
 		mutators.setItemQuantity({
+			authorizedRole: 'ownerless', // TODO: hook this up to real stuff.
 			itemId: elem_id,
 			quantity: {
 				...elemData.quantity,

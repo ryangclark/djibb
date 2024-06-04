@@ -1,5 +1,5 @@
 <script>
-	import { initList } from '$lib/replicache.svelte';
+	import { initList } from '$lib/replicache/index.svelte.js';
 	import { initialize as initWebsocket } from '$lib/websocket';
 
 	import { WS_MESSAGE_PULL_PLS } from '$djibb/websocket/constants';
@@ -9,9 +9,15 @@
 	// Can `list_id` change here...? Hmm
 	let { data } = $props();
 
-	let list_data = $state();
-	let list = $derived(list_data?.[`list/${data.list_id}`] || 'LOADING');
-	let mutators = $state({});
+	/** @type {{ [x: string]: import('replicache').ReadonlyJSONValue }}*/
+	let list_data = $state({});
+
+	/** @type {import('$djibb/list').List}*/
+	// @ts-ignore
+	let list = $derived(list_data?.[`list/${data.list_id}`]);
+
+	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
+	let mutators = $state();
 
 	// Effects only run in the browser, not during server-side rendering.
 	$effect(() => {
@@ -21,7 +27,7 @@
 		});
 
 		list_data = replicacheList.list;
-		mutators = replicacheList.client.mutate
+		mutators = replicacheList.client.mutate;
 
 		const ws = initWebsocket(data.list_id);
 		ws.addEventListener('message', (event) => {
@@ -46,4 +52,9 @@
 	});
 </script>
 
-<List data={list_data} {list} {mutators}></List>
+{#if list && mutators}
+	<List data={list_data} {list} {mutators}></List>
+{:else}
+	<!-- TODO: improve this fallback state? -->
+	<p>uh oh?</p>
+{/if}

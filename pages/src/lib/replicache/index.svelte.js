@@ -1,6 +1,6 @@
 import { Replicache } from 'replicache';
 import { dev } from '$app/environment';
-import { mutators } from '../../../workers/src/list/mutators';
+import { mutators } from '../../../../workers/src/list/mutators';
 
 /**
  * Initializes the Replicache Client stuff.
@@ -30,30 +30,7 @@ export function initList({ list_id, user_id }) {
 		throw new Error('Missing User Id!');
 	}
 
-	console.log(`\`init()\` for Replicache running for "${list_id}"!`);
-
-	const licenseKey = import.meta.env.VITE_REPLICACHE_LICENSE_KEY;
-	if (!licenseKey) {
-		throw new Error('Missing VITE_REPLICACHE_LICENSE_KEY');
-	}
-
-	const protocol = `http${dev ? '' : 's'}:`;
-
-	const replicacheClient = $state(
-		new Replicache({
-			licenseKey,
-			// logLevel: import.meta.env.DEV ? 'debug' : 'error',
-			mutators: mutators,
-			// Template string to create something like `userId123:listId123`.
-			name: `${user_id}:${list_id}`,
-			pullURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/pull?l=${list_id}`,
-			pushURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/push?l=${list_id}`
-		})
-	);
-
-	if (!replicacheClient) {
-		throw new Error('`replicacheClient` is falsy!');
-	}
+	const replicacheClient = $state(InitReplicacheClient({ list_id, user_id }));
 
 	/**
 	 * Callback function to handle updates to the Replicache store by
@@ -91,4 +68,32 @@ export function initList({ list_id, user_id }) {
 			return listData;
 		}
 	};
+}
+
+/**
+ * Initializes the Replicache Client stuff.
+ *
+ * @param {object} input List ID
+ * @param {string} input.list_id List ID
+ * @param {string} input.user_id User ID
+ */
+export function InitReplicacheClient({ list_id, user_id }) {
+	console.log(`\`init()\` for Replicache running for "${list_id}"!`);
+
+	const licenseKey = import.meta.env.VITE_REPLICACHE_LICENSE_KEY;
+	if (!licenseKey) {
+		throw new Error('Missing VITE_REPLICACHE_LICENSE_KEY');
+	}
+
+	const protocol = `http${dev ? '' : 's'}:`;
+
+	return new Replicache({
+		licenseKey,
+		// logLevel: import.meta.env.DEV ? 'debug' : 'error',
+		mutators: mutators,
+		// Template string to create something like `userId123:listId123`.
+		name: `${user_id}:${list_id}`,
+		pullURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/pull?l=${list_id}`,
+		pushURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/push?l=${list_id}`
+	});
 }
