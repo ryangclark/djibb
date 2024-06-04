@@ -46,8 +46,8 @@ export function initList({ list_id, user_id }) {
 			mutators: mutators,
 			// Template string to create something like `userId123:listId123`.
 			name: `${user_id}:${list_id}`,
-			pullURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/${list_id}/pull`,
-			pushURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/${list_id}/push`
+			pullURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/pull?l=${list_id}`,
+			pushURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/push?l=${list_id}`
 		})
 	);
 
