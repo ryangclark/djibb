@@ -1,166 +1,96 @@
-// import { parse, serialize } from 'cookie';
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { verifyRequestOrigin } from 'lucia';
 
-// import { DjibbAuth } from './auth/fetch';
-import { DjibbList } from './list/fetch';
-import { URL_SEGMENT_LIST_ID } from './list/constants';
-// import {
-// 	COOKIE_NAME_SESSION_ID,
-// 	DURABLE_OBJECT_NAME_AUTH,
-// } from './auth/constants';
-import { handleOptions } from './utils/fetch';
+import { DjibbList, list_app } from './list/fetch';
 
 /**
  * Associate bindings declared in wrangler.toml with TypeScript types.
  */
-export interface Env {
-	// Bindings for Durable Objects.
-	// DJIBB_AUTH: DurableObjectNamespace;
-	DJIBB_LIST: DurableObjectNamespace;
-	KV_AUTH: KVNamespace;
-}
+export type Env = {
+    AUTHORIZED_DOMAINS: string;
+    DJIBB_AUTH: D1Database;
+    DJIBB_LIST: DurableObjectNamespace;
+    KV_AUTH: KVNamespace;
+};
 
-// We still have to export the Durable Object class from `index.ts`.
+// We must export the Durable Object class from `index.ts`.
 export { DjibbList };
 
-export default {
-	/**
-	 * This is the standard fetch handler for a Cloudflare Worker
-	 *
-	 * @param request - The request submitted to the Worker from the client
-	 * @param env - The interface to reference bindings declared in wrangler.toml
-	 * @param ctx - The execution context of the Worker
-	 * @returns The response to be sent back to the client
-	 */
-	async fetch(
-		request: Request,
-		env: Env,
-		ctx: ExecutionContext
-	): Promise<Response> {
-		// const request = await this.handleSession(originalRequest, env);
+const app = new Hono<{
+    Bindings: Env;
+}>();
 
-		return this.handleFetch(request, env, ctx).catch((error) => {
-			console.error('top-level error:', JSON.stringify(error));
-			return new Response(null, { status: 500 });
-		});
-	},
+// Middleware inits.
+app.use(
+    /**
+     * This function acts as a controller to add CORS headers to the
+     * `Response`s to most routes. We can't add those headers to the
+     * WebSocket `Response`, though, because they're immutable.
+     *
+     * It seemed convenient enough to have the `cors()` middleware run
+     * on all the routes, though, and find a way to have a negative
+     * condition (positive conditions are easier, I think) in the `path`
+     * param you can pass to Hono's `use()` function here.
+     *
+     * To get an exclusion condition for the WebSocket endpoint, I had
+     * to hook things up a little funky. Ordinarily, you pass `cors()`
+     * directly to `app.use()`, like `app.use(cors(myCorsConfig))`. To
+     * get the conditional we need, though, we instead return a
+     * middleware function that returns a middleware's result. It sounds
+     * more complicated than it is. Just imagine what `app.use()` expects
+     * to receive as a param, and it gets clearer – just get that function
+     * what it needs, depending on the conditions.
+     */
+    (c, next) => {
+        // Can't use CORS middleware for Websocket connections because CORS
+        // changes the Response headers, and headers are immutable for WS.
+        //
+        // I tried for a while to get the Hono routing to use a negative
+        // lookahead regexp, but couldn't get it to work. Oh well.
+        // Could instead rearrange the middleware to occur AFTER the
+        // handler for the websocket endpoint, BUT we are using the subrouter
+        // pattern, so that doesn't quite work...
+        if (c.req.path.includes('websocket')) return next();
 
-	/**
-	 * Gets a stub for the Djibb Auth Durable Object, which can be used
-	 * elsewhere to handle Auth-related stuff for requests.
-	 *
-	 * I'm not sure I've made the right infrastructure choices here.
-	 * The idea is to have a single instance of the auth stuff to help
-	 * ensure timing of i/o is centralized and prevents race conditions
-	 * and stuff. Thus, use a Durable Object.
-	 */
-	// getAuthStub(env: Env) {
-	// 	const id: DurableObjectId = env.DJIBB_AUTH.idFromName(
-	// 		DURABLE_OBJECT_NAME_AUTH
-	// 	);
+        // CORS middleware.
+        // Note that we have to call this function as the return because
+        // we're faking things out here.
+        return cors({
+            allowHeaders: [
+                'Authorization',
+                'Content-Type',
+                'x-replicache-requestid',
+            ],
+            origin: '*', // TODO: update this to not a wildcard.
+        })(c, next);
+    },
+    // CSRF middleware
+    async (c, next) => {
+        if (c.req.method === 'GET') {
+            return next();
+        }
+        const originHeader = c.req.header('Origin');
+        // NOTE: You may need to use `X-Forwarded-Host` instead
 
-	// 	// This stub creates a communication channel with the Durable
-	// 	// Object instance. The Durable Object constructor will be
-	// 	// invoked upon the first call for a given id.
-	// 	return env.DJIBB_AUTH.get(id);
-	// },
+        const hostHeader = c.req.header('Host');
+        if (
+            !originHeader ||
+            !hostHeader ||
+            !verifyRequestOrigin(
+                originHeader,
+                c.env.AUTHORIZED_DOMAINS.split(';')
+            )
+        ) {
+            return c.body(null, 403);
+        }
+        return next();
+    }
+);
 
-	async handleFetch(request: Request, env: Env, ctx: ExecutionContext) {
-		// const request = await this.handleSession(originalRequest, env);
+// TODO: check if this is the best thing to return here.
+app.get('/', c => c.text('djibb'));
 
-		if (request.method === 'OPTIONS') {
-			return handleOptions(request);
-		}
+app.route('/list', list_app);
 
-		// Reusable URL interface to do simple checks for routing.
-		// Not ideal to do shit all willy nilly like this, but the plan
-		// is to either move all this API stuff back into the SvelteKit
-		// repo, or to make this a separate repo running Hono framework.
-		const requestURL = new URL(request.url);
-
-		if (requestURL.pathname === '/auth') {
-			const stub = this.getAuthStub(env);
-
-			// Call `fetch()` on the stub to send a request to the Durable
-			// Object instance. The Durable Object instance will invoke its
-			// fetch handler to handle the request.
-			let response = await stub.fetch(request);
-
-			return response;
-		}
-
-		const urlGroups = DjibbList.parseURL(request.url);
-
-		if (!urlGroups || !urlGroups.groups?.[URL_SEGMENT_LIST_ID]) {
-			console.log('NOT FOUND:', request.url);
-
-			return new Response(null, { status: 404 });
-		}
-
-		// Create a `DurableObjectId` using the List ID from the parsed
-		// URL. The ID refers to a unique instance of the `DjibbList`
-		// class in this file.
-		const id: DurableObjectId = env.DJIBB_LIST.idFromName(
-			urlGroups.groups[URL_SEGMENT_LIST_ID]
-		);
-
-		// This stub creates a communication channel with the Durable
-		// Object instance. The Durable Object constructor will be
-		// invoked upon the first call for a given id.
-		const stub: DurableObjectStub = env.DJIBB_LIST.get(id);
-
-		// Call `fetch()` on the stub to send a request to the Durable
-		// Object instance. The Durable Object instance will invoke its
-		// fetch handler to handle the request.
-		const response = await stub.fetch(request);
-
-		return response;
-	},
-
-	// async handleSession(request: Request, env: Env): Promise<Request> {
-	// 	// const clonedHeaders = request.headers.
-	// 	const header = request.headers.get('cookie') ?? '';
-
-	// 	const cookies = parse(header);
-
-	// 	console.log('cookies:', cookies);
-
-	// 	if (!cookies[COOKIE_NAME_SESSION_ID]) {
-	// 		console.log('no session id! requesting a fresh one');
-
-	// 		// Create a Session ID here.
-	// 		// const clonedRequest = new Request(request);
-	// 		// clonedRequest.headers = new Headers()
-	// 		const stub = this.getAuthStub(env);
-
-	// 		const response = await stub.fetch(
-	// 			// Create a new request that points to the route the
-	// 			// Auth Durable Object will listen at for Session IDs.
-	// 			// Pass along the headers – because why not. Update
-	// 			// this as needed to auth shit appropriately.
-	// 			new Request('/new-session', { headers: request.headers })
-	// 		);
-
-	// 		if (response.ok) {
-	// 			const headers = new Headers(request.headers);
-	// 			const responseSetCookie = response.headers.get('set-cookie');
-
-	// 			const serializedCookie = serialize(
-	// 				COOKIE_NAME_SESSION_ID,
-	// 				responseSetCookie
-	// 			);
-
-	// 			headers.append('cookie', serializedCookie);
-
-	// 			// Set the `Set-Cookie` on the request. We check for
-	// 			// that header before returning the true response and
-	// 			// append it as a header to the response then because
-	// 			// we don't have the response yet.
-	// 			headers.append('Set-Cookie', serializedCookie);
-
-	// 			return new Request(request, { headers });
-	// 		}
-	// 	}
-
-	// 	return request;
-	// },
-};
+export default app;
