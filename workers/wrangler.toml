@@ -1,6 +1,6 @@
 name = "wandering-snowflake-2716"
 main = "src/index.ts"
-compatibility_date = "2024-02-08"
+compatibility_date = "2024-05-24"
 
 #kv_namespaces = [
   # namespace = "djibb_auth_dev"
@@ -10,9 +10,9 @@ compatibility_date = "2024-02-08"
 #]
 
 # [env.production]
-# d1_databases = [
-#    { binding = "DJIBB_AUTH", database_name = "djibb-auth", database_id = "f839093e-e2d9-4861-8a3f-05dca1d1a749" },
-# ]
+d1_databases = [
+  { binding = "DJIBB_AUTH", database_name = "djibb-auth", database_id = "f839093e-e2d9-4861-8a3f-05dca1d1a749" },
+]
 
 [durable_objects]
 bindings = [
