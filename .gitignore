@@ -4,6 +4,7 @@ node_modules
 /pages/.svelte-kit
 /pages/package
 /workers/.wrangler
+/workers/.dev.vars
 .env
 .env.*
 !.env.example
