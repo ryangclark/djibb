@@ -3,18 +3,23 @@
 declare global {
 	namespace App {
 		// interface Error {}
-		// interface Locals {}
+		interface Locals {
+			session: import('lucia').Session | null;
+			user: import('lucia').User | null;
+		}
 		// interface PageData {}
 		// interface PageState {}
 		interface Platform {
 			env: {
-				DJIBB_AUTH: DurableObjectNamespace;
+				DJIBB_AUTH: D1Database;
 				DJIBB_LIST: DurableObjectNamespace;
 			};
-			context: {
-				waitUntil(promise: Promise<any>): void;
-			};
 			caches: CacheStorage & { default: Cache };
+			cf: CfProperties;
+			// context: {
+			// 	waitUntil(promise: Promise<any>): void;
+			// };
+			ctx: ExecutionContext;
 		}
 	}
 }
