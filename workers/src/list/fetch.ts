@@ -1,15 +1,12 @@
+import { DurableObject } from 'cloudflare:workers';
+import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import { Register, RegisteredDatabaseSessionAttributes, User } from 'lucia';
 import { PullResponseOKV1, PushRequestV1 } from 'replicache';
 import { z } from 'zod';
 
 import { Env } from '..';
-import {
-    LIST_ID_LENGTH,
-    REF_LIST,
-    URL_SEGMENT_ACTION,
-    URL_SEGMENT_LIST_ID,
-    URL_SEGMENT_SLUG,
-} from './constants';
-import { corsHeaders } from '../utils/fetch';
+import { REF_LIST, REF_LIST_AUTH_RULES } from './constants';
 import { List, ListElement } from './index';
 import {
     ReplicacheClientGroup,
@@ -17,10 +14,173 @@ import {
     clientGroupKey,
 } from '../replicache';
 import { mutators } from './mutators';
+import { handle_session } from '../auth/middleware';
+import {
+    AuthorizationRole,
+    AuthorizationRoleEnum,
+    AuthorizationRules,
+    GeneralRoleEnum,
+    RulesSetByEnum,
+} from '../auth/rules';
 import { WS_MESSAGE_PULL_PLS, WS_STATE } from '../websocket/constants';
-import { init } from './init_data';
 
-const zPullRequest = z.object({
+import { init } from './init_data';
+import {
+    DjibbError,
+    ParseError,
+    UnexpectedError,
+    ValidationError,
+} from '../errors';
+import { UnauthorizedError } from '../auth/errors';
+import { InvalidMutatorError } from '../replicache/errors';
+
+/**
+ * The shape of the Hono context for use in List Hono app `list_app`.
+ *
+ * For example:
+ *
+ *      new Hono<list_context>();
+ * and:
+ *
+ *      function myExampleFunction(c: Context<list_context>) { ... }
+ */
+interface list_context {
+    Bindings: Env;
+    Variables: {
+        authorized_role: AuthorizationRole;
+        lucia: Register['Lucia'];
+        session: RegisteredDatabaseSessionAttributes | null;
+        stub: DurableObjectStub<DjibbList>;
+        user: User | null;
+    };
+}
+
+/**
+ * This is the sub-router to handle List-related requests by invoking
+ * the Durable Object for the request's List ID.
+ * @see https://hono.dev/api/routing#grouping
+ */
+export const list_app = new Hono<list_context>();
+
+/**
+ * Middleware for all requests to this sub-router that gets the
+ * Durable Object stub for the request's List ID, which is given via
+ * `l` search param (like how YouTube does it).
+ *
+ * We expect a request to be something like `GET /list?l=my-list-id` or
+ * `POST /list/pull?l=my-list-id`.
+ */
+list_app.use('*', async (c, next) => {
+    const query_param_list_id = c.req.query('l');
+
+    if (!query_param_list_id) {
+        console.log('missing query_param_list_id!');
+
+        throw new HTTPException(400, {
+            message:
+                'missing `l` search query parameter to identify requested list',
+        });
+    }
+
+    // Create a `DurableObjectId` using the List ID query param.
+    // The ID refers to a unique instance of the `DjibbList`
+    // class in this file.
+    const durable_object_id: DurableObjectId =
+        c.env.DJIBB_LIST.idFromName(query_param_list_id);
+
+    // This stub creates a communication channel with the Durable
+    // Object instance. The Durable Object constructor will be
+    // invoked upon the first call for a given id.
+    const stub = c.env.DJIBB_LIST.get(
+        durable_object_id
+    ) as DurableObjectStub<DjibbList>;
+
+    if (!stub) {
+        console.error('no DJIBB_LIST stub!');
+        throw new UnexpectedError();
+    }
+
+    c.set('stub', stub);
+
+    await next();
+});
+
+// Authentication middleware to pull session data tied to the requests'
+// cookie, if any.
+list_app.use('*', handle_session);
+
+/**
+ * Authorization middleware to check whether the current DjibbList
+ * Durable Object has authorization requirements, and if the current
+ * request meets them.
+ *
+ * Authentication: Verifies who you are.
+ * Authorization: Determines what you can do.
+ * We're doing Authorization here.
+ */
+list_app.use(async (c, next) => {
+    // Get authorization rules. If there aren't any yet, then the method
+    // call will generate the default rules, so we pass the active
+    // Account ID, if any, to inform their creation.
+    const authorizationRules = await c.get('stub').getAuthorizationRules();
+
+    // Eval rules.
+    let authRole: AuthorizationRole | undefined;
+
+    // First, check the session's authorized accounts against the
+    // List's authed accounts.
+    for (const authedAccount of c.get('session')?.account_ids || []) {
+        if (authorizationRules.authorized_accounts[authedAccount]) {
+            // If we already have a match, then we've hit unhandled
+            // territory.
+            if (authRole) {
+                /**
+                 * @UNHANDLED:
+                 *
+                 * A single session can have multiple accounts, and what happens
+                 *  when more than one of those accounts is authed for a single list?
+                 *  Need to have UI to pick the appropriate account, as well as a way
+                 *  to store/remember that selection for the future.
+                 *
+                 * Could store that info on the session, the list, the user, the Replicache
+                 * Client Group, etc. or some combination.
+                 */
+
+                console.error(
+                    'ERR: auth/multiple-authed-accounts: multiple authed accounts for the same list'
+                );
+                throw new UnexpectedError();
+            }
+
+            authRole =
+                authorizationRules.authorized_accounts[authedAccount].role;
+        }
+    }
+
+    /**
+     * @UNHANDLED: check for membership in the List's Workspace.
+     * If membership confirmed, assign Workspace role, if any.
+     */
+    // if (!authRole) {
+    //     // check for Workspace role here
+    // }
+
+    if (!authRole) {
+        // Not an authorized user. Use generic role.
+        authRole = authorizationRules.general_role;
+    }
+
+    c.set('authorized_role', authRole);
+
+    return next();
+});
+
+/**
+ * Request body for a Replicache Pull Request.
+ *
+ * I don't really have a good place to put this... Move if you want.
+ */
+const ReplicachePullRequestSchema = z.object({
     pullVersion: z.literal(1),
     profileID: z.string(),
     clientGroupID: z.string(),
@@ -28,23 +188,112 @@ const zPullRequest = z.object({
     schemaVersion: z.string(),
 });
 
-/** A Durable Object's behavior is defined in an exported Javascript class */
-export class DjibbList {
-    // private ListId: string;
-    private state: DurableObjectState;
+type ReplicachePullRequest = z.TypeOf<typeof ReplicachePullRequestSchema>;
 
-    /**
-     * The constructor is invoked once upon creation of the Durable
-     * Object, i.e. the first call to `DurableObjectStub::get` for a
-     * given identifier
-     *
-     * @param state - The interface for interacting with Durable Object state
-     * @param env - The interface to reference bindings declared in wrangler.toml
-     */
-    constructor(state: DurableObjectState, env: Env) {
-        this.state = state;
+list_app.post('/pull', async c => {
+    const json = await c.req.json().catch(() => {
+        throw new ParseError();
+    });
 
-        console.log('~~~ DjibbList Constructor running! ~~~');
+    const parse_result = ReplicachePullRequestSchema.safeParse(json);
+
+    if (!parse_result.success) {
+        throw new ValidationError('invalid JSON value(s)');
+    }
+
+    const pullResponse = await c.get('stub').handlePull({
+        authorizedRole: c.get('authorized_role'),
+        pullRequest: parse_result.data,
+    });
+
+    return c.json(pullResponse);
+});
+
+list_app.post('/push', async c => {
+    const pushRequest = (await c.req.json().catch(() => {
+        throw new ValidationError();
+    })) as PushRequestV1;
+
+    const requestRole = c.get('authorized_role');
+    const authorizedRoles = AuthorizationRoleEnum.extract([
+        AuthorizationRoleEnum.enum.admin,
+        AuthorizationRoleEnum.enum.checker,
+        AuthorizationRoleEnum.enum.editor,
+        AuthorizationRoleEnum.enum.owner,
+        AuthorizationRoleEnum.enum.ownerless,
+    ]);
+
+    if (!authorizedRoles.safeParse(requestRole).success) {
+        throw new UnauthorizedError();
+    }
+
+    await c.get('stub').handlePush({
+        authorizedRole: c.get('authorized_role'),
+        pushRequest,
+    });
+
+    // Replicache ignores any response body to the `push` endpoint, so
+    // we don't have anything to return. If the handler didn't throw,
+    // we're good.
+    return new Response(null, { status: 200 });
+});
+
+list_app.get('/websocket', async c => {
+    const requestRole = c.get('authorized_role');
+
+    // So websocket connections currently receive "poke" updates, which
+    // tell Replicache to trigger a pull. So, a websocket connection
+    // only requires a "view" permission. Update as needed.
+    const authorizedRoles = AuthorizationRoleEnum.exclude([
+        AuthorizationRoleEnum.enum.restricted,
+    ]);
+
+    if (!authorizedRoles.safeParse(requestRole).success) {
+        throw new UnauthorizedError();
+    }
+
+    // Use `fetch` for WebSocket because we're returning a Response
+    // that isn't serializable.
+    return c.get('stub').fetch(c.req.raw);
+});
+
+list_app.onError(err => {
+    if (err instanceof DjibbError) {
+        return new Response(
+            JSON.stringify({
+                code: err.code,
+                error: err.name,
+                message: err.message,
+            }),
+            { status: err.httpStatusCode }
+        );
+    } else if (err instanceof HTTPException) {
+        // Keep throwing. Hono will handle.
+        throw err;
+    }
+
+    // Unhandled err.
+    console.error('`list_app.onError()` unhandled err:', err);
+
+    throw new HTTPException(500);
+});
+
+export class DjibbList extends DurableObject {
+    static defaultAuthorizationRules: AuthorizationRules = {
+        authorized_accounts: {},
+        general_role: GeneralRoleEnum.Enum.ownerless,
+        set_by: RulesSetByEnum.Enum.defaults,
+    };
+
+    async getAuthorizationRules(): Promise<AuthorizationRules> {
+        let rules =
+            await this.ctx.storage.get<AuthorizationRules>(REF_LIST_AUTH_RULES);
+
+        if (!rules) {
+            rules = DjibbList.defaultAuthorizationRules;
+        }
+
+        return rules;
     }
 
     /**
@@ -64,22 +313,14 @@ export class DjibbList {
             return;
         }
 
-        const element = (await this.state.storage.get(
-            elementRef
-        )) as ListElement;
+        const element = (await this.ctx.storage.get(elementRef)) as ListElement;
 
         if (!element) {
             if (elementRef === REF_LIST) {
                 // Initialize the list.
-                await init(this.state.storage);
-
-                // // Return a call to this function, that will rerun
-                // // through the logic, now that the data is initialized.
-                // return this.getElementsByVersion(
-                //     accumulator,
-                //     version,
-                //     elementRef
-                // );
+                // @TODO: remove this once we have list-creation
+                // implemented.
+                await init(this.ctx.storage);
             }
 
             console.warn(
@@ -123,91 +364,166 @@ export class DjibbList {
         await Promise.all(arrPromises);
     }
 
-    fetch(request: Request) {
-        return this.handleFetch(request).catch(error => {
-            console.error(
-                '`DjibbList` top-level error:',
-                JSON.stringify(error)
-            );
-            return new Response(null, { status: 500 });
-        });
-    }
-
     /**
-     * The runtime invokes this `fetch` handler when a Worker sends this
-     * Durable Object a request via an associated stub.
-     *
-     * @param request - The request submitted to a Durable Object
-     * instance from a Worker
-     * @returns The response to be sent back to the Worker
+     * Handles Pull requests by evaluating where the requesting client
+     * stands (what data does it have?), and creating a patch of changes
+     * to get it up to date with the Server's state.
      */
-    async handleFetch(request: Request): Promise<Response> {
-        const urlGroups = DjibbList.parseURL(request.url);
+    public async handlePull({
+        // authorizedRole,
+        pullRequest,
+    }: {
+        authorizedRole: AuthorizationRole;
+        pullRequest: ReplicachePullRequest;
+    }): Promise<PullResponseOKV1> {
+        const requestVersion = pullRequest.cookie ?? 0;
 
-        // Not sure this is the most complete of conditions to trigger
-        // the websocket handler, but...
-        // if (request.url.endsWith('/websocket')) {
-        if (urlGroups?.groups[URL_SEGMENT_ACTION] == 'websocket') {
-            return this.handleWebsocket(request);
-        }
-        if (
-            request.method === 'POST' &&
-            urlGroups?.groups[URL_SEGMENT_ACTION] == 'pull'
-        ) {
-            return this.handlePull(request);
-        }
-        if (
-            request.method === 'POST' &&
-            urlGroups?.groups[URL_SEGMENT_ACTION] == 'push'
-        ) {
-            return this.handlePush(request);
-        }
+        const listElements: Array<ListElement> = [];
 
-        // Should probably update the "final case" here to be an error
-        // some kind because we don't have anything to handle their
-        // request (could be unknown URL or bad method or whatever).
-        return new Response(`Bad request, probably.`, { status: 400 });
-    }
+        await this.getElementsByVersion(listElements, requestVersion, REF_LIST);
 
-    /**
-     * Handles mutations from a Push request.
-     * @param mutations
-     */
-    async handleMutations(requestBody: PushRequestV1): Promise<Response> {
-        const list = (await this.state.storage.get(REF_LIST)) as List;
-        const nextListVersion = list.version + 1;
+        // Init our response with default property values.
+        const pullResponse: PullResponseOKV1 = {
+            cookie: -1, // Indicates bad version
+            lastMutationIDChanges: {},
+            patch: [],
+        };
 
-        let repClientGroup = (await this.state.storage.get(
-            clientGroupKey(requestBody.clientGroupID)
+        // Look up the Client Group for the request's `clientGroupID` value.
+        // Then, loop through the Group's Clients to pull the
+        // `lastMutationID` for each.
+        // Replicache needs that info to confirm which mutations have
+        // been canonicalized on the server.
+        const replicacheClientGroup = (await this.ctx.storage.get(
+            clientGroupKey(pullRequest.clientGroupID)
         )) as ReplicacheClientGroup | undefined;
 
-        if (!repClientGroup) {
+        if (!replicacheClientGroup) {
             console.log(
-                `\`handleMutations()\` no Client Group found for ID "${requestBody.clientGroupID}"`
+                `\`handlePull()\` ReplicacheClientGroup not found for ID "${pullRequest.clientGroupID}"`
+            );
+        } else {
+            // Loop through the Clients in the ClientGroup. If a client's
+            // `lastModifiedVersion` is greater than the `requestVersion`,
+            // then we'll include that Client's last Mutation ID in the
+            // Pull Response. That allows Replicache to know where that
+            // client stands in comparison to the Server's authoritative
+            // state.
+            for (const [clientID, client] of replicacheClientGroup.clients) {
+                if (client.lastModifiedVersion > requestVersion) {
+                    pullResponse.lastMutationIDChanges[clientID] =
+                        client.lastMutationID;
+                }
+            }
+        }
+
+        // Set the response's `cookie` value, which is the List's version.
+        // Find the Version by looping through the List Elements, looking
+        // for the List Itself. If not among the updated element, pull
+        // the list directly.
+        let foundListVersion = false;
+        if (listElements.length > 0) {
+            for (const element of listElements) {
+                if (element.type === 'list') {
+                    foundListVersion = true;
+                    pullResponse.cookie = element.version;
+                    break;
+                }
+            }
+        }
+
+        if (!foundListVersion) {
+            // Pull the List Itself.
+            const list = (await this.ctx.storage.get(REF_LIST)) as
+                | List
+                | undefined;
+
+            if (list) {
+                pullResponse.cookie = list.version;
+            }
+        }
+
+        if (requestVersion === 0) {
+            // Initialize a fresh client by adding a "clear" action as our
+            // first patch. That will clear the Replicache client, so we
+            // start from scratch. (Not sure this is entirely necessary...)
+            pullResponse.patch.push({
+                op: 'clear',
+            });
+        }
+
+        for (const element of listElements) {
+            const key = `${element.type}/${element.id}`;
+
+            if (element.time_deleted) {
+                // Don't add a "del" operation to the list if we're
+                // building a "from scratch" patch, because you only
+                // need to delete things if you already have them.
+                if (requestVersion === 0) continue;
+
+                pullResponse.patch.push({
+                    key,
+                    op: 'del',
+                });
+            } else {
+                pullResponse.patch.push({
+                    key,
+                    op: 'put',
+                    value: element,
+                });
+            }
+        }
+
+        console.log(
+            `Patch count to get from v${requestVersion} to v${pullResponse.cookie}:`,
+            pullResponse.patch.length
+        );
+
+        return pullResponse;
+    }
+
+    /**
+     * Handles a Push request from Replicache by evaluating each of
+     * the request's mutations.
+     */
+    public async handlePush({
+        authorizedRole,
+        pushRequest,
+    }: {
+        authorizedRole: AuthorizationRole;
+        pushRequest: PushRequestV1;
+    }) {
+        const list = (await this.ctx.storage.get(REF_LIST)) as List;
+        const nextListVersion = list.version + 1;
+
+        let replicacheClientGroup = (await this.ctx.storage.get(
+            pushRequest.clientGroupID
+        )) as ReplicacheClientGroup | undefined;
+
+        if (!replicacheClientGroup) {
+            console.log(
+                `\`handlePush()\` no Client Group found for ID "${pushRequest.clientGroupID}"`
             );
 
-            // TODO: ensure this Client Group is authed to be here
-            // before initializing it.
-            repClientGroup = {
+            replicacheClientGroup = {
                 clients: new Map(),
-                id: requestBody.clientGroupID,
+                id: pushRequest.clientGroupID,
             };
         }
 
-        // TODO: Once we have some User Auth stuff, we can verify the
-        // `repClientGroup` is authorized to operate on this List.
-
-        for (const mutation of requestBody.mutations) {
+        for (const mutation of pushRequest.mutations) {
             // Pull the ReplicacheClient for this mutation's Client ID.
-            // Initialize it, if needed.
-            let repClient = repClientGroup.clients.get(mutation.clientID);
+            // Initialize it, if needed. We'll persist it later.
+            let replicacheClient = replicacheClientGroup.clients.get(
+                mutation.clientID
+            );
 
-            if (!repClient) {
+            if (!replicacheClient) {
                 console.log(
-                    `\`handleMutations()\` ReplicacheClient not found for "${mutation.clientID}". Initializing! (btw, mutation.id is ${mutation.id}.)`
+                    `\`handlePush()\` ReplicacheClient not found for "${mutation.clientID}". Initializing! (btw, mutation.id is ${mutation.id}.)`
                 );
 
-                repClient = {
+                replicacheClient = {
                     id: mutation.clientID,
                     // Default to 0. I think that should be fine... There's a
                     // possibility we should default to the `mutation.id`, but
@@ -220,9 +536,9 @@ export class DjibbList {
             // Each mutation is created by a ReplicacheClient. We want
             // to ensure we process each mutation in order, just like
             // they happened on the frontend. Replicache helps us do
-            // just that by assigning each Mutation a Mutation ID on
-            // the frontend. It's just a number that is incremented for
-            // each Mutation, just like an auto-increment column in SQL.
+            // just that by assigning each Mutation an ID on the frontend.
+            // The ID is a number that is incremented for each Mutation,
+            // just like an auto-increment column in SQL.
             //
             // On the backend, we track the last Mutation ID each
             // ReplicacheClient we've processed. That way, we can check
@@ -231,16 +547,16 @@ export class DjibbList {
             //
             // Calculate the expected Mutation ID for this Client by
             // simply adding 1 to the last known ID.
-            const expectedMutationId = repClient.lastMutationID + 1;
+            const expectedMutationId = replicacheClient.lastMutationID + 1;
 
-            // Check that the Mutation ID matches the Expected ID.
+            // Check the Mutation's ID matches the Expected ID.
             if (expectedMutationId !== mutation.id) {
                 console.log(
-                    '`handleMutations()` Mutation ID did not match expectations:',
+                    '`handlePush()` Mutation ID did not match expectations:',
                     {
                         clientID: mutation.clientID,
                         mutationID: mutation.id,
-                        expectedMutationId,
+                        expectedMutationId: expectedMutationId,
                     }
                 );
 
@@ -263,246 +579,76 @@ export class DjibbList {
             }
 
             const mutator = (mutators as any)[mutation.name];
+
             if (!mutator) {
                 console.error(
-                    `\`handleMutations()\` error: unknown mutator "${mutation.name}"`
+                    `\`handlePush()\` error: unknown mutator "${mutation.name}"`
                 );
-            } else {
-                // Start a transaction.
-                // I *think* we can eventually do away with the
-                // transaction, and instead map `state.storage` to
-                // the Replicache transaction. But I like having
-                // `rollback` method, at least for now.
-                this.state.storage.transaction(async txDO => {
-                    try {
-                        // Get the Replicache-adapted version of
-                        // the transaction.
-                        const tx = new TransactionalStorageToRepTx(
-                            txDO,
-                            nextListVersion
-                        );
 
-                        // console.log(
-                        // 	'testing TESTING',
-                        // 	tx.set('test', 'TEST VALUE'),
-                        // 	await tx.get('test')
-                        // );
-
-                        console.log('mutator:', mutator);
-
-                        await mutator(tx, mutation.args);
-                        console.log(
-                            `mutator "${mutation.name}" ran!`,
-                            mutation.args
-                        );
-                    } catch (error) {
-                        console.error(
-                            `\`handleMutations()\` error executing mutator "${mutation.name}":`,
-                            error
-                        );
-                        console.log('Rolling Back!');
-                        txDO.rollback();
-                    }
-                });
+                throw new InvalidMutatorError(mutation.name);
             }
 
-            // Set the ReplicacheClient, this time with updated values.
-            repClientGroup.clients.set(mutation.clientID, {
-                ...repClient,
-                lastMutationID: expectedMutationId,
-                lastModifiedVersion: nextListVersion,
+            // Start a transaction.
+            // I *think* we can eventually do away with the
+            // transaction, and instead map `ctx.storage` to
+            // the Replicache transaction. But I like having
+            // `rollback` method, at least for now.
+            this.ctx.storage.transaction(async durableObjectTx => {
+                try {
+                    // Get the Replicache-adapted version of
+                    // the transaction.
+                    const tx = new TransactionalStorageToRepTx(
+                        durableObjectTx,
+                        nextListVersion
+                    );
+
+                    await mutator(tx, { args: mutation.args, authorizedRole });
+                    console.log(
+                        `mutator "${mutation.name}" ran!`,
+                        mutation.args,
+                        authorizedRole // @TODO: figure out how to pass this
+                    );
+                } catch (error) {
+                    console.error(
+                        `\`handleMutations()\` error executing mutator "${mutation.name}":`,
+                        error
+                    );
+
+                    console.log('Rolling Back DO Transaction!!!');
+                    durableObjectTx.rollback();
+
+                    // TODO: do we throw an error here?
+                }
             });
         }
 
-        // Save the ReplicacheClientGroup.
-        this.state.storage.put(
-            clientGroupKey(repClientGroup.id),
-            repClientGroup
+        // Save the Replicache Client Group.
+        this.ctx.storage.put(
+            clientGroupKey(replicacheClientGroup.id),
+            replicacheClientGroup
         );
 
         // Update and save the List Itself.
-        this.state.storage.put(REF_LIST, { ...list, version: nextListVersion });
+        this.ctx.storage.put(REF_LIST, {
+            ...list,
+            version: nextListVersion,
+        });
 
         this.poke();
 
-        return new Response(
-            // Replicache: the response body to the push endpoint is ignored.
-            null,
-            {
-                headers: { 'Content-Type': 'application/json', ...corsHeaders },
-                status: 200,
-            }
-        );
+        // Replicache: the response body to the push endpoint is
+        // ignored, so we return void.
+        return;
     }
 
-    /**
-     * Handles Pull requests by evaluating where the requesting client
-     * stands (what data does it have?), and creating a patch of changes
-     * to get it up to date with the Server's state.
-     */
-    async handlePull(request: Request) {
-        if (!request.body) {
-            return new Response(`request must have a body`, {
-                status: 400,
-            });
+    public fetch(request: Request) {
+        if (request.method === 'GET' && request.url.includes('websocket')) {
+            return this.handleWebSocket(request);
         }
 
-        // Detect bad JSON parsing by returning null.
-        const json = await request.json().catch(() => null);
-
-        if (json === null) {
-            return new Response('JSON parse failure', {
-                status: 400,
-                statusText: 'Bad Request',
-                headers: corsHeaders,
-            });
-        }
-
-        const result = zPullRequest.safeParse(json);
-
-        if (!result.success) {
-            return new Response('Invalid JSON value(s)', {
-                status: 400,
-                statusText: 'Bad Request',
-                headers: corsHeaders,
-            });
-        }
-
-        const pullRequest = result.data;
-
-        const requestVersion = pullRequest.cookie ?? 0;
-
-        const listElements: Array<ListElement> = [];
-
-        await this.getElementsByVersion(listElements, requestVersion, REF_LIST);
-
-        const response: PullResponseOKV1 = {
-            cookie: 0,
-            lastMutationIDChanges: {},
-            patch: [],
-        };
-
-        // Pull the `ReplicacheClientGroup` for this request, then loop
-        // through its Clients to pull the `lastMutationID` for each.
-        // Replicache needs that info to confirm which mutations have
-        // been canonicalized on the server.
-        const repClientGroup = (await this.state.storage.get(
-            clientGroupKey(pullRequest.clientGroupID)
-        )) as ReplicacheClientGroup | undefined;
-
-        if (!repClientGroup) {
-            console.log(
-                `\`handlePull()\` ReplicacheClientGroup not found for ID "${pullRequest.clientGroupID}"`
-            );
-        } else {
-            // Loop through the Clients in the ClientGroup. If a client's
-            // `lastModifiedVersion` is greater than the `requestVersion`,
-            // then we'll include that Client's last Mutation ID in the
-            // Pull Response. That allows Replicache to know where that
-            // client stands in comparison to the Server's authoritative
-            // state.
-            for (const [clientID, client] of repClientGroup.clients) {
-                if (client.lastModifiedVersion > requestVersion) {
-                    response.lastMutationIDChanges[clientID] =
-                        client.lastMutationID;
-                }
-            }
-        }
-
-        // Set the request's cookie, which is the List's Version.
-        // Find the Version by looping through our List Elements, looking
-        // for the List Itself. If not among the updated elements, pull
-        // the list directly.
-        let foundListVersion = false;
-        if (listElements.length > 0) {
-            for (const element of listElements) {
-                if (element.type === 'list') {
-                    // console.log(`Setting cookie to ${element.version}!`);
-                    foundListVersion = true;
-                    response.cookie = element.version;
-                    console.log('element.version', element.version);
-                    break;
-                }
-            }
-        }
-
-        if (!foundListVersion) {
-            // Get the List Itself directly.
-            const list = (await this.state.storage.get(REF_LIST)) as
-                | List
-                | undefined;
-
-            if (list) {
-                response.cookie = list.version;
-                console.log('list.version', list.version);
-            }
-        }
-
-        if (requestVersion === 0) {
-            // Initialize a fresh client by clearing everything so we
-            // start from scratch. (Not sure this is entirely necessary...)
-            response.patch.push({
-                op: 'clear',
-            });
-        }
-
-        for (const element of listElements) {
-            const key = `${element.type}/${element.id}`;
-
-            if (element.time_deleted) {
-                // Don't add this "del" operation to the list if we're
-                // building a "from scratch" patch, because you only
-                // need to delete things if you already have them.
-                if (requestVersion === 0) continue;
-
-                response.patch.push({
-                    key,
-                    op: 'del',
-                });
-            } else {
-                response.patch.push({
-                    key,
-                    op: 'put',
-                    value: element,
-                });
-            }
-        }
-
-        console.log(
-            `Patch count to get from v${requestVersion} to v${response.cookie}:`,
-            response.patch.length
-        );
-
-        return new Response(JSON.stringify(response), {
-            headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        return new Response('invalid Durable Object fetch request', {
+            status: 400,
         });
-    }
-
-    /**
-     * Handles a Push request from Replicache by evaluating each of
-     * the request's mutations.
-     */
-    async handlePush(request: Request) {
-        if (!request.body) {
-            return new Response(`request must have a body`, {
-                status: 400,
-            });
-        }
-
-        // Detect bad JSON parsing by returning null.
-        const pushBody = (await request
-            .json()
-            .catch(() => null)) as PushRequestV1;
-
-        if (pushBody === null) {
-            return new Response('JSON parse failure', {
-                status: 400,
-                statusText: 'Bad Request',
-                headers: corsHeaders,
-            });
-        }
-
-        return this.handleMutations(pushBody);
     }
 
     /**
@@ -512,7 +658,7 @@ export class DjibbList {
      * is to begin terminating request within the Durable Object. It has
      * the effect of "accepting" the connection, and allowing the
      * WebSocket to send and receive messages. Unlike `ws.accept()`,
-     * `state.acceptWebSocket(ws)` informs the Workers Runtime that the
+     * `ctx.acceptWebSocket(ws)` informs the Workers Runtime that the
      * WebSocket is "hibernatable", so the runtime does not need to pin
      * this Durable Object to memory while the connection is open. During
      * periods of inactivity, the Durable Object can be evicted from
@@ -522,66 +668,83 @@ export class DjibbList {
      * the message to the appropriate handler.
      * @see https://developers.cloudflare.com/durable-objects/examples/websocket-hibernation-server/
      */
-    async handleWebsocket(request: Request) {
-        // Expect to receive a WebSocket Upgrade request.
-        // If there is one, accept the request and return a
-        // WebSocket Response.
-        const upgradeHeader = request.headers.get('Upgrade');
-        if (!upgradeHeader || upgradeHeader !== 'websocket') {
+    public async handleWebSocket(request: Request): Promise<Response> {
+        // Requests to the websocket endpoint should be an "upgrade"
+        // request. Check for the corresponding header.
+        const headerUpgrade = request.headers.get('Upgrade');
+        if (headerUpgrade !== 'websocket') {
+            console.log('missing websocket upgrade header!');
+
             return new Response(
                 'Expected request header `Upgrade: websocket`.',
-                {
-                    status: 426,
-                }
+                { status: 426 }
             );
         }
 
-        // Creates two ends of a WebSocket connection.
+        // Get the client's security key, which is an important part of
+        // the WebSocket handshake.
+        const headerSecWebSocketKey = request.headers
+            .get('Sec-WebSocket-Key')
+            ?.trim();
+
+        // Prevent abuse by giving us a SUPER long key to process.
+        // I think the general key length is 24.
+        const MAX_LENGTH_SEC_KEY = 30;
+
+        if (
+            !headerSecWebSocketKey ||
+            headerSecWebSocketKey.length > MAX_LENGTH_SEC_KEY
+        ) {
+            return new Response(
+                'Expected request header `Sec-WebSocket-Key`.',
+                { status: 400 }
+            );
+        }
+
+        // The Websocket standard requires that the WebSocket server
+        // jump through some security hoops to help ensure that the
+        // client has made a request to a good WebSocket server, which
+        // would of course have the below GUID, and know to append that
+        // GUID to the request's `Sec-WebSocket-Key` header.
+        //
+        // It seems this part of the handshake helps prevent cached
+        // responses to a WebSocket request, while also demonstrating
+        // that the server knows a thing or two about WebSockets.
+        const WEB_SOCKET_SECURITY_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+
+        // Concatenate the request's key with the GUID, then encode it
+        // for hashing (also called calculating a "digest").
+        const combinedKeyEncoded = new TextEncoder().encode(
+            headerSecWebSocketKey + WEB_SOCKET_SECURITY_GUID
+        );
+
+        const hashedBuffer = await crypto.subtle.digest(
+            'SHA-1',
+            combinedKeyEncoded
+        );
+
+        // Convert the Array Buffer to a Base64-encoded string.
+        // https://stackoverflow.com/questions/9267899/arraybuffer-to-base64-encoded-string
+        let binary = '';
+        const bytes = new Uint8Array(hashedBuffer);
+        for (const byte of bytes) {
+            binary += String.fromCharCode(byte);
+        }
+        const wsAcceptKey = btoa(binary);
+
+        // Create the two ends of a WebSocket connection.
         const webSocketPair = new WebSocketPair();
         const [client, server] = Object.values(webSocketPair);
 
-        this.state.acceptWebSocket(server);
+        this.ctx.acceptWebSocket(server);
 
         return new Response(null, {
+            headers: {
+                'Sec-WebSocket-Accept': wsAcceptKey,
+            },
             status: 101,
             webSocket: client,
         });
-    }
-
-    /**
-	 * ON URLS
-	 *
-	 * I devised this shit with the idea that the frontend URL could
-	 * have an optional slug in the path. I still like that idea,
-	 * however it's a frontend problem/feature, and this is the
-	 * backend.
-	 *
-	 * Consider removing the slug stuff.
-	 *
-	 * Consider using search params
-	 * 		e.g. pushURL = `/api/replicache-push?spaceID=${spaceID}`
-	 * See this example repo from Replicache:
-	 * @see https://github.com/rocicorp/repliear/blob/main/pages/d/%5Bid%5D.tsx
-	 * 
-	 * Testing stuff:
-	 * const tests = [
-			'here-is-my-test-slug-HbqpIK7Naaf3OXRSE8s8j',
-			'ts5V_Qj_Qa0CiYeu5d511/pull',
-			'sWlenzH9X1mfzAnDXzQjP/push',
-			'YKsuhktMpYUiLkeGbptOP',
-		];
-
-		const result = {};
-		for (const test of tests) {
-			result[test] = this.parseURL(`https://djibb.com/list/${test}`);
-		}
-	 */
-    static parseURL(url: string) {
-        const pattern = new URLPattern({
-            pathname: `/list/{:${URL_SEGMENT_SLUG}}?:${URL_SEGMENT_LIST_ID}(\\w{${LIST_ID_LENGTH}})/:${URL_SEGMENT_ACTION}?`,
-        });
-
-        return pattern.exec(url)?.pathname;
     }
 
     /**
@@ -589,7 +752,7 @@ export class DjibbList {
      * their Replicache should Pull.
      */
     poke() {
-        const websockets = this.state.getWebSockets();
+        const websockets = this.ctx.getWebSockets();
         console.log('`poke()` running! Websocket count:', websockets.length);
 
         for (const ws of websockets) {
@@ -616,15 +779,5 @@ export class DjibbList {
 
     webSocketError(ws: WebSocket, error: any) {
         console.error('`webSocketError()` running! error:', error);
-    }
-
-    /**
-     * `webSocketMessage` is fired when the Websocket client sends a
-     * message.
-     */
-    async webSocketMessage(ws: WebSocket, message: ArrayBuffer | string) {
-        // Respond to any incoming message with the same message
-        // plus the prefix "[Durable Object]: ".
-        ws.send(`[Durable Object]: ${message}`);
     }
 }

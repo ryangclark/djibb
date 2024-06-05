@@ -13,12 +13,12 @@ export function initializeLucia(D1: D1Database) {
         getSessionAttributes(databaseSessionAttributes) {
             return {
                 // Not sure yet how this will work if the db column is empty/null.
-                account_ids: JSON.parse(databaseSessionAttributes.account_ids),
-                active_account_id: databaseSessionAttributes.active_account_id,
+                accountIds: JSON.parse(databaseSessionAttributes.account_ids),
+                activeAccountId: databaseSessionAttributes.active_account_id,
                 // Not sure if I should make this a `new Date()` or just leave it.
-                created_at: databaseSessionAttributes.created_at,
-                expires_at: databaseSessionAttributes.expires_at,
-                ip_country: databaseSessionAttributes.ip_country,
+                createdAt: databaseSessionAttributes.created_at,
+                expiresAt: databaseSessionAttributes.expires_at,
+                ipCountry: databaseSessionAttributes.ip_country,
             };
         },
     });

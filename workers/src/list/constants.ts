@@ -5,12 +5,13 @@
 export const LIST_ID_LENGTH = 21;
 
 export const LIST_ELEMENT_TYPES = {
-	GROUP: 'group',
-	ITEM: 'item',
-	LIST: 'list',
+    GROUP: 'group',
+    ITEM: 'item',
+    LIST: 'list',
 };
 
 export const REF_LIST = '_this';
+export const REF_LIST_AUTH_RULES = '_auth_rules';
 
 export const URL_SEGMENT_ACTION = 'action';
 export const URL_SEGMENT_LIST_ID = 'listId';
