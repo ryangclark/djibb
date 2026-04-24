@@ -17,7 +17,6 @@
         "wrangler": "^4.19.1"
     },
     "dependencies": {
-        "@lucia-auth/adapter-sqlite": "^3.0.1",
         "@simplewebauthn/server": "^13.3.0",
         "arctic": "^3.7.0",
         "cookie": "^1.1.1",

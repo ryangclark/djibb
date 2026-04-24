@@ -114,15 +114,10 @@ export class DjibbList extends DurableObject {
 
         // Not sure if this is necessary, really.
         if (list?.type !== 'list') {
-            // this.dropTables();
             console.log('bad list:', list);
-
-            // let parseResult;
 
             throw new NotFoundError(`list not found: ${listId}`);
         }
-
-        // this.dropTables();
 
         return list;
     }
@@ -233,8 +228,6 @@ export class DjibbList extends DurableObject {
             }
 
             console.error('`getChangedElements()` error:', error);
-
-            // this.dropTables()
 
             throw new UnexpectedError();
         }
@@ -351,45 +344,6 @@ export class DjibbList extends DurableObject {
         // });
 
         return pullResponse;
-    }
-
-    // TODO: remove this
-    dropTables() {
-        console.log('DROPPING TABLES!');
-        try {
-            this.sql.exec(
-                `DROP TABLE IF EXISTS list_elements;
-                DROP TABLE IF EXISTS mutations;
-                DROP TABLE IF EXISTS kv;
-                DROP TABLE IF EXISTS accounts;
-                -- DROP TABLE IF EXISTS replicache_client_groups;
-                -- DROP TABLE IF EXISTS replicache_clients;`
-            );
-        } catch (error) {
-            if (
-                error?.toString() ===
-                'Error: SQL code did not contain a statement.'
-            ) {
-                // no-op
-            } else {
-                throw error;
-            }
-        }
-
-        try {
-            console.log('_INITIALIZE_TABLES after dropping them');
-
-            InitializeTables(this.sql);
-        } catch (error) {
-            if (error instanceof TablesAlreadyInitializedError) {
-                // Expected error if we're already initialized.
-                // But we're not already initialized? We just dropped...
-                console.log('umm initialize error?', error);
-            } else {
-                console.error('Unexpected error initializing tables:', error);
-                throw error;
-            }
-        }
     }
 
     /**
