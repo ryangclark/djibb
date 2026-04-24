@@ -192,7 +192,7 @@ export function DeleteSession(d1: D1Database, sessionId: string) {
 export async function GetSessionById(
     d1: D1Database,
     sessionId: string
-): Promise<Session> {
+): Promise<Session | null> {
     let queryResults;
 
     try {
@@ -230,6 +230,10 @@ export async function GetSessionById(
             error?.message || error
         );
         throw new UnexpectedError();
+    }
+
+    if (!queryResults.results.length) {
+        return null;
     }
 
     // Process query results.
