@@ -10,3 +10,13 @@
 		<div style="display: contents">%sveltekit.body%</div>
 	</body>
 </html>
+
+<style>
+	body {
+		min-height: 100svh;
+
+		display: grid;
+		grid-template-areas: 'nav' 'main' 'footer';
+		grid-template-rows: auto 1fr auto;
+	}
+</style>

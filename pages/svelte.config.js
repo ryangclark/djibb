@@ -9,7 +9,7 @@ const config = {
 			$djibb: '../workers/src'
 		}
 	},
-	preprocess: vitePreprocess()
+	preprocess: [vitePreprocess()]
 };
 
 export default config;

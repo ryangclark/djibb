@@ -1,6 +1,7 @@
 name = "wandering-snowflake-2716"
 main = "src/index.ts"
-compatibility_date = "2024-05-24"
+compatibility_date = "2025-04-04"
+compatibility_flags = [ "nodejs_compat" ]
 
 #kv_namespaces = [
   # namespace = "djibb_auth_dev"
@@ -22,5 +23,5 @@ bindings = [
 # Durable Object migrations.
 # Docs: https://developers.cloudflare.com/workers/learning/using-durable-objects#configure-durable-object-classes-with-migrations
 [[migrations]]
-tag = "v1"
-new_classes = ["MyDurableObject"]
+tag = "20241001"
+new_sqlite_classes = ["DjibbList"]

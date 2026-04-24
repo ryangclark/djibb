@@ -8,7 +8,7 @@
  * runs the Worker that runs the DO first, then runs the SvelteKit app.
  */
 
-import { fork, execSync } from 'node:child_process';
+import { fork, spawn } from 'node:child_process';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'url';
 
@@ -31,6 +31,12 @@ const wranglerDevProcess = fork(
     // Navigate to the file where we can invoke `wrangler` programmatially.
     join(
         __dirname,
+        /**
+         * Toggle 'workers' below if you get a weird error running `npm start`,
+         * especially after changing any dependencies, because npm 
+         * likes to move where it stores node_modules.
+         */
+        // 'workers', 
         'node_modules',
         'wrangler',
         'bin',
@@ -41,31 +47,57 @@ const wranglerDevProcess = fork(
     // Options. No idea what these are all about.
     {
         cwd: resolve(__dirname, 'workers'),
-        env: { BROWSER: 'none', ...process.env },
+        env: {
+            BROWSER: 'none',
+            PWD: resolve(__dirname, 'workers'),
+            ...process.env,
+        },
         signal,
         stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     }
-).on('message', () => {
+);
+
+wranglerDevProcess.on('message', () => {
     wranglerDevResolve();
 });
 
 wranglerDevProcess.on('error', error => {
-    controller.abort();
     console.error('wranglerDevProcess:', error);
+    terminateProcesses();
 });
 
 wranglerDevProcess.on('SIGINT', () => {
-    controller.abort();
-    wranglerDevProcess.exit();
+    terminateProcesses();
 });
 
 wranglerDevProcess.on('SIGTERM', () => {
-    wranglerDevProcess.exit();
+    terminateProcesses();
 });
 
 await wranglerDevPromise;
 
-execSync('npm run dev', {
+const svelteKitProcess = spawn('npm', ['run', 'dev'], {
     cwd: resolve(__dirname, 'pages'),
+    env: { PWD: resolve(__dirname, 'pages'), ...process.env },
+    signal,
     stdio: 'inherit',
 });
+
+svelteKitProcess.on('error', error => {
+    console.error('svelteKitProcess:', error);
+    terminateProcesses();
+});
+
+svelteKitProcess.on('exit', () => {
+    terminateProcesses();
+});
+
+function terminateProcesses() {
+    if (wranglerDevProcess) {
+        wranglerDevProcess.kill();
+    }
+    if (svelteKitProcess) {
+        svelteKitProcess.kill();
+    }
+    process.exit();
+}

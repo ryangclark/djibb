@@ -5,6 +5,7 @@ node_modules
 /pages/package
 /workers/.wrangler
 /workers/.dev.vars
+/pages/.wrangler
 .env
 .env.*
 !.env.example
