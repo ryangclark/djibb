@@ -1,0 +1,923 @@
+import { DurableObject } from 'cloudflare:workers';
+import { MutationV1, PullResponseOKV1, PushRequestV1 } from 'replicache';
+
+import { ReplicachePullRequest } from '../replicache';
+import { List, ListElement } from './index';
+import {
+    DEFAULT_LIST_AUTHORIZATION_RULES,
+    DEFAULT_LIST_TITLE,
+    Mutation,
+    MutationArgs,
+    MutationSchema,
+    ServerMutators,
+} from './mutators';
+
+import { AuthorizationRole, AuthorizationRules } from '../auth/rules';
+import { WS_MESSAGE_PULL_PLS, WS_STATE } from '../websocket/constants';
+import { Bindings } from '..';
+import {
+    BadMutationError,
+    DjibbError,
+    NotFoundError,
+    ParseError,
+    SerializedDjibbError,
+    TablesAlreadyInitializedError,
+    UnauthorizedError,
+    UnexpectedError,
+    ValidationError,
+} from '../errors';
+import {
+    getAuthorizationRules,
+    getChangedElements,
+    getElementById,
+    getListVersion,
+    getReplicacheClientGroupById,
+    InitializeTables,
+    setListVersion,
+    setMutation,
+    setReplicacheClientGroup,
+} from './sql';
+import { initListArgsSchema } from './mutators/client';
+
+import { Account } from '../account';
+import { Result, tryCatch } from '../utils/trycatch';
+
+/**
+ * TODO:
+ * [] update to SQL - Look for `this.ctx.storage.get` and similar method calls.
+ * [] top-level handlers should not throw
+ */
+
+export class DjibbList extends DurableObject {
+    id: DurableObjectId;
+    sql: SqlStorage;
+
+    constructor(ctx: DurableObjectState, env: Bindings) {
+        super(ctx, env);
+
+        this.sql = ctx.storage.sql;
+
+        // env.DJIBB_AUTH.prepare
+
+        this.id = ctx.id;
+        // console.log(this.id); // cd62f1a5a8e61d6c7594a12bfcbdbc77ad6dae0a73ca3b5f22bdb4e14c9879cf
+
+        // Can we pull the ID from the request?
+        // You literally can't get it from ctx.id.name within the DO, it's on their roadmap to implement...
+        // Throw an error if the initialize request doesn't have an ID we can reliably get...
+        // this
+
+        // if (!this.id.name) {
+        //     throw new UnexpectedError('invalid `ctx.id.name`!');
+        // }
+
+        // `blockConcurrencyWhile()` ensures no requests are delivered until
+        // initialization completes.
+        // We need the tables initialized to handle core operations.
+        ctx.blockConcurrencyWhile(() => {
+            console.log('BEGIN BLOCK_CONCURRENCY_WHILE_INITIALIZE_TABLES');
+            try {
+                InitializeTables(this.sql);
+            } catch (error) {
+                if (error instanceof TablesAlreadyInitializedError) {
+                    // Expected error if we're already initialized.
+                } else {
+                    console.error(
+                        'Unexpected error initializing tables:',
+                        error
+                    );
+
+                    // Throwing is severe in a Durable Object, requiring
+                    // a Worker to recreate the DO stub to use it again.
+                    //
+                    // But, I guess you do need to throw here.
+                    throw error;
+                }
+            }
+
+            console.log('END BLOCK_CONCURRENCY_WHILE_INITIALIZE_TABLES');
+
+            return Promise.resolve();
+        });
+    }
+
+    getAuthorizationRules(): AuthorizationRules {
+        return getAuthorizationRules(this.sql);
+    }
+
+    getList(args: { listId: string }): Result<List, SerializedDjibbError> {
+        return tryCatch(() => this._getList(args));
+    }
+
+    _getList({ listId }: { listId: string }) {
+        const list = getElementById(this.sql, listId);
+
+        // Not sure if this is necessary, really.
+        if (list?.type !== 'list') {
+            // this.dropTables();
+            console.log('bad list:', list);
+
+            // let parseResult;
+
+            throw new NotFoundError(`list not found: ${listId}`);
+        }
+
+        // this.dropTables();
+
+        return list;
+    }
+
+    handleInitList(listId: string, pushRequest: PushRequestV1) {
+        // We haven't initialized yet, so there are no tables.
+        // We have the initList as our first mutation, so we just
+        // do the server/authoritative version of things immediately
+        // because subsequent queries will need SQL tables created.
+        const parseResult = initListArgsSchema.safeParse(
+            pushRequest.mutations[0]?.args
+        );
+
+        if (!parseResult.success) {
+            console.log(
+                `\`handlePush()\` initListArgs parseError:`,
+                parseResult.error.format()
+            );
+            // Need to skip the mutation somehow
+            throw new ParseError();
+        }
+
+        const initListArgs = parseResult.data;
+
+        if (initListArgs.listId !== listId) {
+            console.log(
+                `\`handlePush()\` initialization error: initListArgs.listId "${initListArgs.listId}" !== listId! "${listId}"`
+            );
+            throw new ValidationError();
+        }
+
+        let authorizationRules = DEFAULT_LIST_AUTHORIZATION_RULES;
+
+        if (initListArgs.accountId) {
+            authorizationRules = {
+                authorized_accounts: {
+                    [initListArgs.accountId]: { role: 'owner' },
+                },
+                default_role: 'restricted',
+                set_by: 'user',
+            };
+        }
+
+        const list = {
+            authorization_rules: authorizationRules,
+            child_element_refs: [],
+            type: 'list' as const,
+            id: initListArgs.listId,
+            name: DEFAULT_LIST_TITLE,
+            time_created: initListArgs.timestamp_client,
+            time_deleted: null,
+            time_updated: initListArgs.timestamp_client,
+            version: 0,
+            workspace_id: initListArgs.workspaceId,
+        };
+
+        return list;
+    }
+
+    /**
+     * Handles Pull requests by evaluating where the requesting client
+     * stands (what data does it have?), and creating a patch of changes
+     * to get it up to date with the Server's state.
+     */
+    public handlePull(args: {
+        authorizedRole: AuthorizationRole;
+        listId: string;
+        pullRequest: ReplicachePullRequest;
+    }): Result<PullResponseOKV1, SerializedDjibbError> {
+        return tryCatch(() => this._handlePull(args));
+    }
+
+    private _handlePull({
+        authorizedRole,
+        listId,
+        pullRequest,
+    }: {
+        authorizedRole: AuthorizationRole;
+        listId: string;
+        pullRequest: ReplicachePullRequest;
+    }): PullResponseOKV1 {
+        // @TODO: this is a very basic authorization check.
+        // Please flesh out into legit checks, as needed.
+        if (authorizedRole === 'restricted') {
+            throw new UnauthorizedError();
+        }
+
+        const requestVersion = pullRequest.cookie ?? 0;
+
+        let listElements: Array<ListElement>;
+
+        // Init our response with default property values.
+        const pullResponse: PullResponseOKV1 = {
+            cookie: -1, // Indicates bad version
+            lastMutationIDChanges: {},
+            patch: [],
+        };
+
+        try {
+            listElements = getChangedElements(this.sql, requestVersion);
+        } catch (error) {
+            if (
+                error
+                    ?.toString()
+                    .startsWith('Error: no such table: list_elements')
+            ) {
+                return pullResponse;
+            }
+
+            console.error('`getChangedElements()` error:', error);
+
+            // this.dropTables()
+
+            throw new UnexpectedError();
+        }
+
+        // Look up the Client Group for the request's `clientGroupID` value.
+        // Then, loop through the Group's Clients to pull the
+        // `lastMutationID` for each.
+        // Replicache needs that info to confirm which mutations have
+        // been canonicalized on the server.
+        let replicacheClientGroup = getReplicacheClientGroupById(
+            this.sql,
+            pullRequest.clientGroupID
+        );
+
+        if (!replicacheClientGroup) {
+            console.log(
+                `\`handlePull()\` ReplicacheClientGroup not found for ID "${pullRequest.clientGroupID}"`
+            );
+
+            replicacheClientGroup = {
+                accountId: null, // TODO: do we have an account ID?
+                clients: [],
+                id: pullRequest.clientGroupID,
+            };
+        }
+
+        // Loop through the Clients in the ClientGroup. If a client's
+        // `lastModifiedVersion` is greater than the `requestVersion`,
+        // then we'll include that Client's last Mutation ID in the
+        // Pull Response. That allows Replicache to know where that
+        // client stands in comparison to the Server's authoritative
+        // state.
+        for (const client of replicacheClientGroup.clients) {
+            if (client.lastModifiedVersion > requestVersion) {
+                pullResponse.lastMutationIDChanges[client.id] =
+                    client.lastMutationId;
+            }
+        }
+
+        // Set the response's `cookie` value, which is the List's version.
+        // Find the Version by looping through the List Elements, looking
+        // for the List Itself. If not among the updated element, pull
+        // the list directly.
+        let foundListVersion = false;
+        if (listElements.length > 0) {
+            for (const element of listElements) {
+                if (element.type === 'list') {
+                    foundListVersion = true;
+                    pullResponse.cookie = element.version;
+                    break;
+                }
+            }
+        }
+
+        if (!foundListVersion) {
+            // Pull the List Itself.
+            // TODO: update to `this.list`?
+            const list = getElementById(this.sql, listId);
+
+            if (list?.type !== 'list') {
+                // console.log('bad list:', list);
+
+                throw new NotFoundError(`list not found: ${listId}`);
+            }
+            if (list) {
+                pullResponse.cookie = list.version;
+            }
+        }
+
+        if (requestVersion === 0) {
+            // Initialize a fresh client by adding a "clear" action as our
+            // first patch. That will clear the Replicache client, so we
+            // start from scratch. (Not sure this is entirely necessary...)
+            pullResponse.patch.push({
+                op: 'clear',
+            });
+        }
+
+        for (const element of listElements) {
+            const key = element.id;
+
+            if (element.time_deleted) {
+                // Don't add a "del" operation to the list if we're
+                // building a "from scratch" patch, because you only
+                // need to delete things if you already have them.
+                if (requestVersion === 0) continue;
+
+                pullResponse.patch.push({
+                    key,
+                    op: 'del',
+                });
+            } else {
+                pullResponse.patch.push({
+                    key,
+                    op: 'put',
+                    value: {
+                        ...element,
+                        time_created: element.time_created.toISOString(),
+                        time_deleted: null,
+                        time_updated: element.time_updated.toISOString(),
+                    },
+                });
+            }
+        }
+
+        console.log(
+            `Patch count to get from v${requestVersion} to v${pullResponse.cookie}:`,
+            pullResponse.patch.length
+        );
+
+        // return new Response(JSON.stringify(pullResponse), {
+        //     status: 200,
+        //     headers: { 'Content-Type': 'application/json' },
+        // });
+
+        return pullResponse;
+    }
+
+    // TODO: remove this
+    dropTables() {
+        console.log('DROPPING TABLES!');
+        try {
+            this.sql.exec(
+                `DROP TABLE IF EXISTS list_elements;
+                DROP TABLE IF EXISTS mutations;
+                DROP TABLE IF EXISTS kv;
+                DROP TABLE IF EXISTS accounts;
+                -- DROP TABLE IF EXISTS replicache_client_groups;
+                -- DROP TABLE IF EXISTS replicache_clients;`
+            );
+        } catch (error) {
+            if (
+                error?.toString() ===
+                'Error: SQL code did not contain a statement.'
+            ) {
+                // no-op
+            } else {
+                throw error;
+            }
+        }
+
+        try {
+            console.log('_INITIALIZE_TABLES after dropping them');
+
+            InitializeTables(this.sql);
+        } catch (error) {
+            if (error instanceof TablesAlreadyInitializedError) {
+                // Expected error if we're already initialized.
+                // But we're not already initialized? We just dropped...
+                console.log('umm initialize error?', error);
+            } else {
+                console.error('Unexpected error initializing tables:', error);
+                throw error;
+            }
+        }
+    }
+
+    /**
+     * Handles a Push request from Replicache by evaluating each of
+     * the request's mutations.
+     */
+    public handlePush(args: {
+        authorizedAccounts: Readonly<Account[]>;
+        authorizedRole: AuthorizationRole;
+        listId: string;
+        pushRequest: PushRequestV1;
+    }) {
+        return tryCatch(() => this._handlePush(args));
+    }
+
+    public _handlePush({
+        authorizedAccounts,
+        authorizedRole,
+        listId,
+        pushRequest,
+    }: {
+        authorizedAccounts: Readonly<Account[]>;
+        authorizedRole: AuthorizationRole;
+        listId: string;
+        pushRequest: PushRequestV1;
+    }) {
+        // TODO: auth check?
+        // console.log('args:', arguments);
+
+        // let list: List;
+
+        // try {
+        //     // HMM instead we just need the next_mutation_id
+        //     // so can we just pull that from the mutations table?
+        //     const element = getElementById(this.sql, listId);
+
+        //     if (element?.type === 'list') {
+        //         list = element;
+        //         console.log('`handlePush()` we got a list:', list);
+        //     } else {
+        //         // TODO: remove log
+        //         console.log('WE HAVE NO LIST?!');
+
+        //         // this.dropTables();
+
+        //         throw new UnexpectedError();
+        //     }
+        // } catch (error) {
+        //     // Tables are now initialized in the constructor
+        //     // if (
+        //     //     error?.toString() ===
+        //     //         'Error: no such table: list_elements: SQLITE_ERROR' &&
+        //     //     pushRequest.mutations.length > 0 &&
+        //     //     pushRequest.mutations[0].id === 1 &&
+        //     //     pushRequest.mutations[0].name === 'initList'
+        //     // ) {
+        //     //     list = this.handleInitList(listId, pushRequest);
+        //     // } else
+        //     if (error instanceof BadMutationError) {
+        //         // TODO: figure out what led us to here, and what needs doing about it.
+        //         // Probably need to skip this mutation...? hmm
+        //         this.dropTables();
+        //         throw error;
+        //     } else if (error instanceof DjibbError) {
+        //         throw error;
+        //     } else {
+        //         console.log('unhandled error getting the List itself:', error);
+        //         throw error;
+        //     }
+        // }
+
+        let listVersion = getListVersion(this.sql);
+
+        let replicacheClientGroup;
+        try {
+            replicacheClientGroup = getReplicacheClientGroupById(
+                this.sql,
+                pushRequest.clientGroupID
+            );
+        } catch (error) {
+            // TODO: update the logic below, probably dont need it?
+            // if (
+            //     error?.toString() ===
+            //     'Error: no such table: replicache_client_groups: SQLITE_ERROR'
+            // ) {
+            //     this.dropTables();
+            // }
+            console.log(
+                `\`handlePush()\` unexpected error getting replicacheClientGroup "${pushRequest.clientGroupID}":`,
+                error
+            );
+
+            throw new UnexpectedError();
+        }
+
+        if (!replicacheClientGroup) {
+            console.log(
+                `\`handlePush()\` no Client Group found for ID "${pushRequest.clientGroupID}"`
+            );
+
+            replicacheClientGroup = {
+                accountId: null,
+                clients: [],
+                id: pushRequest.clientGroupID,
+            };
+        }
+
+        console.log(
+            `begin processing ${pushRequest.mutations.length} mutations`
+        );
+
+        for (let i = 0; i < pushRequest.mutations.length; i++) {
+            const mutation = pushRequest.mutations[i];
+
+            // Could move the parsing from handleMutation up to here, but...
+            if (!mutation) throw new BadMutationError();
+
+            console.log(
+                `processing mutation #${i + 1}: ${mutation.name} next mutation: ${pushRequest.mutations?.[i + 1]?.name || 'NULL'}`
+            );
+
+            // Pull the ReplicacheClient for this mutation's Client ID.
+            // Initialize it, if needed. We'll persist it later.
+            let replicacheClient = replicacheClientGroup.clients.find(
+                client => client.id === mutation.clientID
+            );
+
+            if (!replicacheClient) {
+                console.log(
+                    `\`handlePush()\` ReplicacheClient not found for "${mutation.clientID}". Initializing! (btw, mutation.id is ${mutation.id}.)`
+                );
+
+                replicacheClient = {
+                    id: mutation.clientID,
+                    // Default to 0. I think that should be fine... There's a
+                    // possibility we should default to the `mutation.id`, but
+                    // I don't know enough. Leave it like this for now.
+                    lastMutationId: 0,
+                    lastModifiedVersion: 0,
+                };
+
+                // Should we set `replicacheClient` into `replicacheClientGroup.clients` here...?
+                replicacheClientGroup.clients.push(replicacheClient);
+            }
+
+            // Each mutation is created by a ReplicacheClient. We want
+            // to ensure we process each mutation in order, just like
+            // they happened on the Client. Replicache helps us do
+            // just that by assigning each Mutation an ID on the frontend.
+            // The ID is a number that is incremented for each Mutation,
+            // just like an auto-increment column in SQL.
+            //
+            // On the backend, we track the last Mutation ID each
+            // ReplicacheClient we've processed. That way, we can check
+            // that each Mutation we're about to process is the right
+            // one, and not one out of order. Move in sync!
+            //
+            // Calculate the expected Mutation ID for this Client by
+            // simply adding 1 to the last known ID.
+            const expectedMutationId = replicacheClient.lastMutationId + 1;
+
+            // `nextVersion` is the list version that this mutation
+            // will produce if it succeeds. It's independent of the
+            // per-client mutation ID.
+            const nextVersion = listVersion + 1;
+
+            const { ackedMutationId, didMutate } = this.handleMutation(
+                authorizedAccounts,
+                authorizedRole,
+                expectedMutationId,
+                mutation,
+                nextVersion
+            );
+
+            if (didMutate) {
+                listVersion = nextVersion;
+            }
+            if (ackedMutationId !== null) {
+                replicacheClient.lastMutationId = ackedMutationId;
+                replicacheClient.lastModifiedVersion = listVersion;
+            }
+            console.log({ ackedMutationId, didMutate, listVersion });
+        }
+
+        // Save the Replicache Client Group.
+        setReplicacheClientGroup(this.sql, replicacheClientGroup);
+
+        setListVersion(this.sql, listVersion);
+
+        this.poke();
+
+        // Replicache: the response body to the push endpoint is
+        // ignored.
+        // return Promise.resolve();
+    }
+
+    /**
+     * This must handle its own errors, because we will skip any failed
+     * mutations yet log them still, otherwise Replicache will continue
+     * to send the mutation.
+     */
+    handleMutation(
+        authorizedAccounts: Readonly<Account[]>,
+        authorizedRole: AuthorizationRole,
+        expectedMutationId: number,
+        mutation: MutationV1,
+        nextVersion: number
+    ): { ackedMutationId: number | null; didMutate: boolean } {
+        let mutationStatus: Mutation['status'] = 'unknown';
+        // let nextMutationId = expectedMutationId + 1;
+        let parsedMutation: Mutation;
+
+        try {
+            // Check the Mutation's ID matches the Expected ID.
+            if (expectedMutationId !== mutation.id) {
+                if (expectedMutationId > mutation.id) {
+                    // This mutation is from the past. We assume we've
+                    // already handled it and skip.
+                    console.log(
+                        `Mutation from the past! Expected "${expectedMutationId}" Got "${mutation.id}"`
+                    );
+
+                    // this.dropTables();
+                } else if (mutation.id > expectedMutationId) {
+                    // This mutation is from the future! That's bad.
+                    console.log(
+                        `Mutation from the future! Expected "${expectedMutationId}" Got "${mutation.id}"`
+                    );
+                }
+
+                console.log(
+                    '`handlePush()` Mutation did not match expectations:',
+                    {
+                        clientID: mutation.clientID,
+                        mutationID: mutation.id,
+                        expectedMutationId: expectedMutationId,
+                    }
+                );
+                // From-the-past mutations have already been processed;
+                // ack them so Replicache stops resending.
+                // From-the-future mutations are wedged; don't ack.
+                return {
+                    ackedMutationId:
+                        expectedMutationId > mutation.id ? mutation.id : null,
+                    didMutate: false,
+                };
+            }
+
+            const serverMutator = ServerMutators[mutation.name];
+
+            if (!serverMutator) {
+                console.error(
+                    `\`handlePush()\` error: unknown mutator "${mutation.name}"`
+                );
+                // console.log('ServerMutators:', ServerMutators);
+
+                // TODO: we don't want to throw here, so catch any
+                // obvious errors during dev, then remove this throw to
+                // return the next mutation ID to "skip" this bad mutation.
+                // throw new InvalidMutatorError(mutation.name);
+
+                return { ackedMutationId: mutation.id, didMutate: false };
+            }
+
+            const parseResult =
+                MutationSchema.passthrough().safeParse(mutation);
+
+            if (!parseResult.success) {
+                console.log('mutation.args:', mutation.args);
+                console.log(
+                    'bad parse of mutation.args:',
+                    parseResult.error.format()
+                );
+
+                // TODO: we don't want to throw here, so catch any
+                // obvious errors during dev, then remove this throw to
+                // return the next mutation ID to "skip" this bad mutation.
+                // throw new ValidationError();
+
+                return { ackedMutationId: mutation.id, didMutate: false };
+            }
+
+            parsedMutation = parseResult.data;
+
+            // We have an accountId to associate with this mutation.
+            // Verify that the account ID is authorized on the request.
+            // The account ID must be an arg from the mutation to
+            // support offline mutations as well as switching accounts.
+            if (
+                parsedMutation.args.accountId &&
+                !(
+                    authorizedAccounts.length &&
+                    authorizedAccounts.some(account => {
+                        account.id === parsedMutation.args.accountId;
+                    })
+                )
+            ) {
+                // IDK i think we DO want to throw on this?
+                // Maybe change later to skip this mutation by
+                // returning the next expected mutation ID?
+                throw new UnauthorizedError(`${mutation.id} not authorized`);
+            }
+
+            serverMutator(
+                this.sql,
+                authorizedRole,
+                mutation.args,
+                nextVersion
+            );
+            mutationStatus = 'succeeded';
+
+            // setMutation(this.sql, parsedMutation);
+        } catch (error) {
+            console.error(
+                `\`handlePush()\` error executing serverMutator "${mutation.name}":`,
+                error
+            );
+
+            if (error instanceof UnauthorizedError) {
+                // Throw the error again because maybe the user just
+                // needs to authenticate again before trying pushing
+                // the mutation.
+                throw error;
+            } else if (error instanceof DjibbError) {
+                mutationStatus = 'skipped';
+            } else {
+                mutationStatus = 'error'; // doesn't do anything yet, bc of throw
+                throw new UnexpectedError();
+            }
+
+            // TODO: remove this try/catch after testing
+            try {
+                // Do our best to pull the args we can before recording the
+                // skipped mutation. One of the reasons this mutation was
+                // skipped is because of a validation error, so we should
+                // tread somewhat carefully.
+                setMutation(this.sql, {
+                    ...mutation,
+                    args: {
+                        ...(mutation.args && typeof mutation.args === 'object'
+                            ? mutation.args
+                            : {}),
+                        accountId:
+                            (mutation.args as MutationArgs)?.accountId ?? null,
+                        timestamp_client:
+                            (mutation.args as MutationArgs)?.timestamp_client ??
+                            null,
+                    },
+                    status: mutationStatus,
+                });
+            } catch (error) {
+                // console.log(
+                //     'test error str:',
+                //     error?.toString() ===
+                //         'Error: table mutations has no column named status: SQLITE_ERROR'
+                // );
+                // if (
+                //     error?.toString() ===
+                //     'Error: table mutations has no column named status: SQLITE_ERROR'
+                // ) {
+                //     this.dropTables();
+                // } else {
+                // }
+                console.log('bad match. str:', error?.toString());
+            }
+        }
+
+        return {
+            ackedMutationId: mutation.id,
+            didMutate: mutationStatus === 'succeeded',
+        };
+    }
+
+    public fetch(request: Request) {
+        // TODO: not sure this works with the new Hono routing?
+        if (request.method === 'GET' && request.url.includes('websocket')) {
+            return this.handleWebSocket(request);
+        }
+
+        return new Response('invalid Durable Object fetch request', {
+            status: 400,
+        });
+    }
+
+    /**
+     * Handles requests for initiating a websocket connection.
+     *
+     * Calling `acceptWebSocket()` informs the runtime that this WebSocket
+     * is to begin terminating request within the Durable Object. It has
+     * the effect of "accepting" the connection, and allowing the
+     * WebSocket to send and receive messages. Unlike `ws.accept()`,
+     * `ctx.acceptWebSocket(ws)` informs the Workers Runtime that the
+     * WebSocket is "hibernatable", so the runtime does not need to pin
+     * this Durable Object to memory while the connection is open. During
+     * periods of inactivity, the Durable Object can be evicted from
+     * memory, but the WebSocket connection will remain open. If at some
+     * later point the WebSocket receives a message, the runtime will
+     * recreate the Durable Object (run the `constructor`) and deliver
+     * the message to the appropriate handler.
+     * @see https://developers.cloudflare.com/durable-objects/examples/websocket-hibernation-server/
+     */
+    public async handleWebSocket(request: Request): Promise<Response> {
+        // Requests to the websocket endpoint should be an "upgrade"
+        // request. Check for the corresponding header.
+        const headerUpgrade = request.headers.get('Upgrade');
+        if (headerUpgrade !== 'websocket') {
+            console.log('missing websocket upgrade header!');
+
+            return new Response(
+                'Expected request header `Upgrade: websocket`.',
+                { status: 426 }
+            );
+        }
+
+        // Get the client's security key, which is an important part of
+        // the WebSocket handshake.
+        const headerSecWebSocketKey = request.headers
+            .get('Sec-WebSocket-Key')
+            ?.trim();
+
+        // Prevent abuse by giving us a SUPER long key to process.
+        // I think the general key length is 24.
+        const MAX_LENGTH_SEC_KEY = 30;
+
+        if (
+            !headerSecWebSocketKey ||
+            headerSecWebSocketKey.length > MAX_LENGTH_SEC_KEY
+        ) {
+            return new Response(
+                'Expected request header `Sec-WebSocket-Key`.',
+                { status: 400 }
+            );
+        }
+
+        // The Websocket standard requires that the WebSocket server
+        // jump through some security hoops to help ensure that the
+        // client has made a request to a good WebSocket server, which
+        // would of course have the below GUID, and know to append that
+        // GUID to the request's `Sec-WebSocket-Key` header.
+        //
+        // It seems this part of the handshake helps prevent cached
+        // responses to a WebSocket request, while also demonstrating
+        // that the server knows a thing or two about WebSockets.
+        const WEB_SOCKET_SECURITY_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+
+        // Concatenate the request's key with the GUID, then encode it
+        // for hashing (also called calculating a "digest").
+        const combinedKeyEncoded = new TextEncoder().encode(
+            headerSecWebSocketKey + WEB_SOCKET_SECURITY_GUID
+        );
+
+        const hashedBuffer = await crypto.subtle.digest(
+            'SHA-1',
+            combinedKeyEncoded
+        );
+
+        // Convert the Array Buffer to a Base64-encoded string.
+        // https://stackoverflow.com/questions/9267899/arraybuffer-to-base64-encoded-string
+        let binary = '';
+        const bytes = new Uint8Array(hashedBuffer);
+        for (const byte of bytes) {
+            binary += String.fromCharCode(byte);
+        }
+        const wsAcceptKey = btoa(binary);
+
+        // Create the two ends of a WebSocket connection.
+        const webSocketPair = new WebSocketPair();
+        const [client, server] = Object.values(webSocketPair);
+
+        if (!server) {
+            throw new UnexpectedError('bad server from WebSocketPair');
+        }
+
+        this.ctx.acceptWebSocket(server);
+
+        return new Response(null, {
+            headers: {
+                'Sec-WebSocket-Accept': wsAcceptKey,
+            },
+            status: 101,
+            webSocket: client,
+        });
+    }
+
+    /**
+     * Pokes each open websocket client with a message to indicate
+     * their Replicache should Pull.
+     */
+    poke() {
+        const websockets = this.ctx.getWebSockets();
+        console.log('`poke()` running! Websocket count:', websockets.length);
+
+        for (const ws of websockets) {
+            if (ws.readyState === WS_STATE.OPEN) {
+                ws.send(WS_MESSAGE_PULL_PLS);
+            }
+        }
+    }
+
+    /**
+     * Wrangler invokes `webSocketClose` if the client closes the
+     * connection.
+     */
+    async webSocketClose(
+        ws: WebSocket,
+        code: number,
+        reason: string,
+        wasClean: boolean
+    ) {
+        console.log('`webSocketClose()` running!', { code, reason, wasClean });
+
+        ws.close(code, 'Durable Object is closing WebSocket');
+    }
+
+    webSocketError(ws: WebSocket, error: any) {
+        console.error('`webSocketError()` running! error:', error);
+    }
+
+    // private withErrorHandling<T>(fn: () => T) {
+    //     try {
+    //         // const result = fn();
+    //         // return new Response(JSON.stringify(result), {
+    //         //     status: 200,
+    //         //     headers: { 'Content-Type': 'application/json' },
+    //         // });
+    //         return fn();
+    //     } catch (error) {
+    //         return ErrorToResponse(error);
+    //     }
+    // }
+}

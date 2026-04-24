@@ -1,36 +1,25 @@
 import { Replicache } from 'replicache';
 import { dev } from '$app/environment';
-import { mutators } from '../../../../workers/src/list/mutators';
+import { mutators } from '$djibb/list/mutators/client';
 
 /**
  * Initializes the Replicache Client stuff.
  * This is mostly specific for a List instance.
  * We'll have to figure out how we might generalize stuff later.
  *
- * TODO: determine whether userId should be optional. It seems like we
- * could create a fresh ID for a new user using `nanoid`? Will depend
- * how we do user management stuff, because we might have to "merge"
- * users if someone signs in after doing stuff beforehand...?
- *
  * @param {object} input List ID
- * @param {string} input.list_id List ID
- * @param {string} input.user_id User ID
- * For now, the User ID is required, though we might find a workaround for that later.
+ * @param {string | null} input.accountId Account ID
+ * @param {string} input.listId List ID
  */
-export function initList({ list_id, user_id }) {
+export function initList({ accountId, listId }) {
 	/** @type {Object.<string, import('replicache').ReadonlyJSONValue>} */
 	const listData = $state({});
 
-	if (!list_id) {
+	if (!listId) {
 		throw new Error('Missing List Id!');
 	}
 
-	// We may remove this as a requirement later. For now, it is.
-	if (!user_id) {
-		throw new Error('Missing User Id!');
-	}
-
-	const replicacheClient = $state(InitReplicacheClient({ list_id, user_id }));
+	const replicacheClient = InitReplicacheClient({ accountId, listId });
 
 	/**
 	 * Callback function to handle updates to the Replicache store by
@@ -41,16 +30,14 @@ export function initList({ list_id, user_id }) {
 	 * @type {import('replicache').ExperimentalWatchNoIndexCallback}
 	 */
 	function replicacheExperimentalWatchCallback(diffs) {
-		// console.log('diffs', diffs);
 		for (const diff of diffs) {
 			if (diff.op === 'add' || diff.op === 'change') {
-				// console.log(
-				// 	'`repOnData` running! Updating key',
-				// 	diff.key,
-				// 	'to value:',
-				// 	diff.newValue
-				// );
 				listData[diff.key] = diff.newValue;
+			} else {
+				console.warn(
+					'replicacheExperimentalWatchCallback unhandled diff.op:',
+					diff
+				);
 			}
 		}
 	}
@@ -60,10 +47,23 @@ export function initList({ list_id, user_id }) {
 		initialValuesInFirstDiff: true
 	});
 
+	replicacheClient
+		.query((tx) => tx.isEmpty())
+		.then((isEmpty) => {
+			if (isEmpty) {
+				replicacheClient.mutate.initList({
+					accountId,
+					listId,
+					timestamp_client: new Date(),
+					workspaceId: null // TODO: implement workspace
+				});
+			}
+		});
+
+	// Return the Svelte stuff we'll use to interact with
+	// the Replicache client.
 	return {
-		get client() {
-			return replicacheClient;
-		},
+		client: replicacheClient,
 		get list() {
 			return listData;
 		}
@@ -74,12 +74,10 @@ export function initList({ list_id, user_id }) {
  * Initializes the Replicache Client stuff.
  *
  * @param {object} input List ID
- * @param {string} input.list_id List ID
- * @param {string} input.user_id User ID
+ * @param {string | null} input.accountId Account ID
+ * @param {string} input.listId List ID
  */
-export function InitReplicacheClient({ list_id, user_id }) {
-	console.log(`\`init()\` for Replicache running for "${list_id}"!`);
-
+export function InitReplicacheClient({ accountId, listId }) {
 	const licenseKey = import.meta.env.VITE_REPLICACHE_LICENSE_KEY;
 	if (!licenseKey) {
 		throw new Error('Missing VITE_REPLICACHE_LICENSE_KEY');
@@ -92,8 +90,14 @@ export function InitReplicacheClient({ list_id, user_id }) {
 		// logLevel: import.meta.env.DEV ? 'debug' : 'error',
 		mutators: mutators,
 		// Template string to create something like `userId123:listId123`.
-		name: `${user_id}:${list_id}`,
-		pullURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/pull?l=${list_id}`,
-		pushURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/push?l=${list_id}`
+		// If no Account ID, it'll be `null:listId123`.
+		name: `${accountId}:${listId}`,
+		// Event-driven sync: poke via websocket triggers pulls; no polling.
+		// pushDelay: null,
+		// pullInterval: null,
+		pullURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/pull?l=${listId}`,
+		pushURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/push?l=${listId}`,
+		// Bump when stored value shapes change; forces old clients to reset.
+		schemaVersion: '1'
 	});
 }
