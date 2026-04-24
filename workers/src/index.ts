@@ -1,25 +1,51 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { verifyRequestOrigin } from 'lucia';
+import { User, verifyRequestOrigin } from 'lucia';
 
-import { DjibbList, list_app } from './list/fetch';
+import { list_app } from './list/fetch';
+import { AuthorizationRole } from './auth/rules';
+import { Session } from './auth/session';
+import { Auth_App } from './auth/fetch';
+import { DjibbError } from './errors';
+import { DjibbList } from './list/durable_object';
+import { AccountApp } from './account/fetch';
 
 /**
  * Associate bindings declared in wrangler.toml with TypeScript types.
  */
-export type Env = {
+export type Bindings = {
+    API_ORIGIN: string;
     AUTHORIZED_DOMAINS: string;
+    ENV: string;
     DJIBB_AUTH: D1Database;
-    DJIBB_LIST: DurableObjectNamespace;
+    DJIBB_LIST: DurableObjectNamespace<DjibbList>;
+    // DJIBB_WORKSPACE: DurableObjectNamespace<DjibbWorkspace>;
     KV_AUTH: KVNamespace;
+
+    // OAuth
+    OAUTH_GOOGLE_CLIENT_ID: string;
+    OAUTH_GOOGLE_CLIENT_SECRET: string;
 };
+
+export type Variables = {
+    authorized_role: AuthorizationRole;
+    id: DurableObjectId;
+    // lucia: Register['Lucia'];
+    session: Session | null;
+    list: DurableObjectStub<DjibbList>;
+    user: User | null;
+    // workspace: DurableObjectStub<DjibbWorkspace>;
+};
+
+export interface HonoEnv {
+    Bindings: Bindings;
+    Variables: Variables;
+}
 
 // We must export the Durable Object class from `index.ts`.
 export { DjibbList };
 
-const app = new Hono<{
-    Bindings: Env;
-}>();
+const app = new Hono<HonoEnv>();
 
 // Middleware inits.
 app.use(
@@ -53,6 +79,12 @@ app.use(
         // pattern, so that doesn't quite work...
         if (c.req.path.includes('websocket')) return next();
 
+        const originHeader = c.req.header('Origin') || '';
+        const originVerified = verifyRequestOrigin(
+            originHeader,
+            c.env.AUTHORIZED_DOMAINS.split(';')
+        );
+
         // CORS middleware.
         // Note that we have to call this function as the return because
         // we're faking things out here.
@@ -62,16 +94,18 @@ app.use(
                 'Content-Type',
                 'x-replicache-requestid',
             ],
-            origin: '*', // TODO: update this to not a wildcard.
+            credentials: originVerified,
+            origin: originVerified ? originHeader : '*',
         })(c, next);
     },
     // CSRF middleware
     async (c, next) => {
         if (c.req.method === 'GET') {
-            return next();
+            await next();
+            return;
         }
+
         const originHeader = c.req.header('Origin');
-        // NOTE: You may need to use `X-Forwarded-Host` instead
 
         const hostHeader = c.req.header('Host');
         if (
@@ -84,13 +118,26 @@ app.use(
         ) {
             return c.body(null, 403);
         }
-        return next();
+        await next();
     }
 );
 
 // TODO: check if this is the best thing to return here.
-app.get('/', c => c.text('djibb'));
+app.get('/', c => c.text('hello, djibb!'));
 
+app.route('/account', AccountApp);
+app.route('/auth', Auth_App);
 app.route('/list', list_app);
+// TODO: /workspace route re-added when the workspace module lands
+
+app.onError(err => {
+    if (err instanceof DjibbError) {
+        return new Response(err.message || '', { status: err.httpStatusCode });
+    }
+
+    console.error('Unexpected Top-Level Error:', err);
+
+    return new Response('Unexpected Error', { status: 500 });
+});
 
 export default app;

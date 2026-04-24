@@ -1,174 +1,119 @@
-import { serialize } from 'cookie';
-import { nanoid } from 'nanoid';
-import SimpleWebAuthnServer, {
-	generateRegistrationOptions,
-} from '@simplewebauthn/server';
+import { Hono } from 'hono';
+import { setCookie } from 'hono/cookie';
+import { z } from 'zod';
 
-import { Env } from '..';
+import { HonoEnv } from '..';
 import {
-	COOKIE_NAME_SESSION_ID,
-	RELYING_PARTY_ID,
-	RELYING_PARTY_NAME,
+    BaseSessionCookieAttributes,
+    CookieNames,
+    OAUTH_REDIRECT_URI,
 } from './constants';
-import { Authenticator, UserModel } from '.';
-import { SESSION_ID_LENGTH, Session, sessionKey } from './session';
+import { UnauthenticatedError, UnexpectedError } from '../errors';
+import { HandleSession } from './middleware';
+import {
+    handleGetMockSession,
+    handleInitOAuthGoogle,
+    handleVerifyOAuthGoogle,
+} from './oauth';
+import { CreateSession, DeleteSession } from './session';
 
-/** A Durable Object's behavior is defined in an exported Javascript class */
-export class DjibbAuth {
-	private state: DurableObjectState;
+export const Auth_App = new Hono<HonoEnv>();
 
-	/**
-	 * The constructor is invoked once upon creation of the Durable
-	 * Object, i.e. the first call to `DurableObjectStub::get` for a
-	 * given identifier
-	 *
-	 * @param state - The interface for interacting with Durable Object state
-	 * @param env - The interface to reference bindings declared in wrangler.toml
-	 */
-	constructor(state: DurableObjectState, env: Env) {
-		this.state = state;
+Auth_App.use('*', HandleSession);
 
-		console.log('~~~ DjibbAuth Constructor running! ~~~');
-	}
+Auth_App.get('/djibb', handleGetMockSession);
 
-	/**
-	 * The runtime invokes this `fetch` handler when a Worker sends this
-	 * Durable Object a request via an associated stub.
-	 *
-	 * @param request - The request submitted to a Durable Object
-	 * instance from a Worker
-	 * @returns The response to be sent back to the Worker
-	 */
-	fetch(request: Request, env: Env, ctx: ExecutionContext) {
-		return this.handleFetch(request, env, ctx).catch((error) => {
-			console.error('`DjibbAuth` top-level error:', JSON.stringify(error));
-			return new Response(null, { status: 500 });
-		});
-	}
+Auth_App.get('/google', handleInitOAuthGoogle);
+Auth_App.get(OAUTH_REDIRECT_URI.google, handleVerifyOAuthGoogle);
 
-	async handleFetch(
-		request: Request,
-		env: Env,
-		ctx: ExecutionContext
-	): Promise<Response> {
-		const url = new URL(request.url);
+Auth_App.delete('/session/accounts', async c => {
+    let session = c.get('session');
+    if (!session) throw new UnauthenticatedError();
 
-		if (url.pathname === '/new-session') {
-			return this.handleNewSession(request, env);
-		}
-		if (request.url.endsWith('passkey-options') && request.method === 'GET') {
-			return this.handlePasskeyOptions(request);
-		}
+    // Now get the requested Account ID.
+    const requestBody = await c.req.json().catch(error => {
+        console.error(
+            'Handle delete AccountSession error: bad request body. Error:',
+            error
+        );
 
-		return new Response(null, { status: 404 });
-	}
+        return null;
+    });
 
-	async handleNewSession(request: Request, env: Env) {
-		// Prior to creating a new session, we could pause here to
-		// check the request for an existing cookie and, if found,
-		// invalidate it.
+    const parseResult = z
+        .object({ account_id: z.string() })
+        .safeParse(requestBody);
 
-		// Create new Session ID.
-		let sessionId = nanoid(SESSION_ID_LENGTH);
+    if (!parseResult.success) {
+        console.warn(
+            'Handle delete AccountSession warning: bad request data. Error:',
+            parseResult.error.format()
+        );
+        return new Response('invalid request data', { status: 400 });
+    }
 
-		const stored = await env.KV_AUTH.get(sessionKey(sessionId));
-		console.log('sessionId:', sessionId, 'stored:', stored);
+    // Check that the requested Account is tied to the Session.
+    const indexOf = session.accounts.findIndex(
+        account => account.id === parseResult.data.account_id
+    );
 
-		if (stored) {
-			console.log('key collision!', {
-				newSessionId: sessionId,
-				storedValue: stored,
-			});
+    if (indexOf < 0) {
+        console.warn(
+            'Handle delete AccountSession error: requested Account ID "%s" not tied to Session ID "%s".',
+            parseResult.data.account_id,
+            session.id
+        );
 
-			// Try again.
-			sessionId = nanoid(SESSION_ID_LENGTH);
-			const newStored = await env.KV_AUTH.get(sessionKey(sessionId));
+        return new Response('invalid request data', { status: 403 });
+    }
 
-			if (stored) {
-				console.log('SECOND collision!', {
-					newSessionId: sessionId,
-					storedValue: newStored,
-				});
+    // As of now, if you don't have an account, you don't have a session.
+    if (session.accounts.length === 1) {
+        try {
+            const result = await DeleteSession(c.env.DJIBB_AUTH, session.id);
 
-				return new Response(null, { status: 500 });
-			}
-		}
+            if (!result) {
+                // Throwing error here out of caution.
+                throw new UnexpectedError();
+            }
+        } catch (error) {
+            throw new UnexpectedError();
+        }
 
-		// I don't know how to associate the Session ID with a User ID...
-		const sessionValue: Session = { user_id: null };
+        setCookie(c, CookieNames.Session, '', BaseSessionCookieAttributes);
 
-		await env.KV_AUTH.put(sessionId, JSON.stringify(sessionValue));
+        return new Response(null, { status: 204 });
+    }
 
-		const headers = new Headers();
-		headers.append('Set-Cookie', serialize(COOKIE_NAME_SESSION_ID, sessionId));
+    const newAccounts = [...session.accounts];
+    newAccounts.splice(indexOf, 1);
 
-		return new Response(null, { headers, status: 204 });
-	}
+    // TODO: rate-limit this.
 
-	/**
-	 * Handles a request to generate options for the request's user
-	 * (as determined by the request's Session ID) that the user's
-	 * device can use to create a passkey for use with this server.
-	 *
-	 * The user must already be authenticated to generate the options.
-	 * This fact is tricky for registering new users.
-	 */
-	async handlePasskeyOptions(request: Request) {
-		// (Pseudocode) Get the user from the request's Session ID.
-		// TODO: make this!
-		// const user: UserModel = this.getSession(request);
+    try {
+        // Create the session.
+        session = await CreateSession(
+            c.env.DJIBB_AUTH,
+            {
+                accounts: newAccounts,
+                ip_country: c.req.header('CF-IPCountry') || '',
+            },
+            session.id
+        );
+    } catch (error) {
+        throw new UnexpectedError();
+    }
 
-		const user: UserModel = {
-			id: 'i dunno',
-			username: 'test_username',
-		};
+    setCookie(c, CookieNames.Session, session.id, BaseSessionCookieAttributes);
 
-		// Retrieve any of the user's previously-registered
-		// authenticators. We'll send existing authenticators as part
-		// of the returned options so the authenticator will know it
-		// should not re-register using existing ones.
-		const userAuthenticators: Authenticator[] = []; // getUserAuthenticators(user);
+    return c.json(session);
+});
 
-		const options = await generateRegistrationOptions({
-			rpName: RELYING_PARTY_NAME,
-			rpID: RELYING_PARTY_ID,
-			userID: user.id,
-			userName: user.username,
-			// Don't prompt users for additional information about the
-			// authenticator (recommended for smoother UX).
-			attestationType: 'none',
-			// Prevent users from re-registering existing authenticators.
-			excludeCredentials: userAuthenticators.map((authenticator) => ({
-				id: authenticator.credentialID,
-				type: 'public-key',
-				// Optional
-				transports: authenticator.transports,
-			})),
-			// See "Guiding use of authenticators via authenticatorSelection" below
-			authenticatorSelection: {
-				// Defaults
-				residentKey: 'preferred',
-				userVerification: 'preferred',
-				// Optional
-				authenticatorAttachment: 'platform',
-			},
-		});
+Auth_App.get('/session', async c => {
+    const session = c.get('session');
+    if (!session) {
+        throw new UnauthenticatedError();
+    }
 
-		// Remember the challenge for this user. We'll reference it
-		// when accepting the client's registration request to help
-		// ensure the response is from the client we're sending this
-		// response to an impersonator.
-		// TODO: set this up
-		// setUserCurrentChallenge(user, options.challenge);
-		console.log('challenge:', options.challenge);
-		options.user;
-
-		return new Response(JSON.stringify(options));
-	}
-
-	/**
-	 * Handles request from client to register with this server,
-	 * verifying the request and shit.
-	 */
-	async handleRegistrationVerify() {}
-}
+    return c.json(session);
+});

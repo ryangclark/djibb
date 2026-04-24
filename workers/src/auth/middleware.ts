@@ -1,52 +1,40 @@
 import { Context, Next } from 'hono';
-import { getCookie } from 'hono/cookie';
+import { getCookie, setCookie } from 'hono/cookie';
 
-import { initializeLucia } from './lucia';
+import { HonoEnv } from '..';
+import { BaseSessionCookieAttributes, CookieNames } from './constants';
+import { ValidateSession } from './session';
 
 /**
  * Session middleware.
- *
- * This inits Lucia instance for the request, checking the cookie
- * against the DB and pulling any associated session and user data,
- * which it then attaches to the Hono Context for easy access by
- * functions as needed.
- *
- * @see: https://lucia-auth.com/guides/validate-session-cookies/hono
  */
-export async function handle_session(c: Context, next: Next) {
-    // Init Lucia instance using the request's d1 binding.
-    const lucia = initializeLucia(c.env.DJIBB_AUTH);
+export async function HandleSession(c: Context<HonoEnv>, next: Next) {
+    // If `sessionId` is `''`, then we have a blank session cookie.
+    const sessionId = getCookie(c, CookieNames.Session) ?? null;
 
-    // Set `lucia` on the Hono instance so we can access it
-    // anywhere we use Hono via `c.get('lucia')`.
-    c.set('lucia', lucia);
-
-    const sessionId = getCookie(c, lucia.sessionCookieName) ?? null;
     if (!sessionId) {
         c.set('user', null);
         c.set('session', null);
-        return next();
+        await next();
+        return;
     }
 
-    const { session, user } = await lucia.validateSession(sessionId);
+    const session = await ValidateSession(c.env.DJIBB_AUTH, sessionId);
     if (session && session.fresh) {
-        // use `header()` instead of `setCookie()` to avoid TS errors
-        c.header(
-            'Set-Cookie',
-            lucia.createSessionCookie(session.id).serialize(),
-            {
-                append: true,
-            }
+        setCookie(
+            c,
+            CookieNames.Session,
+            session.id,
+            BaseSessionCookieAttributes
         );
     }
 
     if (!session) {
-        c.header('Set-Cookie', lucia.createBlankSessionCookie().serialize(), {
-            append: true,
-        });
+        // Set a blank cookie.
+        setCookie(c, CookieNames.Session, '', BaseSessionCookieAttributes);
     }
 
-    c.set('user', user);
+    // c.set('user', user);
     c.set('session', session);
 
     await next();

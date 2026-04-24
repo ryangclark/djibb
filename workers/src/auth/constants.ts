@@ -1,31 +1,39 @@
-export const COOKIE_NAME_SESSION_ID = 'session_id';
+import { Context } from 'hono';
+import { CookieOptions } from 'hono/utils/cookie';
+import { TimeSpan } from 'lucia';
+import { z } from 'zod';
+import { HonoEnv } from '..';
+
+export const SESSION_EXPIRATION = new TimeSpan(30, 'd');
+
+export const BaseSessionCookieAttributes: CookieOptions = {
+    httpOnly: true,
+    maxAge: SESSION_EXPIRATION.seconds(),
+    // path: '/',
+    sameSite: 'lax',
+    // secure: true, // TODO: check whether this should be changed for Prod
+};
+
+export const CookieNames = {
+    GoogleState: 'google_oauth_state',
+    GoogleCodeVerifier: 'google_oauth_code_verifier',
+    RefererOrigin: 'referer_origin',
+    Session: 'djibb-session',
+};
+
 export const DURABLE_OBJECT_NAME_AUTH = '_djibb_auth';
 
-/**
- * "Relying Party" refers to the website that is trying to ascertain
- * and verify the identity of the user or perform FIDO authentication.
- *
- * Essentially, the Relying Party is this server.
- *
- * The RP is how we'll represent the site to the Authenticator, which
- * is the device providing auth credentials (e.g. a smartphone).
- */
-
-/**
- * Start by defining some constants that describe your "Relying Party"
- * (RP) server to authenticators.
- *
- * These will be referenced throughout registrations and authentications
- * to ensure that authenticators generate and return credentials
- * specifically for your server.
- */
-
-// Human-readable title for the website.
-export const RELYING_PARTY_NAME = 'djibb authentication';
-
-// A unique identifier for your website.
-// I don't know what this should be.
-export const RELYING_PARTY_ID = 'localhost';
-
-// The URL at which registrations and authentications should occur
-// export const origin = `https://${rpID}`;
+// Please ensure these match `OAUTH_PROVIDER` enum!
+export const OAUTH_PROVIDER_PRETTY = {
+    djibb: 'djibb',
+    google: 'Google',
+};
+export const OAUTH_PROVIDER = z.enum(['djibb', 'google']);
+export const OAUTH_REDIRECT_URI = {
+    /** Returns the base API URL for auth,
+     * pulling the URL from an environment variable. */
+    base(c: Context<HonoEnv>) {
+        return `${c.env.API_ORIGIN}/auth`;
+    },
+    google: '/google/verify',
+};
