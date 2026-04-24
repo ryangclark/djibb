@@ -26,7 +26,6 @@ import { Mutation, MutationSchema } from './mutators';
 
 /**
  * TODO:
- * [] ensure this `createElement()` has ~parity with the `setElement()`
  * [] split this file out into files by model (in corresponding directory)
  *      (e.g. /replicache/sql.ts, /mutators/sql.ts? )
  */
@@ -566,8 +565,7 @@ export function setAuthorizationDefaultRole(
 }
 
 // Narrow UPDATE for item value + version bumps. Used by the
-// `setItemQuantity` mutator path; avoids touching the broken
-// `setElement` below.
+// `setItemQuantity` mutator path.
 export function setItemValueAndVersion(
     sql: SqlStorage,
     {
@@ -593,6 +591,36 @@ export function setItemValueAndVersion(
     if (cursor.rowsWritten !== 1) {
         throw new NotFoundError(
             `\`setItemValueAndVersion()\` item "${itemId}" not found (rowsWritten=${cursor.rowsWritten})`
+        );
+    }
+}
+
+// General-purpose item update for the `setItem` mutator. Only touches
+// editable columns — time_created and type are locked at insert time.
+export function updateListItem(sql: SqlStorage, item: ListItem): void {
+    const cursor = sql.exec(
+        `UPDATE list_elements
+        SET
+            description = ?,
+            name = ?,
+            parent_element_ref = ?,
+            value = ?,
+            version = ?,
+            time_updated = CURRENT_TIMESTAMP
+        WHERE id = ?
+            AND type = 'item'
+            AND time_deleted IS NULL;`,
+        item.description ?? '',
+        item.name,
+        item.parent_element_ref,
+        JSON.stringify(item.value),
+        item.version,
+        item.id
+    );
+
+    if (cursor.rowsWritten !== 1) {
+        throw new NotFoundError(
+            `\`updateListItem()\` item "${item.id}" not found (rowsWritten=${cursor.rowsWritten})`
         );
     }
 }
@@ -658,72 +686,6 @@ export function appendChildElementRef(
         JSON.stringify(refs),
         parentId
     );
-}
-
-// @TODO: SQL here is invalid (`UPDATE ... SET (col = ?, ...)` is not
-// valid SQLite syntax) and `value` is not `JSON.stringify`'d. Rewrite
-// before using from any mutator. For item-value updates, use
-// `setItemValueAndVersion` instead.
-export function setElement(sql: SqlStorage, element: ListElement) {
-    if (!element?.id) {
-        console.error('`setElement()` error: bad id', element.id);
-        throw new ValidationError();
-    }
-
-    const elementRow = sql.exec(
-        `SELECT * FROM list_elements WHERE id = ?;`,
-        element.id
-    );
-
-    let elementCurrent = null;
-    try {
-        elementCurrent = elementRow.one();
-    } catch (error) {
-        console.error(
-            '`setElement()` parse error for `elementRow.one()`:',
-            error
-        );
-        throw new UnexpectedError();
-    }
-
-    // Check that "locked" values aren't set to change.
-    if (elementCurrent) {
-        const parseResult = ListElementUnion.safeParse(elementCurrent);
-        if (parseResult.success) {
-            if (parseResult.data.time_created !== element.time_created) {
-                throw new BadMutationError('`element.time_created` mismatch!');
-            }
-            if (parseResult.data.time_deleted) {
-                // I think blocking updates to a deleted element is right.
-                throw new BadMutationError('element is deleted');
-            }
-            if (parseResult.data.type != element.type) {
-                throw new BadMutationError('`element.type` mismatch!');
-            }
-
-            // Add more checks as needed...
-        }
-    }
-
-    if (element.type === 'item') {
-        const cursor = sql.exec(
-            `UPDATE list_elements SET (
-                description = ?,
-                name = ?,
-                parent_element_ref = ?,
-                time_updated = ?,
-                value = ?,
-                version = ?
-            ) WHERE id = ?`,
-            element.description,
-            element.name,
-            element.parent_element_ref,
-            element.time_updated, // TODO: double check that this is updated as expected
-            element.value,
-            element.version, // TODO: ensure this is updated as expected
-            element.id //
-        );
-    }
 }
 
 // I don't know how this function might be used yet.

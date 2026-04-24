@@ -14,10 +14,11 @@ import {
     setAuthorizationDefaultRole,
     setAuthorizedAccount,
     setItemValueAndVersion,
+    updateListItem,
 } from '../sql';
 import { MutationArgsSchema } from './schema';
 
-export const mutators = { createListItem, initList, setItemQuantity };
+export const mutators = { createListItem, initList, setItem, setItemQuantity };
 
 export function initList(
     sql: SqlStorage,
@@ -121,6 +122,33 @@ export function createListItem(
 
     insertListItem(sql, { ...item, version: nextVersion });
     appendChildElementRef(sql, item.parent_element_ref, item.id);
+}
+
+export const setItemArgsSchema = ListItemSchema;
+
+export function setItem(
+    sql: SqlStorage,
+    authorizedRole: AuthorizationRole,
+    args: unknown,
+    nextVersion: number
+) {
+    if (authorizedRole === 'restricted' || authorizedRole === 'viewer') {
+        throw new UnauthorizedError(
+            '`setItem()` error: role is not authorized'
+        );
+    }
+
+    const parseResult = setItemArgsSchema.safeParse(args);
+
+    if (!parseResult.success) {
+        console.log(
+            '`setItem()` args parse error:',
+            parseResult.error.format()
+        );
+        throw new ValidationError();
+    }
+
+    updateListItem(sql, { ...parseResult.data, version: nextVersion });
 }
 
 export const setItemQuantityArgsSchema = MutationArgsSchema.extend({

@@ -10,6 +10,7 @@ import { initList as clientInitList } from './client';
 import {
     createListItem as serverCreateListItem,
     initList as serverInitList,
+    setItem as serverSetItem,
     setItemQuantity as serverSetItemQuantity,
 } from './server';
 import { setItem, setItemQuantity } from './shared';
@@ -81,5 +82,6 @@ export const ServerMutators: {
 } = {
     createListItem: serverCreateListItem,
     initList: serverInitList,
+    setItem: serverSetItem,
     setItemQuantity: serverSetItemQuantity,
 };
