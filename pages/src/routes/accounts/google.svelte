@@ -1,4 +1,9 @@
 <script>
+	import { getSessionState, STATUSES } from '$lib/session.svelte';
+	import { goto } from '$app/navigation';
+
+	const sessionState = getSessionState();
+
 	function handleClick() {
 		const height = Math.min(550, window.innerHeight - 40);
 		const width = Math.min(500, window.innerWidth - 40);
@@ -18,7 +23,30 @@
 			console.error(
 				`Failed to open popup window on url: "${url}". Maybe blocked by browser?`
 			);
+			return;
 		}
+
+		const onMessage = async event => {
+			if (event.origin !== window.location.origin) return;
+			if (event.data?.type !== 'djibb:oauth-success') return;
+
+			window.removeEventListener('message', onMessage);
+
+			if (sessionState.status === STATUSES.idle) {
+				await sessionState.fetchSession();
+			}
+
+			// Land in the user's active workspace (personal by default,
+			// auto-created on signup). Falls back to /workspaces if
+			// nothing resolved (e.g. legacy account, network blip).
+			if (sessionState.currentWorkspaceSlug) {
+				goto(`/w/${sessionState.currentWorkspaceSlug}`);
+			} else {
+				goto('/workspaces');
+			}
+		};
+
+		window.addEventListener('message', onMessage);
 	}
 </script>
 

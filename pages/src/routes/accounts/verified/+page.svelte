@@ -1,6 +1,7 @@
 <!-- TODO: make this page CSR-only? -->
 <script>
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 	import { getSessionState, STATUSES } from '$lib/session.svelte';
 
 	import AccountRow from '$lib/components/AccountRow.svelte';
@@ -15,6 +16,22 @@
 	}
 
 	const sessionState = getSessionState();
+
+	onMount(() => {
+		if (typeof window === 'undefined' || !window.opener) return;
+
+		try {
+			window.opener.postMessage(
+				{ type: 'djibb:oauth-success', accountId },
+				window.location.origin
+			);
+		} catch (err) {
+			console.error('postMessage to opener failed:', err);
+			return;
+		}
+
+		window.close();
+	});
 
 	/**
 	 * @type {import("$djibb/account/index").Account | undefined}
