@@ -18,6 +18,21 @@ import { ReplicachePullRequestSchema } from '../replicache';
 import { z } from 'zod';
 import { tryCatch } from '../utils/trycatch';
 import { IdTypes } from '../id';
+import { GetMembership } from '../workspace/service';
+import { WorkspaceRole } from '../workspace';
+
+const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
+
+function workspaceRoleToListRole(role: WorkspaceRole): AuthorizationRole {
+    switch (role) {
+        case 'owner':
+        case 'admin':
+        case 'member':
+            return AuthorizationRoleEnum.enum.editor;
+        case 'viewer':
+            return AuthorizationRoleEnum.enum.viewer;
+    }
+}
 
 /**
  * The shape of the Hono context for use in List Hono app `list_app`.
@@ -98,56 +113,69 @@ list_app.use('*', HandleSession);
  * We're doing Authorization here.
  */
 list_app.use(async (c, next) => {
-    // Get authorization rules. If there aren't any yet, then the method
-    // call will generate the default rules, so we pass the active
-    // Account ID, if any, to inform their creation.
     const authorizationRules = await c.get('list').getAuthorizationRules();
+    const session = c.get('session');
+    const sessionAccounts = session?.accounts ?? [];
 
-    // Eval rules.
+    // Optional active-account hint from the client. Used to disambiguate
+    // when a session has multiple accounts that all have access to the
+    // same list (via explicit list role or via workspace membership).
+    // Phase 3 will replace this with a Replicache CVR.
+    const activeAccountHeader = c.req.header(ACTIVE_ACCOUNT_HEADER) || null;
+    const activeAccountId = activeAccountHeader
+        ? sessionAccounts.find(a => a.id === activeAccountHeader)?.id ?? null
+        : null;
+
     let authRole: AuthorizationRole | undefined;
 
-    // First, check the session's authorized accounts against the
-    // List's authed accounts.
-    for (const authedAccount of c.get('session')?.accounts || []) {
-        if (authorizationRules.authorized_accounts[authedAccount.id]) {
-            // If we already have an `authRole` and we've found a second
-            // account with a role for this list, then we don't know
-            // which account should be the "active" one. We'll need to
-            // handle this eventually (see more in the comment below).
-            if (authRole) {
-                /**
-                 * @TODO:
-                 *
-                 * A single session can have multiple accounts, and what happens
-                 *  when more than one of those accounts is authed for a single list?
-                 *  Need to have UI to pick the appropriate account, as well as a way
-                 *  to store/remember that selection for the future.
-                 *
-                 * Could store that info on the session, the list, the user, the Replicache
-                 * Client Group, etc. or some combination.
-                 */
+    // 1. Explicit list role on any session account.
+    const matchedExplicit: { accountId: string; role: AuthorizationRole }[] = [];
+    for (const account of sessionAccounts) {
+        const explicit = authorizationRules.authorized_accounts[account.id];
+        if (explicit) {
+            matchedExplicit.push({ accountId: account.id, role: explicit.role });
+        }
+    }
+    if (matchedExplicit.length >= 1) {
+        const picked =
+            (activeAccountId
+                ? matchedExplicit.find(m => m.accountId === activeAccountId)
+                : undefined) ?? matchedExplicit[0];
+        authRole = picked!.role;
+    }
 
-                console.error(
-                    'ERR: auth/multiple-authed-accounts: a single session has multiple authed accounts for the same list'
+    // 2. Workspace membership fallback.
+    if (!authRole && sessionAccounts.length) {
+        const workspaceId = await c.get('list').getWorkspaceId();
+        if (workspaceId) {
+            const candidates: { accountId: string; role: AuthorizationRole }[] = [];
+            for (const account of sessionAccounts) {
+                const membership = await GetMembership(
+                    c.env.DJIBB_AUTH,
+                    account.id,
+                    workspaceId
                 );
-                throw new UnexpectedError();
+                if (membership) {
+                    candidates.push({
+                        accountId: account.id,
+                        role: workspaceRoleToListRole(membership.role),
+                    });
+                }
             }
-
-            authRole =
-                authorizationRules.authorized_accounts[authedAccount.id]?.role;
+            if (candidates.length >= 1) {
+                const picked =
+                    (activeAccountId
+                        ? candidates.find(
+                              x => x.accountId === activeAccountId
+                          )
+                        : undefined) ?? candidates[0];
+                authRole = picked!.role;
+            }
         }
     }
 
-    /**
-     * @TODO: check for membership in the List's Workspace.
-     * If membership confirmed, assign Workspace role, if any.
-     */
-    // if (!authRole) {
-    //     // check for Workspace role here
-    // }
-
+    // 3. Default role.
     if (!authRole) {
-        // Not an authorized user. Use generic role.
         authRole = authorizationRules.default_role;
     }
 

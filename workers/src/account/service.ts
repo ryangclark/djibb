@@ -2,9 +2,8 @@ import { OAUTH_PROVIDER } from '../auth/constants';
 import { ParseError, UnexpectedError } from '../errors';
 import { AccountSchema, type Account } from './index';
 import { newId } from '../id';
+import { buildPersonalWorkspaceStatements } from '../workspace/service';
 
-// @TODO: need to handle creating default assets for a new account,
-// such as its private workspace.
 export async function CreateAccount(d1: D1Database, account: Account) {
     const parseResult = AccountSchema.safeParse(account);
 
@@ -19,7 +18,7 @@ export async function CreateAccount(d1: D1Database, account: Account) {
     account.time_deleted = null;
     account.time_updated = account.time_created;
 
-    return d1
+    const accountInsert = d1
         .prepare(
             `INSERT INTO accounts (
                 id,
@@ -47,13 +46,18 @@ export async function CreateAccount(d1: D1Database, account: Account) {
             Math.floor(account.time_created.getTime() / 1000),
             Math.floor(account.time_updated.getTime() / 1000),
             account.user_name
-        )
-        .run()
-        .then(() => account)
-        .catch(err => {
-            console.error('`CreateAccount()` insert error:', err);
-            throw err;
-        });
+        );
+
+    const personal = buildPersonalWorkspaceStatements(d1, account);
+
+    try {
+        await d1.batch([accountInsert, ...personal.statements]);
+    } catch (err) {
+        console.error('`CreateAccount()` batch error:', err);
+        throw new UnexpectedError();
+    }
+
+    return account;
 }
 
 export async function GetAccountById(d1: D1Database, id: string) {

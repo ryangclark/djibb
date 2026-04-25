@@ -1,5 +1,6 @@
 <script>
 	import { setSessionState } from '$lib/session.svelte';
+	import WorkspaceSwitcher from '$lib/components/WorkspaceSwitcher.svelte';
 	import { onMount } from 'svelte';
 	import '../app.css';
 
@@ -17,13 +18,16 @@
 	});
 </script>
 
-<header class="m-8 flex gap-10">
+<header class="m-8 flex gap-10 items-center">
 	<a class="mr-10" href="/">djibb</a>
 	<nav class="flex gap-8">
 		<a href="/">Home</a>
 		<a href="/posts">Blog</a>
 		<a href="/accounts">Accounts</a>
 	</nav>
+	<div class="ml-auto">
+		<WorkspaceSwitcher />
+	</div>
 </header>
 
 <main>

@@ -1,4 +1,5 @@
 import { getContext, setContext } from 'svelte';
+import { fetchWorkspacesForAccount } from '$lib/api/workspace';
 
 export const STATUSES = {
 	idle: 'idle',
@@ -6,6 +7,7 @@ export const STATUSES = {
 };
 
 const SESSION_KEY = Symbol('SESSION');
+const ACTIVE_WORKSPACE_KEY = 'djibb.activeWorkspaceSlug';
 
 /**
  * @returns {SessionState}
@@ -21,10 +23,12 @@ export function setSessionState() {
 class SessionState {
 	/** @type {readonly import("$djibb/account").Account[]} */
 	accounts = $state([]);
-	// Might be nice to sort the IDs by a last-used time?
-	// accountIds = $derived(Object.keys(this.accounts));
+	/** @type {string|null} */
 	currentAccountId = $state(null);
-	currentWorkspaceId = $state('');
+	/** @type {string} active workspace slug */
+	currentWorkspaceSlug = $state('');
+	/** @type {import('$lib/api/workspace').WorkspaceWithMembership[]} */
+	workspaces = $state([]);
 	error = $state();
 	status = $state(STATUSES.idle);
 
@@ -45,28 +49,66 @@ class SessionState {
 			);
 
 			if (response.status === 401) {
-				// No session. Return defaults.
 				this.accounts = [];
+				this.workspaces = [];
 				this.error = undefined;
 				this.status = STATUSES.idle;
-
 				return;
 			}
 
 			this.error = undefined;
-			/** @type {import("$djibb/auth/session").Session} */
 			const session = await response.json();
-
 			this.accounts = session.accounts;
+			await this.refreshWorkspaces();
 		} catch (err) {
 			this.error = err;
-
-			// Not sure an error should wipe everything out...
-			// Leaving it for now. We'll probably need more granular
-			// error handling here anyway once we know the errors.
 			this.accounts = [];
+			this.workspaces = [];
 		}
 
 		this.status = STATUSES.idle;
+	}
+
+	async refreshWorkspaces() {
+		if (!this.accounts.length) {
+			this.workspaces = [];
+			return;
+		}
+		const results = await Promise.all(
+			this.accounts.map(a => fetchWorkspacesForAccount(a.id).catch(() => []))
+		);
+		this.workspaces = results.flat();
+
+		// Restore previously selected workspace if still valid; otherwise
+		// default to the first workspace's slug.
+		const stored =
+			typeof localStorage !== 'undefined'
+				? localStorage.getItem(ACTIVE_WORKSPACE_KEY)
+				: null;
+		const validSlugs = new Set(this.workspaces.map(w => w.workspace.slug));
+		if (stored && validSlugs.has(stored)) {
+			this.setActiveWorkspace(stored, { persist: false });
+		} else if (this.workspaces.length) {
+			this.setActiveWorkspace(this.workspaces[0].workspace.slug);
+		}
+	}
+
+	/**
+	 * Pick a workspace as active. Auto-resolves the active account to the
+	 * one whose membership grants access (the doc's "auto-resolve active
+	 * account" behavior).
+	 *
+	 * @param {string} slug
+	 * @param {{ persist?: boolean }} [opts]
+	 */
+	setActiveWorkspace(slug, opts = {}) {
+		const { persist = true } = opts;
+		const match = this.workspaces.find(w => w.workspace.slug === slug);
+		if (!match) return;
+		this.currentWorkspaceSlug = slug;
+		this.currentAccountId = match.membership.account_id;
+		if (persist && typeof localStorage !== 'undefined') {
+			localStorage.setItem(ACTIVE_WORKSPACE_KEY, slug);
+		}
 	}
 }

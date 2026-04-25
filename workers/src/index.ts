@@ -9,6 +9,7 @@ import { Auth_App } from './auth/fetch';
 import { DjibbError } from './errors';
 import { DjibbList } from './list/durable_object';
 import { AccountApp } from './account/fetch';
+import { WorkspaceApp } from './workspace/fetch';
 
 /**
  * Associate bindings declared in wrangler.toml with TypeScript types.
@@ -19,7 +20,6 @@ export type Bindings = {
     ENV: string;
     DJIBB_AUTH: D1Database;
     DJIBB_LIST: DurableObjectNamespace<DjibbList>;
-    // DJIBB_WORKSPACE: DurableObjectNamespace<DjibbWorkspace>;
     KV_AUTH: KVNamespace;
 
     // OAuth
@@ -34,7 +34,6 @@ export type Variables = {
     session: Session | null;
     list: DurableObjectStub<DjibbList>;
     user: User | null;
-    // workspace: DurableObjectStub<DjibbWorkspace>;
 };
 
 export interface HonoEnv {
@@ -125,10 +124,10 @@ app.use(
 // TODO: check if this is the best thing to return here.
 app.get('/', c => c.text('hello, djibb!'));
 
-app.route('/account', AccountApp);
+app.route('/a', AccountApp);
 app.route('/auth', Auth_App);
 app.route('/list', list_app);
-// TODO: /workspace route re-added when the workspace module lands
+app.route('/workspace', WorkspaceApp);
 
 app.onError(err => {
     if (err instanceof DjibbError) {

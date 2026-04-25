@@ -105,6 +105,19 @@ export class DjibbList extends DurableObject {
         return getAuthorizationRules(this.sql);
     }
 
+    getWorkspaceId(): string | null {
+        try {
+            const row = this.sql
+                .exec(`SELECT value FROM kv WHERE key = "workspace_id"`)
+                .next();
+            const value = (row as any)?.value?.value;
+            return value ?? null;
+        } catch {
+            // kv table may not exist yet (pre-init). Treat as no workspace.
+            return null;
+        }
+    }
+
     getList(args: { listId: string }): Result<List, SerializedDjibbError> {
         return tryCatch(() => this._getList(args));
     }
