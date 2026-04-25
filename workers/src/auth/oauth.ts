@@ -1,4 +1,4 @@
-import { Google, GoogleTokens } from 'arctic';
+import { Google, OAuth2Tokens } from 'arctic';
 import { generateCodeVerifier, generateState } from 'arctic';
 import { Context } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
@@ -86,9 +86,7 @@ export async function handleInitOAuthGoogle(c: Context<HonoEnv>) {
 
     const SCOPES = ['profile', 'email']; // "openid" always included
 
-    const url: URL = await google.createAuthorizationURL(state, codeVerifier, {
-        scopes: SCOPES,
-    });
+    const url: URL = google.createAuthorizationURL(state, codeVerifier, SCOPES);
 
     // These may need to be updated at some point idk.
     const cookieOpts: CookieOptions = {
@@ -159,7 +157,7 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
         throw new ValidationError('Invalid Request!');
     }
 
-    let tokens: GoogleTokens;
+    let tokens: OAuth2Tokens;
 
     try {
         const google = new Google(
@@ -186,7 +184,7 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
         'https://openidconnect.googleapis.com/v1/userinfo',
         {
             headers: {
-                Authorization: `Bearer ${tokens.accessToken}`,
+                Authorization: `Bearer ${tokens.accessToken()}`,
             },
         }
     );

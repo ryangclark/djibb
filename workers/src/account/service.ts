@@ -71,7 +71,7 @@ export async function GetAccountById(d1: D1Database, id: string) {
 export async function GetAccountByGoogleId(
     d1: D1Database,
     providerClientId: string
-): Promise<Account> {
+): Promise<Account | null> {
     if (!providerClientId) {
         throw new Error(
             '`GetAccountByGoogleId()` error: invalid `providerClientId`!'
@@ -95,7 +95,9 @@ export async function GetAccountByGoogleId(
         .then(shape_AccountRow);
 }
 
-function shape_AccountRow(row: any): Account {
+function shape_AccountRow(row: any): Account | null {
+    if (!row) return null;
+
     const account = {
         id: row.id,
         display_name: row.display_name,
