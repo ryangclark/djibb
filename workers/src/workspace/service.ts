@@ -397,6 +397,114 @@ export async function SoftDeleteWorkspace(
         .run();
 }
 
+/**
+ * Change a member's role. Admin+ required. The actor cannot demote
+ * themselves below `owner` if they're the last owner. Owners can
+ * promote/demote anyone except in ways that would leave the workspace
+ * with zero owners. Admins cannot create or remove owners.
+ */
+export async function ChangeMemberRole(
+    d1: D1Database,
+    actorAccountId: string,
+    slug: string,
+    targetAccountId: string,
+    newRole: WorkspaceRole
+): Promise<WorkspaceMember> {
+    const workspace = await GetWorkspaceBySlug(d1, slug);
+    if (workspace.is_personal) {
+        throw new FailedPreconditionError(
+            'Personal workspaces have no role changes.'
+        );
+    }
+    const actor = await GetMembership(d1, actorAccountId, workspace.id);
+    if (!actor) throw new UnauthorizedError('Not a member.');
+    requireRole(actor.role, ['owner', 'admin']);
+
+    const target = await GetMembership(d1, targetAccountId, workspace.id);
+    if (!target) throw new NotFoundError('Member not found.');
+
+    // Admins cannot touch owners or grant ownership.
+    if (
+        actor.role === 'admin' &&
+        (target.role === 'owner' || newRole === 'owner')
+    ) {
+        throw new UnauthorizedError(
+            'Admins cannot change owner roles or grant ownership.'
+        );
+    }
+
+    // If demoting an owner, ensure at least one owner remains.
+    if (target.role === 'owner' && newRole !== 'owner') {
+        const members = await GetWorkspaceMembers(d1, workspace.id);
+        const owners = members.filter(m => m.role === 'owner');
+        if (owners.length <= 1) {
+            throw new FailedPreconditionError(
+                'Cannot demote the last owner.'
+            );
+        }
+    }
+
+    if (target.role === newRole) return target; // no-op
+
+    await d1
+        .prepare(
+            `UPDATE AccountWorkspace SET role = ?
+             WHERE account_id = ? AND workspace_id = ?`
+        )
+        .bind(newRole, targetAccountId, workspace.id)
+        .run();
+
+    return { ...target, role: newRole };
+}
+
+/**
+ * Remove a member from a workspace. Admin+ required. Cannot remove
+ * the last owner. Members can leave themselves via LeaveWorkspace; this
+ * endpoint is for admin-initiated removal.
+ */
+export async function RemoveMember(
+    d1: D1Database,
+    actorAccountId: string,
+    slug: string,
+    targetAccountId: string
+): Promise<void> {
+    const workspace = await GetWorkspaceBySlug(d1, slug);
+    if (workspace.is_personal) {
+        throw new FailedPreconditionError(
+            'Personal workspaces have a single member.'
+        );
+    }
+    const actor = await GetMembership(d1, actorAccountId, workspace.id);
+    if (!actor) throw new UnauthorizedError('Not a member.');
+    requireRole(actor.role, ['owner', 'admin']);
+
+    const target = await GetMembership(d1, targetAccountId, workspace.id);
+    if (!target) throw new NotFoundError('Member not found.');
+
+    // Admins cannot remove owners.
+    if (actor.role === 'admin' && target.role === 'owner') {
+        throw new UnauthorizedError('Admins cannot remove owners.');
+    }
+
+    if (target.role === 'owner') {
+        const members = await GetWorkspaceMembers(d1, workspace.id);
+        const owners = members.filter(m => m.role === 'owner');
+        if (owners.length <= 1) {
+            throw new FailedPreconditionError(
+                'Cannot remove the last owner.'
+            );
+        }
+    }
+
+    await d1
+        .prepare(
+            `DELETE FROM AccountWorkspace
+             WHERE account_id = ? AND workspace_id = ?`
+        )
+        .bind(targetAccountId, workspace.id)
+        .run();
+}
+
 export async function LeaveWorkspace(
     d1: D1Database,
     actorAccountId: string,

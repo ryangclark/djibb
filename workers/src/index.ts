@@ -8,8 +8,8 @@ import { Session } from './auth/session';
 import { Auth_App } from './auth/fetch';
 import { DjibbError } from './errors';
 import { DjibbList } from './list/durable_object';
-import { AccountApp } from './account/fetch';
-import { WorkspaceApp } from './workspace/fetch';
+import { AccountApp, UserApp } from './account/fetch';
+import { WorkspaceApp, InvitationApp } from './workspace/fetch';
 
 /**
  * Associate bindings declared in wrangler.toml with TypeScript types.
@@ -25,6 +25,10 @@ export type Bindings = {
     // OAuth
     OAUTH_GOOGLE_CLIENT_ID: string;
     OAUTH_GOOGLE_CLIENT_SECRET: string;
+
+    // Email (Cloudflare Email Sending)
+    EMAIL: SendEmail;
+    EMAIL_FROM: string;
 };
 
 export type Variables = {
@@ -126,7 +130,9 @@ app.get('/', c => c.text('hello, djibb!'));
 
 app.route('/a', AccountApp);
 app.route('/auth', Auth_App);
+app.route('/invitations', InvitationApp);
 app.route('/list', list_app);
+app.route('/u', UserApp);
 app.route('/workspace', WorkspaceApp);
 
 app.onError(err => {

@@ -25,3 +25,8 @@ bindings = [
 [[migrations]]
 tag = "20241001"
 new_sqlite_classes = ["DjibbList"]
+
+# Email
+[[send_email]]
+name = "EMAIL"
+remote = true

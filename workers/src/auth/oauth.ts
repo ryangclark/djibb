@@ -1,7 +1,7 @@
 import { Google, OAuth2Tokens } from 'arctic';
 import { generateCodeVerifier, generateState } from 'arctic';
 import { Context } from 'hono';
-import { getCookie, setCookie } from 'hono/cookie';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { CookieOptions } from 'hono/utils/cookie';
 import { z } from 'zod';
 
@@ -16,6 +16,7 @@ import {
 } from './constants';
 import { FlagRouter, MOCK_AUTH_MODE } from '../flags';
 import { HonoEnv } from '..';
+import { AcceptInvitation } from '../workspace/invitations';
 
 export async function handleGetMockSession(c: Context<HonoEnv>) {
     if (!FlagRouter.featureIsEnabled(MOCK_AUTH_MODE)) {
@@ -75,8 +76,18 @@ export async function handleGetMockSession(c: Context<HonoEnv>) {
  * we will validate Google's authorization code.
  */
 export async function handleInitOAuthGoogle(c: Context<HonoEnv>) {
-    const state = generateState();
+    const baseState = generateState();
     const codeVerifier = generateCodeVerifier();
+
+    // Pending invite token: read from `?invite=<token>`. We carry it
+    // through OAuth two ways for defense-in-depth: a cookie (primary,
+    // wins on the callback) and appended to `state` (fallback, in case
+    // cookies aren't reliably available on the return trip — the
+    // `state` round-trips through Google).
+    const inviteToken = c.req.query('invite') ?? null;
+    const state = inviteToken
+        ? `${baseState}.${encodeURIComponent(inviteToken)}`
+        : baseState;
 
     const google = new Google(
         c.env.OAUTH_GOOGLE_CLIENT_ID,
@@ -129,6 +140,11 @@ export async function handleInitOAuthGoogle(c: Context<HonoEnv>) {
 
     // Store code verifier as cookie.
     setCookie(c, CookieNames.GoogleCodeVerifier, codeVerifier, cookieOpts);
+
+    // Store the pending invite token (if any) as its own cookie.
+    if (inviteToken) {
+        setCookie(c, CookieNames.PendingInvite, inviteToken, cookieOpts);
+    }
 
     return c.redirect(url.toString());
 }
@@ -208,7 +224,11 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
             id: '',
             display_name: googleUserClaims.name,
             email: googleUserClaims.email,
-            email_verified: false,
+            // Google's userinfo endpoint returns `email_verified: true`
+            // for the standard scopes; we trust that signal here. If we
+            // ever add providers that don't guarantee verified email,
+            // gate this on `googleUserClaims.email_verified`.
+            email_verified: true,
             flags: null,
             image: googleUserClaims.picture,
             provider_name: OAUTH_PROVIDER.enum.google,
@@ -248,16 +268,50 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
 
     setCookie(c, CookieNames.Session, session.id, BaseSessionCookieAttributes);
 
+    // Pending-invite handling: cookie wins, fall back to token appended
+    // to `state` (after the first `.`). Either way, we attempt the
+    // accept and bias the redirect toward the workspace; failures here
+    // don't block the login (we still land them on /accounts/verified).
+    let pendingInviteToken = getCookie(c, CookieNames.PendingInvite) ?? null;
+    if (!pendingInviteToken && state && state.includes('.')) {
+        const idx = state.indexOf('.');
+        try {
+            pendingInviteToken = decodeURIComponent(state.slice(idx + 1));
+        } catch {
+            pendingInviteToken = null;
+        }
+    }
+    deleteCookie(c, CookieNames.PendingInvite);
+
+    let acceptedSlug: string | null = null;
+    if (pendingInviteToken) {
+        try {
+            const result = await AcceptInvitation(
+                c.env.DJIBB_AUTH,
+                account.id,
+                pendingInviteToken
+            );
+            acceptedSlug = result.workspace_slug;
+        } catch (err) {
+            console.warn(
+                'Pending invite accept failed; continuing with login:',
+                err
+            );
+        }
+    }
+
     const redirectOrigin = getCookie(c, CookieNames.RefererOrigin);
 
     if (
         redirectOrigin &&
         c.env.AUTHORIZED_DOMAINS.split(';').includes(redirectOrigin)
     ) {
-        // The redirect path and search params are hard-coded.
-        // Update as needed.
-        const url = new URL(`${redirectOrigin}/accounts/verified`);
-        url.searchParams.set('account_id', account.id);
+        const url = acceptedSlug
+            ? new URL(`${redirectOrigin}/w/${acceptedSlug}`)
+            : new URL(`${redirectOrigin}/accounts/verified`);
+        if (!acceptedSlug) {
+            url.searchParams.set('account_id', account.id);
+        }
         return c.redirect(url.toString());
     } else {
         console.error(

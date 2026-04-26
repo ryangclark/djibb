@@ -3,8 +3,9 @@ import { env } from 'cloudflare:test';
 // vitest-pool-workers sandbox where Node `fs` isn't available.
 import migration0001 from '../../migrations/0001_create_user_and_session_tables.sql?raw';
 import migration0002 from '../../migrations/0002_workspaces.sql?raw';
+import migration0003 from '../../migrations/0003_invitations_and_usernames.sql?raw';
 
-const ALL_MIGRATIONS = [migration0001, migration0002];
+const ALL_MIGRATIONS = [migration0001, migration0002, migration0003];
 
 function splitStatements(sql: string): string[] {
     // Strip line comments first (they confuse D1's `exec` parser).

@@ -59,3 +59,80 @@ export const UpdateWorkspaceRequestSchema = z.object({
 export type UpdateWorkspaceRequest = z.TypeOf<
     typeof UpdateWorkspaceRequestSchema
 >;
+
+export const InvitationTypeEnum = z.enum(['email', 'username', 'link']);
+export type InvitationType = z.TypeOf<typeof InvitationTypeEnum>;
+
+export const InvitationStatusEnum = z.enum([
+    'pending',
+    'accepted',
+    'revoked',
+    'expired',
+]);
+export type InvitationStatus = z.TypeOf<typeof InvitationStatusEnum>;
+
+/**
+ * Roles that may be granted via an invite. Owner is granted only via
+ * an explicit transfer-ownership flow, so it's excluded here.
+ */
+export const InvitableRoleEnum = z.enum(['admin', 'member', 'viewer']);
+export type InvitableRole = z.TypeOf<typeof InvitableRoleEnum>;
+
+export const WorkspaceInvitationSchema = z.object({
+    id: z.string(),
+    workspace_id: z.string(),
+    type: InvitationTypeEnum,
+    target_email: z.string().nullable(),
+    target_account_id: z.string().nullable(),
+    role: WorkspaceRoleEnum,
+    token: z.string(),
+    inviter_account_id: z.string(),
+    status: InvitationStatusEnum,
+    max_uses: z.number().nullable(),
+    use_count: z.number(),
+    time_created: DatelikeToDateSchema,
+    time_expires: DatelikeToDateSchema,
+    time_accepted: DatelikeToDateSchema.nullable(),
+});
+export type WorkspaceInvitation = z.TypeOf<typeof WorkspaceInvitationSchema>;
+
+export const CreateInvitationRequestSchema = z.discriminatedUnion('type', [
+    z.object({
+        type: z.literal('email'),
+        email: z.string().email(),
+        role: InvitableRoleEnum,
+    }),
+    z.object({
+        type: z.literal('username'),
+        username: z.string().min(1),
+        role: InvitableRoleEnum,
+    }),
+    z.object({
+        type: z.literal('link'),
+        max_uses: z.number().int().min(1).max(500).nullable().optional(),
+        role: InvitableRoleEnum,
+    }),
+]);
+export type CreateInvitationRequest = z.TypeOf<
+    typeof CreateInvitationRequestSchema
+>;
+
+/**
+ * Public-safe preview shape returned from `GET /invitations/:token`.
+ * No PII beyond the inviter's display name.
+ */
+export const InvitationPreviewSchema = z.object({
+    type: InvitationTypeEnum,
+    role: WorkspaceRoleEnum,
+    workspace: z.object({
+        slug: z.string(),
+        name: z.string().nullable(),
+        image: z.string().nullable(),
+    }),
+    inviter: z.object({
+        display_name: z.string(),
+    }),
+    time_expires: DatelikeToDateSchema,
+    status: InvitationStatusEnum,
+});
+export type InvitationPreview = z.TypeOf<typeof InvitationPreviewSchema>;

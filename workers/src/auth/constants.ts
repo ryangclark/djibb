@@ -17,6 +17,7 @@ export const BaseSessionCookieAttributes: CookieOptions = {
 export const CookieNames = {
     GoogleState: 'google_oauth_state',
     GoogleCodeVerifier: 'google_oauth_code_verifier',
+    PendingInvite: 'djibb_pending_invite',
     RefererOrigin: 'referer_origin',
     Session: 'djibb-session',
 };
