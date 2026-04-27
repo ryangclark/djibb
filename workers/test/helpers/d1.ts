@@ -4,8 +4,14 @@ import { env } from 'cloudflare:test';
 import migration0001 from '../../migrations/0001_create_user_and_session_tables.sql?raw';
 import migration0002 from '../../migrations/0002_workspaces.sql?raw';
 import migration0003 from '../../migrations/0003_invitations_and_usernames.sql?raw';
+import migration0004 from '../../migrations/0004_workspace_entities.sql?raw';
 
-const ALL_MIGRATIONS = [migration0001, migration0002, migration0003];
+const ALL_MIGRATIONS = [
+    migration0001,
+    migration0002,
+    migration0003,
+    migration0004,
+];
 
 function splitStatements(sql: string): string[] {
     // Strip line comments first (they confuse D1's `exec` parser).
@@ -39,6 +45,7 @@ export async function ensureD1Schema(): Promise<void> {
 /** Wipe rows from the workspace-related tables between tests. */
 export async function resetWorkspaceData(): Promise<void> {
     await env.DJIBB_AUTH.batch([
+        env.DJIBB_AUTH.prepare('DELETE FROM workspace_entities'),
         env.DJIBB_AUTH.prepare('DELETE FROM AccountWorkspace'),
         env.DJIBB_AUTH.prepare('DELETE FROM workspace_invitations'),
         env.DJIBB_AUTH.prepare('DELETE FROM workspaces'),

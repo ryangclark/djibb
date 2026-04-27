@@ -4,6 +4,7 @@ import { User, verifyRequestOrigin } from 'lucia';
 
 import { list_app } from './list/fetch';
 import { AuthorizationRole } from './auth/rules';
+import { EntityRow } from './list/entity';
 import { Session } from './auth/session';
 import { Auth_App } from './auth/fetch';
 import { DjibbError } from './errors';
@@ -33,6 +34,8 @@ export type Bindings = {
 
 export type Variables = {
     authorized_role: AuthorizationRole;
+    entity: EntityRow | null;
+    entity_id: string;
     id: DurableObjectId;
     // lucia: Register['Lucia'];
     session: Session | null;

@@ -16,7 +16,7 @@ export const ListSchema = z.object({
     type: z.literal('list'),
     workspace_id: z
         .string()
-        .length(ID_LENGTH + IdTypes['workspace'].length)
+        .length(ID_LENGTH + IdTypes['workspace'].length + 1) // +1 for slash
         .nullable(),
     version: z.number(),
 });

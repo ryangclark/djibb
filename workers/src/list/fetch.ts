@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { PushRequestV1 } from 'replicache';
 
@@ -9,6 +9,7 @@ import { AuthorizationRole, AuthorizationRoleEnum } from '../auth/rules';
 
 import {
     DjibbError,
+    NotFoundError,
     ParseError,
     UnexpectedError,
     ValidationError,
@@ -20,6 +21,12 @@ import { tryCatch } from '../utils/trycatch';
 import { IdTypes } from '../id';
 import { GetMembership } from '../workspace/service';
 import { resolveRole } from '../auth/resolver';
+import { GetEntity, InsertEntityIfMissing } from './entity';
+import { initListArgsSchema } from './mutators/client';
+import {
+    AuthorizationRulesSchema,
+    AuthorizationRules,
+} from '../auth/rules';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
 
@@ -50,20 +57,22 @@ export const list_app = new Hono<HonoEnv>();
  * `POST /list/pull?l=my-list-id`.
  */
 list_app.use('*', async (c, next) => {
-    const query_param_list_id = c.req.query('l');
+    // Accept `?id=` (canonical) or `?l=` (legacy alias).
+    const query_param_id = c.req.query('id') ?? c.req.query('l');
 
-    if (!query_param_list_id) {
-        console.log('missing query_param_list_id!');
-
+    if (!query_param_id) {
         throw new HTTPException(400, {
             message:
-                'missing `l` search query parameter to identify requested list',
+                'missing `id` search query parameter to identify requested entity',
         });
     }
 
-    let prefixedId = query_param_list_id.startsWith(IdTypes['list'] + '/')
-        ? query_param_list_id
-        : `${IdTypes['list']}/${query_param_list_id}`;
+    const hasPrefix = /^[a-z]+\//.test(query_param_id);
+    let prefixedId = hasPrefix
+        ? query_param_id
+        : `${IdTypes['list']}/${query_param_id}`;
+
+    c.set('entity_id', prefixedId);
 
     // Create a `DurableObjectId` using the List ID query param.
     // The ID refers to a unique instance of the `DjibbList`
@@ -101,53 +110,50 @@ list_app.use('*', HandleSession);
  * Authorization: Determines what you can do.
  * We're doing Authorization here.
  */
-list_app.use(async (c, next) => {
-    const authorizationRules = await c.get('list').getAuthorizationRules();
+/**
+ * Resolves a role from the session against given rules + the calling
+ * account's workspace membership. Cross-account picking (explicit >
+ * workspace > default; active-account tiebreaker) lives here because it
+ * is orthogonal to per-account role resolution.
+ */
+async function resolveSessionRole(
+    c: Context<HonoEnv>,
+    rules: AuthorizationRules,
+    workspaceId: string | null,
+): Promise<AuthorizationRole> {
     const session = c.get('session');
     const sessionAccounts = session?.accounts ?? [];
 
-    // Optional active-account hint from the client. Used to disambiguate
-    // when a session has multiple accounts that all have access to the
-    // same list (via explicit list role or via workspace membership).
-    // Phase 3 will replace this with a Replicache CVR.
     const activeAccountHeader = c.req.header(ACTIVE_ACCOUNT_HEADER) || null;
     const activeAccountId = activeAccountHeader
         ? sessionAccounts.find(a => a.id === activeAccountHeader)?.id ?? null
         : null;
 
-    // Resolve a role per session account. Specificity within a single
-    // account is owned by `resolveRole`. Cross-account picking
-    // (explicit > workspace > default; active-account tiebreaker)
-    // stays here — it's an orthogonal concern.
     type Candidate = {
         accountId: string;
         role: AuthorizationRole;
         source: 'explicit' | 'workspace' | 'default';
     };
     const candidates: Candidate[] = [];
-    let workspaceId: string | null = null;
 
     for (const account of sessionAccounts) {
         const hasExplicit =
-            authorizationRules.authorized_accounts[account.id] != null;
+            rules.authorized_accounts[account.id] != null;
         let workspaceRole = null;
-        if (!hasExplicit) {
-            workspaceId ??= await c.get('list').getWorkspaceId();
-            if (workspaceId) {
-                const membership = await GetMembership(
-                    c.env.DJIBB_AUTH,
-                    account.id,
-                    workspaceId
-                );
-                workspaceRole = membership?.role ?? null;
-            }
+        if (!hasExplicit && workspaceId) {
+            const membership = await GetMembership(
+                c.env.DJIBB_AUTH,
+                account.id,
+                workspaceId,
+            );
+            workspaceRole = membership?.role ?? null;
         }
         candidates.push({
             accountId: account.id,
             role: resolveRole(
                 { account_id: account.id },
-                authorizationRules,
-                workspaceRole
+                rules,
+                workspaceRole,
             ),
             source: hasExplicit
                 ? 'explicit'
@@ -165,17 +171,30 @@ list_app.use(async (c, next) => {
         );
     }
 
-    let authRole: AuthorizationRole;
     const explicit = candidates.filter(c => c.source === 'explicit');
     const workspace = candidates.filter(c => c.source === 'workspace');
-    if (explicit.length) {
-        authRole = pickByActive(explicit).role;
-    } else if (workspace.length) {
-        authRole = pickByActive(workspace).role;
-    } else {
-        authRole = resolveRole(null, authorizationRules, null);
+    if (explicit.length) return pickByActive(explicit).role;
+    if (workspace.length) return pickByActive(workspace).role;
+    return resolveRole(null, rules, null);
+}
+
+list_app.use(async (c, next) => {
+    // Read entity metadata from D1 (authoritative per ADR 0001).
+    // Missing → pre-init: defer auth to /push, which will reconcile by
+    // inserting the canonical row before forwarding to the DO.
+    const entity = await GetEntity(c.env.DJIBB_AUTH, c.get('entity_id'));
+    c.set('entity', entity);
+
+    if (!entity) {
+        await next();
+        return;
     }
 
+    const authRole = await resolveSessionRole(
+        c,
+        entity.authorization_rules,
+        entity.workspace_id,
+    );
     c.set('authorized_role', authRole);
 
     await next();
@@ -184,6 +203,8 @@ list_app.use(async (c, next) => {
 // idk, i'd prefer this to be `/list/my-list-id` than `/list?l=my-list-id` but here we are
 // would need to change middleware probably
 list_app.get('', async c => {
+    if (!c.get('entity')) throw new NotFoundError();
+
     const listId = c.get('list').name;
 
     if (!listId) throw new UnexpectedError('invalid listId');
@@ -207,6 +228,8 @@ list_app.get('', async c => {
 });
 
 list_app.post('/pull', async c => {
+    if (!c.get('entity')) throw new NotFoundError();
+
     const json = await c.req.json().catch(() => {
         throw new ParseError();
     });
@@ -223,7 +246,7 @@ list_app.post('/pull', async c => {
 
     // Get the "name" which is the nano id used to create the super
     // long Durable Object hex id, and we now swap it back.
-    const listId = c.get('list').name;
+    const listId = c.get('list').name ?? c.get('entity_id');
     if (!listId) throw new UnexpectedError('invalid listId');
 
     const listStub = c.get('list');
@@ -255,6 +278,82 @@ list_app.post('/push', async c => {
         throw new ValidationError();
     })) as PushRequestV1;
 
+    // Pre-init reconciliation: if no D1 row exists for this entity yet,
+    // the first push must begin with an `initList` mutation. The worker
+    // inserts the canonical row in D1, then re-resolves the role and
+    // forwards the push to the DO. ADR 0001 §Reconciliation protocol.
+    if (!c.get('entity')) {
+        const first = pushRequest.mutations[0];
+        if (!first || first.name !== 'initList') {
+            throw new NotFoundError();
+        }
+        const argsParse = initListArgsSchema.safeParse(first.args);
+        if (!argsParse.success) {
+            throw new ValidationError('invalid initList args');
+        }
+        const initArgs = argsParse.data;
+
+        if (initArgs.listId !== c.get('entity_id')) {
+            throw new ValidationError(
+                'initList args.listId does not match request entity id',
+            );
+        }
+
+        // Init authorization: an authenticated init must claim an
+        // account from the current session. A workspace-targeted init
+        // requires membership.
+        const sessionAccounts = c.get('session')?.accounts ?? [];
+        if (initArgs.accountId) {
+            const ownsAccount = sessionAccounts.some(
+                a => a.id === initArgs.accountId,
+            );
+            if (!ownsAccount) throw new UnauthorizedError();
+        }
+        if (initArgs.workspaceId) {
+            if (!initArgs.accountId) throw new UnauthorizedError();
+            const membership = await GetMembership(
+                c.env.DJIBB_AUTH,
+                initArgs.accountId,
+                initArgs.workspaceId,
+            );
+            if (!membership) throw new UnauthorizedError();
+        }
+
+        const initRules: AuthorizationRules = initArgs.accountId
+            ? {
+                  authorized_accounts: {
+                      [initArgs.accountId]: { role: 'owner' },
+                  },
+                  default_role: 'restricted',
+                  set_by: 'user',
+              }
+            : {
+                  authorized_accounts: {},
+                  default_role: 'ownerless',
+                  set_by: 'defaults',
+              };
+
+        const inserted = await InsertEntityIfMissing(c.env.DJIBB_AUTH, {
+            id: initArgs.listId,
+            workspace_id: initArgs.workspaceId,
+            type: 'list',
+            authorization_rules: initRules,
+            time_created: Math.floor(
+                initArgs.timestamp_client.getTime() / 1000,
+            ),
+        });
+
+        c.set('entity', inserted);
+        c.set(
+            'authorized_role',
+            await resolveSessionRole(
+                c,
+                inserted.authorization_rules,
+                inserted.workspace_id,
+            ),
+        );
+    }
+
     const requestRole = c.get('authorized_role');
     const authorizedRoles = AuthorizationRoleEnum.extract([
         AuthorizationRoleEnum.enum.admin,
@@ -271,7 +370,7 @@ list_app.post('/push', async c => {
 
     // Get the "name" which is the nano id used to create the super
     // long Durable Object hex id, and we now swap it back.
-    const listId = c.get('list').name;
+    const listId = c.get('list').name ?? c.get('entity_id');
     if (!listId) throw new UnexpectedError('invalid listId');
 
     const { error } = await c.get('list').handlePush({
@@ -300,6 +399,8 @@ list_app.post('/push', async c => {
 });
 
 list_app.get('/websocket', async c => {
+    if (!c.get('entity')) throw new NotFoundError();
+
     const requestRole = c.get('authorized_role');
 
     // So websocket connections currently receive "poke" updates, which

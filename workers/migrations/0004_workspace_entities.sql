@@ -4,7 +4,10 @@
 
 CREATE TABLE "workspace_entities" (
     "id" TEXT NOT NULL PRIMARY KEY,
-    "workspace_id" TEXT NOT NULL REFERENCES workspaces(id),
+    -- `workspace_id` is nullable to support anonymous entity creation
+    -- (no session, no workspace target). Tightening to NOT NULL would
+    -- be a breaking schema change once we require workspace ownership.
+    "workspace_id" TEXT DEFAULT NULL REFERENCES workspaces(id),
     "type" TEXT NOT NULL,
     "name" TEXT DEFAULT NULL,
     "description" TEXT DEFAULT NULL,
