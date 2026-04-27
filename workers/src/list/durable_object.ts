@@ -3,14 +3,7 @@ import { MutationV1, PullResponseOKV1, PushRequestV1 } from 'replicache';
 
 import { ReplicachePullRequest } from '../replicache';
 import { List, ListElement } from './index';
-import {
-    DEFAULT_LIST_AUTHORIZATION_RULES,
-    DEFAULT_LIST_TITLE,
-    Mutation,
-    MutationArgs,
-    MutationSchema,
-    ServerMutators,
-} from './mutators';
+import { dispatchServerMutation, Mutation } from './mutators';
 
 import { AuthorizationRole, AuthorizationRules } from '../auth/rules';
 import { WS_MESSAGE_PULL_PLS, WS_STATE } from '../websocket/constants';
@@ -19,12 +12,10 @@ import {
     BadMutationError,
     DjibbError,
     NotFoundError,
-    ParseError,
     SerializedDjibbError,
     TablesAlreadyInitializedError,
     UnauthorizedError,
     UnexpectedError,
-    ValidationError,
 } from '../errors';
 import {
     getAuthorizationRules,
@@ -37,8 +28,6 @@ import {
     setMutation,
     setReplicacheClientGroup,
 } from './sql';
-import { initListArgsSchema } from './mutators/client';
-
 import { Account } from '../account';
 import { Result, tryCatch } from '../utils/trycatch';
 
@@ -131,61 +120,6 @@ export class DjibbList extends DurableObject {
 
             throw new NotFoundError(`list not found: ${listId}`);
         }
-
-        return list;
-    }
-
-    handleInitList(listId: string, pushRequest: PushRequestV1) {
-        // We haven't initialized yet, so there are no tables.
-        // We have the initList as our first mutation, so we just
-        // do the server/authoritative version of things immediately
-        // because subsequent queries will need SQL tables created.
-        const parseResult = initListArgsSchema.safeParse(
-            pushRequest.mutations[0]?.args
-        );
-
-        if (!parseResult.success) {
-            console.log(
-                `\`handlePush()\` initListArgs parseError:`,
-                parseResult.error.format()
-            );
-            // Need to skip the mutation somehow
-            throw new ParseError();
-        }
-
-        const initListArgs = parseResult.data;
-
-        if (initListArgs.listId !== listId) {
-            console.log(
-                `\`handlePush()\` initialization error: initListArgs.listId "${initListArgs.listId}" !== listId! "${listId}"`
-            );
-            throw new ValidationError();
-        }
-
-        let authorizationRules = DEFAULT_LIST_AUTHORIZATION_RULES;
-
-        if (initListArgs.accountId) {
-            authorizationRules = {
-                authorized_accounts: {
-                    [initListArgs.accountId]: { role: 'owner' },
-                },
-                default_role: 'restricted',
-                set_by: 'user',
-            };
-        }
-
-        const list = {
-            authorization_rules: authorizationRules,
-            child_element_refs: [],
-            type: 'list' as const,
-            id: initListArgs.listId,
-            name: DEFAULT_LIST_TITLE,
-            time_created: initListArgs.timestamp_client,
-            time_deleted: null,
-            time_updated: initListArgs.timestamp_client,
-            version: 0,
-            workspace_id: initListArgs.workspaceId,
-        };
 
         return list;
     }
@@ -565,162 +499,99 @@ export class DjibbList extends DurableObject {
         mutation: MutationV1,
         nextVersion: number
     ): { ackedMutationId: number | null; didMutate: boolean } {
+        // Check the Mutation's ID matches the Expected ID.
+        if (expectedMutationId !== mutation.id) {
+            console.log(
+                expectedMutationId > mutation.id
+                    ? `Mutation from the past! Expected "${expectedMutationId}" Got "${mutation.id}"`
+                    : `Mutation from the future! Expected "${expectedMutationId}" Got "${mutation.id}"`
+            );
+            // From-the-past mutations have already been processed; ack
+            // them so Replicache stops resending. From-the-future
+            // mutations are wedged; don't ack.
+            return {
+                ackedMutationId:
+                    expectedMutationId > mutation.id ? mutation.id : null,
+                didMutate: false,
+            };
+        }
+
+        // Cross-account check: a mutation may claim an `accountId`
+        // (for offline / multi-account flows). If it does, that account
+        // must be one the session is signed in as. Envelope-level
+        // concern, handled before dispatch.
+        const claimedAccountId =
+            (mutation.args as { accountId?: string | null } | null)
+                ?.accountId ?? null;
+        if (
+            claimedAccountId &&
+            !authorizedAccounts.some(a => a.id === claimedAccountId)
+        ) {
+            throw new UnauthorizedError(`${mutation.id} not authorized`);
+        }
+
         let mutationStatus: Mutation['status'] = 'unknown';
-        // let nextMutationId = expectedMutationId + 1;
-        let parsedMutation: Mutation;
 
         try {
-            // Check the Mutation's ID matches the Expected ID.
-            if (expectedMutationId !== mutation.id) {
-                if (expectedMutationId > mutation.id) {
-                    // This mutation is from the past. We assume we've
-                    // already handled it and skip.
-                    console.log(
-                        `Mutation from the past! Expected "${expectedMutationId}" Got "${mutation.id}"`
-                    );
+            const result = dispatchServerMutation(mutation, {
+                sql: this.sql,
+                role: authorizedRole,
+                nextVersion,
+            });
 
-                    // this.dropTables();
-                } else if (mutation.id > expectedMutationId) {
-                    // This mutation is from the future! That's bad.
-                    console.log(
-                        `Mutation from the future! Expected "${expectedMutationId}" Got "${mutation.id}"`
-                    );
-                }
-
+            if (result.ok) {
+                mutationStatus = 'succeeded';
+            } else if (result.status === 'unauthorized') {
                 console.log(
-                    '`handlePush()` Mutation did not match expectations:',
-                    {
-                        clientID: mutation.clientID,
-                        mutationID: mutation.id,
-                        expectedMutationId: expectedMutationId,
-                    }
+                    `\`handleMutation()\` unauthorized: ${result.reason}`
                 );
-                // From-the-past mutations have already been processed;
-                // ack them so Replicache stops resending.
-                // From-the-future mutations are wedged; don't ack.
-                return {
-                    ackedMutationId:
-                        expectedMutationId > mutation.id ? mutation.id : null,
-                    didMutate: false,
-                };
-            }
-
-            const serverMutator = ServerMutators[mutation.name];
-
-            if (!serverMutator) {
-                console.error(
-                    `\`handlePush()\` error: unknown mutator "${mutation.name}"`
-                );
-                // console.log('ServerMutators:', ServerMutators);
-
-                // TODO: we don't want to throw here, so catch any
-                // obvious errors during dev, then remove this throw to
-                // return the next mutation ID to "skip" this bad mutation.
-                // throw new InvalidMutatorError(mutation.name);
-
-                return { ackedMutationId: mutation.id, didMutate: false };
-            }
-
-            const parseResult =
-                MutationSchema.passthrough().safeParse(mutation);
-
-            if (!parseResult.success) {
-                console.log('mutation.args:', mutation.args);
+                throw new UnauthorizedError(result.reason);
+            } else {
                 console.log(
-                    'bad parse of mutation.args:',
-                    parseResult.error.format()
+                    `\`handleMutation()\` skipped "${mutation.name}": ${result.reason}`
                 );
-
-                // TODO: we don't want to throw here, so catch any
-                // obvious errors during dev, then remove this throw to
-                // return the next mutation ID to "skip" this bad mutation.
-                // throw new ValidationError();
-
-                return { ackedMutationId: mutation.id, didMutate: false };
+                mutationStatus = 'skipped';
             }
-
-            parsedMutation = parseResult.data;
-
-            // We have an accountId to associate with this mutation.
-            // Verify that the account ID is authorized on the request.
-            // The account ID must be an arg from the mutation to
-            // support offline mutations as well as switching accounts.
-            if (
-                parsedMutation.args.accountId &&
-                !(
-                    authorizedAccounts.length &&
-                    authorizedAccounts.some(account => {
-                        account.id === parsedMutation.args.accountId;
-                    })
-                )
-            ) {
-                // IDK i think we DO want to throw on this?
-                // Maybe change later to skip this mutation by
-                // returning the next expected mutation ID?
-                throw new UnauthorizedError(`${mutation.id} not authorized`);
-            }
-
-            serverMutator(
-                this.sql,
-                authorizedRole,
-                mutation.args,
-                nextVersion
-            );
-            mutationStatus = 'succeeded';
-
-            // setMutation(this.sql, parsedMutation);
         } catch (error) {
             console.error(
-                `\`handlePush()\` error executing serverMutator "${mutation.name}":`,
+                `\`handleMutation()\` error executing "${mutation.name}":`,
                 error
             );
 
             if (error instanceof UnauthorizedError) {
-                // Throw the error again because maybe the user just
-                // needs to authenticate again before trying pushing
-                // the mutation.
                 throw error;
             } else if (error instanceof DjibbError) {
                 mutationStatus = 'skipped';
             } else {
-                mutationStatus = 'error'; // doesn't do anything yet, bc of throw
+                mutationStatus = 'error';
                 throw new UnexpectedError();
             }
+        }
 
-            // TODO: remove this try/catch after testing
+        // Best-effort log of skipped/succeeded mutations. Validation
+        // failures may leave args in unexpected shape; tread carefully.
+        if (mutationStatus === 'succeeded' || mutationStatus === 'skipped') {
             try {
-                // Do our best to pull the args we can before recording the
-                // skipped mutation. One of the reasons this mutation was
-                // skipped is because of a validation error, so we should
-                // tread somewhat carefully.
+                const args = (mutation.args ?? {}) as {
+                    accountId?: string | null;
+                    timestamp_client?: string | null;
+                };
                 setMutation(this.sql, {
                     ...mutation,
                     args: {
-                        ...(mutation.args && typeof mutation.args === 'object'
-                            ? mutation.args
+                        ...(typeof mutation.args === 'object' && mutation.args
+                            ? (mutation.args as object)
                             : {}),
-                        accountId:
-                            (mutation.args as MutationArgs)?.accountId ?? null,
-                        timestamp_client:
-                            (mutation.args as MutationArgs)?.timestamp_client ??
-                            null,
+                        accountId: args.accountId ?? null,
+                        timestamp_client: args.timestamp_client ?? null,
                     },
                     status: mutationStatus,
-                });
+                } as unknown as Mutation);
             } catch (error) {
-                // console.log(
-                //     'test error str:',
-                //     error?.toString() ===
-                //         'Error: table mutations has no column named status: SQLITE_ERROR'
-                // );
-                // if (
-                //     error?.toString() ===
-                //     'Error: table mutations has no column named status: SQLITE_ERROR'
-                // ) {
-                //     this.dropTables();
-                // } else {
-                // }
-                console.log('bad match. str:', error?.toString());
+                console.log(
+                    '`handleMutation()` setMutation log error:',
+                    error?.toString()
+                );
             }
         }
 

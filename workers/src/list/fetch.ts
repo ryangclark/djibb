@@ -310,7 +310,7 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
                 type: entityType,
                 authorization_rules: initRules,
                 time_created: Math.floor(
-                    initArgs.timestamp_client.getTime() / 1000,
+                    (initArgs.timestamp_client ?? new Date()).getTime() / 1000,
                 ),
             });
 
