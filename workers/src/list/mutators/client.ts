@@ -202,6 +202,7 @@ export async function initList(
     const list: List = {
         authorization_rules: authorizationRules,
         child_element_refs: [],
+        forked_from_id: null,
         type: 'list',
         id: listId,
         name: DEFAULT_LIST_TITLE,

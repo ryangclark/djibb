@@ -216,11 +216,15 @@ export function getChangedElements(sql: SqlStorage, previousVersion: number) {
     for (const row of cursor) {
         let data: any = row;
 
-        if (row.type === 'list') {
-            // Add list-specific properties.
+        if (row.type === 'list' || row.type === 'template') {
+            // Entity-level fields that live in D1 per ADR 0001 are
+            // hydrated from the DO's legacy storage for now — defaulted
+            // when the DO doesn't carry them. Will be removed when the
+            // entity row is dropped from list_elements entirely.
             data = {
                 ...row,
                 authorization_rules: getAuthorizationRules(sql),
+                forked_from_id: null,
                 workspace_id: sql
                     .exec(`SELECT value FROM kv WHERE key = "workspace_id"`) //
                     .one()['value'],

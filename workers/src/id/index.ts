@@ -13,6 +13,7 @@ export const IdTypes = {
     list: 'l',
     mutation: 'm',
     session: 's',
+    template: 't',
     workspace: 'w',
 };
 

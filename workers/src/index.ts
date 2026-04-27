@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { User, verifyRequestOrigin } from 'lucia';
 
-import { list_app } from './list/fetch';
+import { list_app, template_app } from './list/fetch';
 import { AuthorizationRole } from './auth/rules';
 import { EntityRow } from './list/entity';
 import { Session } from './auth/session';
@@ -135,6 +135,7 @@ app.route('/a', AccountApp);
 app.route('/auth', Auth_App);
 app.route('/invitations', InvitationApp);
 app.route('/list', list_app);
+app.route('/template', template_app);
 app.route('/u', UserApp);
 app.route('/workspace', WorkspaceApp);
 

@@ -47,6 +47,7 @@ export function initList(
         id: listId,
         authorization_rules: DefaultAuthorizationRules,
         child_element_refs: [],
+        forked_from_id: null,
         // description: '',
         name: '',
         time_created: new Date(),

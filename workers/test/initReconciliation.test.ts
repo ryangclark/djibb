@@ -26,8 +26,8 @@ function makeListId(): string {
     return newId('list');
 }
 
-function pushUrl(entityId: string): string {
-    return `${ORIGIN}/list/push?id=${encodeURIComponent(entityId)}`;
+function pushUrl(entityId: string, route: 'list' | 'template' = 'list'): string {
+    return `${ORIGIN}/${route}/push?id=${encodeURIComponent(entityId)}`;
 }
 
 function makeInitListPush(args: {
@@ -60,8 +60,9 @@ function makeInitListPush(args: {
 async function postPush(
     entityId: string,
     body: PushRequestV1,
+    route: 'list' | 'template' = 'list',
 ): Promise<Response> {
-    const req = new Request(pushUrl(entityId), {
+    const req = new Request(pushUrl(entityId, route), {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -162,6 +163,40 @@ describe('init reconciliation: workspace-targeted creation', () => {
 
         const row = await getEntityRow(listId);
         expect(row).toBeNull();
+    });
+});
+
+describe('init reconciliation: template endpoint', () => {
+    it('inserts a template-typed row when init pushed via /template', async () => {
+        const templateId = newId('template');
+        const res = await postPush(
+            templateId,
+            makeInitListPush({
+                listId: templateId,
+                accountId: null,
+                workspaceId: null,
+            }),
+            'template',
+        );
+        expect(res.status).toBe(200);
+
+        const row = await getEntityRow(templateId);
+        expect(row).toBeTruthy();
+        expect(row.type).toBe('template');
+    });
+
+    it('rejects a list ID pushed against /template', async () => {
+        const listId = newId('list');
+        const res = await postPush(
+            listId,
+            makeInitListPush({
+                listId,
+                accountId: null,
+                workspaceId: null,
+            }),
+            'template',
+        );
+        expect(res.status).toBe(400);
     });
 });
 

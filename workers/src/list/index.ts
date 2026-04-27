@@ -4,27 +4,55 @@ import { AuthorizationRulesSchema } from '../auth/rules';
 import { ID_LENGTH, IdTypes } from '../id';
 import { DatelikeToDateSchema } from '../schema';
 
-export const ListSchema = z.object({
+/**
+ * Fields shared by every top-level entity (List, Template). The `type`
+ * literal and `id` length differ per concrete entity and are added by
+ * the extending schemas.
+ */
+const entityBaseFields = {
     authorization_rules: AuthorizationRulesSchema,
     child_element_refs: z.array(z.string()),
     description: z.string().optional(),
-    id: z.string().length(ID_LENGTH + IdTypes['list'].length + 1), // +1 for the slash
+    /**
+     * Lineage pointer. The ID's type prefix (`t/...` vs `l/...`) tells
+     * you whether the source was a Template or another List, so no
+     * separate field is needed.
+     */
+    forked_from_id: z.string().nullable(),
     name: z.string(),
     time_created: DatelikeToDateSchema,
     time_deleted: DatelikeToDateSchema.nullable(),
     time_updated: DatelikeToDateSchema,
-    type: z.literal('list'),
     workspace_id: z
         .string()
         .length(ID_LENGTH + IdTypes['workspace'].length + 1) // +1 for slash
         .nullable(),
     version: z.number(),
+};
+
+export const ListSchema = z.object({
+    ...entityBaseFields,
+    id: z.string().length(ID_LENGTH + IdTypes['list'].length + 1), // +1 for slash
+    type: z.literal('list'),
 });
 
 /**
  * The top-level List element. The List Itself.
  */
 export type List = z.TypeOf<typeof ListSchema>;
+
+export const TemplateSchema = z.object({
+    ...entityBaseFields,
+    id: z.string().length(ID_LENGTH + IdTypes['template'].length + 1), // +1 for slash
+    type: z.literal('template'),
+});
+
+/**
+ * A reusable, remixable List shape. Same DO machinery as a List;
+ * distinguished only by the `type` discriminator and ID prefix. See
+ * CONTEXT.md.
+ */
+export type Template = z.TypeOf<typeof TemplateSchema>;
 
 export const ListGroupSchema = z.object({
     child_element_refs: z.array(z.string()),
@@ -115,7 +143,8 @@ export const ListElementUnion = z.discriminatedUnion('type', [
     ListGroupSchema,
     ListItemSchema,
     ListSchema,
+    TemplateSchema,
 ]);
 
-/** An element in a list, or even the list itself. */
-export type ListElement = List | ListGroup | ListItem;
+/** An element in a list/template, or the entity itself. */
+export type ListElement = List | Template | ListGroup | ListItem;
