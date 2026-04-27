@@ -46,10 +46,13 @@ Split entity storage:
 Offline element editing is a stated requirement (`docs/use-cases.md` — Moab packing scenario). Offline entity *creation* must also continue to work:
 
 1. Frontend generates the entity ID and queues `initList` (or `initTemplate`) as a Replicache mutation against the new entity's (yet-uninstantiated) DO, then proceeds to queue element mutations as normal — all offline-capable.
-2. On reconnect, the first push instantiates the DO. The `initList` server mutator performs, atomically from the client's perspective:
-   a. RPC back to the worker to `INSERT INTO workspace_entities ...` (D1). Idempotent on entity ID.
-   b. Write the metadata into the DO's `kv` mirror.
-3. Subsequent queued element mutations land in the DO normally.
+2. On reconnect, the first push reaches the worker. The worker orchestrates init, atomically from the client's perspective:
+   a. Worker `INSERT INTO workspace_entities ...` (D1). Idempotent on entity ID.
+   b. Worker forwards the push to the DO with the resolved metadata + caller's role attached to the request envelope.
+   c. DO's `handleInitList` writes the DO's `kv` mirror from the envelope, then processes any subsequent queued element mutations normally.
+3. Push succeeds only if both D1 insert and DO mirror write succeed; on partial failure the client retries the queued push.
+
+**Why worker-orchestrated rather than DO-orchestrated:** the literal "DO mutator RPCs back to the worker" pattern would require the DO's env to carry a service binding to its own worker (or `fetch()` its own URL), inverting the usual call direction. Hosting init in the worker keeps D1 work where D1 bindings naturally live and matches the policy-decision-point / policy-enforcement-point split adopted for the auth resolver. The trade-off is mild: the DO is no longer the sole authority on its own creation. The atomicity invariant is preserved one layer up.
 
 Failure modes for offline-created entities:
 
