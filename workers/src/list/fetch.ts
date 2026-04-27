@@ -19,20 +19,9 @@ import { z } from 'zod';
 import { tryCatch } from '../utils/trycatch';
 import { IdTypes } from '../id';
 import { GetMembership } from '../workspace/service';
-import { WorkspaceRole } from '../workspace';
+import { resolveRole } from '../auth/resolver';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
-
-function workspaceRoleToListRole(role: WorkspaceRole): AuthorizationRole {
-    switch (role) {
-        case 'owner':
-        case 'admin':
-        case 'member':
-            return AuthorizationRoleEnum.enum.editor;
-        case 'viewer':
-            return AuthorizationRoleEnum.enum.viewer;
-    }
-}
 
 /**
  * The shape of the Hono context for use in List Hono app `list_app`.
@@ -126,57 +115,65 @@ list_app.use(async (c, next) => {
         ? sessionAccounts.find(a => a.id === activeAccountHeader)?.id ?? null
         : null;
 
-    let authRole: AuthorizationRole | undefined;
+    // Resolve a role per session account. Specificity within a single
+    // account is owned by `resolveRole`. Cross-account picking
+    // (explicit > workspace > default; active-account tiebreaker)
+    // stays here — it's an orthogonal concern.
+    type Candidate = {
+        accountId: string;
+        role: AuthorizationRole;
+        source: 'explicit' | 'workspace' | 'default';
+    };
+    const candidates: Candidate[] = [];
+    let workspaceId: string | null = null;
 
-    // 1. Explicit list role on any session account.
-    const matchedExplicit: { accountId: string; role: AuthorizationRole }[] = [];
     for (const account of sessionAccounts) {
-        const explicit = authorizationRules.authorized_accounts[account.id];
-        if (explicit) {
-            matchedExplicit.push({ accountId: account.id, role: explicit.role });
-        }
-    }
-    if (matchedExplicit.length >= 1) {
-        const picked =
-            (activeAccountId
-                ? matchedExplicit.find(m => m.accountId === activeAccountId)
-                : undefined) ?? matchedExplicit[0];
-        authRole = picked!.role;
-    }
-
-    // 2. Workspace membership fallback.
-    if (!authRole && sessionAccounts.length) {
-        const workspaceId = await c.get('list').getWorkspaceId();
-        if (workspaceId) {
-            const candidates: { accountId: string; role: AuthorizationRole }[] = [];
-            for (const account of sessionAccounts) {
+        const hasExplicit =
+            authorizationRules.authorized_accounts[account.id] != null;
+        let workspaceRole = null;
+        if (!hasExplicit) {
+            workspaceId ??= await c.get('list').getWorkspaceId();
+            if (workspaceId) {
                 const membership = await GetMembership(
                     c.env.DJIBB_AUTH,
                     account.id,
                     workspaceId
                 );
-                if (membership) {
-                    candidates.push({
-                        accountId: account.id,
-                        role: workspaceRoleToListRole(membership.role),
-                    });
-                }
-            }
-            if (candidates.length >= 1) {
-                const picked =
-                    (activeAccountId
-                        ? candidates.find(
-                              x => x.accountId === activeAccountId
-                          )
-                        : undefined) ?? candidates[0];
-                authRole = picked!.role;
+                workspaceRole = membership?.role ?? null;
             }
         }
+        candidates.push({
+            accountId: account.id,
+            role: resolveRole(
+                { account_id: account.id },
+                authorizationRules,
+                workspaceRole
+            ),
+            source: hasExplicit
+                ? 'explicit'
+                : workspaceRole
+                ? 'workspace'
+                : 'default',
+        });
     }
 
-    // 3. Default role.
-    if (!authRole) {
-        authRole = authorizationRules.default_role;
+    function pickByActive(level: Candidate[]): Candidate {
+        return (
+            (activeAccountId
+                ? level.find(c => c.accountId === activeAccountId)
+                : undefined) ?? level[0]!
+        );
+    }
+
+    let authRole: AuthorizationRole;
+    const explicit = candidates.filter(c => c.source === 'explicit');
+    const workspace = candidates.filter(c => c.source === 'workspace');
+    if (explicit.length) {
+        authRole = pickByActive(explicit).role;
+    } else if (workspace.length) {
+        authRole = pickByActive(workspace).role;
+    } else {
+        authRole = resolveRole(null, authorizationRules, null);
     }
 
     c.set('authorized_role', authRole);
