@@ -5,7 +5,7 @@ import { ReplicachePullRequest } from '../replicache';
 import { List, ListElement } from './index';
 import { dispatchServerMutation, Mutation } from './mutators';
 
-import { AuthorizationRole, AuthorizationRules } from '../auth/rules';
+import { AuthorizationRole } from '../auth/rules';
 import { WS_MESSAGE_PULL_PLS, WS_STATE } from '../websocket/constants';
 import { Bindings } from '..';
 import {
@@ -18,7 +18,6 @@ import {
     UnexpectedError,
 } from '../errors';
 import {
-    getAuthorizationRules,
     getChangedElements,
     getElementById,
     getListVersion,
@@ -88,23 +87,6 @@ export class DjibbList extends DurableObject {
 
             return Promise.resolve();
         });
-    }
-
-    getAuthorizationRules(): AuthorizationRules {
-        return getAuthorizationRules(this.sql);
-    }
-
-    getWorkspaceId(): string | null {
-        try {
-            const row = this.sql
-                .exec(`SELECT value FROM kv WHERE key = "workspace_id"`)
-                .next();
-            const value = (row as any)?.value?.value;
-            return value ?? null;
-        } catch {
-            // kv table may not exist yet (pre-init). Treat as no workspace.
-            return null;
-        }
     }
 
     getList(args: { listId: string }): Result<List, SerializedDjibbError> {

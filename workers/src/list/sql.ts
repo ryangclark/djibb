@@ -1,13 +1,4 @@
 import { ListElement, ListElementUnion, ListItem, ListSchema, Quantity } from '.';
-import { Account } from '../account';
-import {
-    AuthorizationRole,
-    AuthorizationRules,
-    AuthorizationRulesSchema,
-    AuthorizationRulesSetBy,
-    AuthorizedAccountSchema,
-    DefaultRole,
-} from '../auth/rules';
 import {
     BadMutationError,
     DjibbError,
@@ -94,55 +85,6 @@ export function createElement(sql: SqlStorage, element: ListElement) {
 //     return rows.map(row => [row.key, row.value, row.deleted]);
 // }
 
-// Pulls the account roles for the list.
-export function getAccountsRoles(sql: SqlStorage) {
-    const cursor = sql.exec(
-        `SELECT id AS account_id, role FROM accounts LIMIT 100`
-    );
-    const accountRoles: AuthorizationRules['authorized_accounts'] = {};
-
-    for (const row of cursor) {
-        if (row['account_id'] !== 'string') {
-            throw new ValidationError('invalid row["account_id"]');
-        }
-
-        const parseResult = AuthorizedAccountSchema.safeParse(row['role']);
-
-        if (parseResult.success) {
-            accountRoles[row['account_id']] = parseResult.data;
-        } else {
-            throw new ValidationError('invalid row["role"]');
-        }
-    }
-
-    return accountRoles;
-}
-
-export function getAuthorizationRules(sql: SqlStorage): AuthorizationRules {
-    try {
-        const authorizationRules: AuthorizationRules = {
-            authorized_accounts: getAccountsRoles(sql),
-            default_role: sql
-                .exec(`SELECT value FROM kv WHERE key = "auth_default_role"`)
-                .one()['value'] as DefaultRole,
-            set_by: sql
-                .exec(`SELECT value FROM kv WHERE key = "auth_rules_set_by"`)
-                .one()['value'] as AuthorizationRulesSetBy,
-        };
-        return authorizationRules;
-    } catch (error) {
-        if (error?.toString().startsWith('Error: no such table: accounts')) {
-            // We aren't yet initialized, so tables don't yet exist,
-            // so return defaults.
-
-            return DefaultAuthorizationRules;
-        }
-
-        // Everything else, 500 Internal Server Error
-        throw new UnexpectedError();
-    }
-}
-
 export function getElementById(sql: SqlStorage, elementId: string) {
     const cursor = sql.exec(
         `SELECT *
@@ -165,15 +107,15 @@ export function getElementById(sql: SqlStorage, elementId: string) {
     let data: any = result.value;
 
     if (result.value.type === 'list') {
-        // Add list-specific info.
+        // Entity-level fields (`authorization_rules`, `workspace_id`,
+        // `forked_from_id`) live in D1 per ADR 0001. The worker
+        // overlays them onto responses; the DO writes placeholders
+        // here that are never observed by clients.
         data = {
             ...result.value,
-            authorization_rules: getAuthorizationRules(sql),
-            workspace_id:
-                sql
-                    .exec(`SELECT value FROM kv WHERE key = "workspace_id"`)
-                    // .raw()
-                    .next()?.['value']?.['value'] || null,
+            authorization_rules: DefaultAuthorizationRules,
+            workspace_id: null,
+            forked_from_id: null,
         };
     }
 
@@ -217,17 +159,14 @@ export function getChangedElements(sql: SqlStorage, previousVersion: number) {
         let data: any = row;
 
         if (row.type === 'list' || row.type === 'template') {
-            // Entity-level fields that live in D1 per ADR 0001 are
-            // hydrated from the DO's legacy storage for now — defaulted
-            // when the DO doesn't carry them. Will be removed when the
-            // entity row is dropped from list_elements entirely.
+            // Entity-level fields live in D1 per ADR 0001; worker
+            // overlays them on responses. Placeholders here are never
+            // observed by clients.
             data = {
                 ...row,
-                authorization_rules: getAuthorizationRules(sql),
+                authorization_rules: DefaultAuthorizationRules,
                 forked_from_id: null,
-                workspace_id: sql
-                    .exec(`SELECT value FROM kv WHERE key = "workspace_id"`) //
-                    .one()['value'],
+                workspace_id: null,
             };
         }
 
@@ -357,27 +296,11 @@ export function InitializeTables(
         );`
     );
 
-    // TODO: create an INIT_WORKSPACE_ID or SET_WORKSPACE_ID or whatever, and trigger it it early on
-
-    // Initialize KV with defaults values.
+    // Initialize KV with defaults values. Auth rules and workspace_id
+    // live in D1 per ADR 0001 — not stored on the DO.
     sql.exec(
         `INSERT INTO kv VALUES
-        ("auth_default_role", "ownerless"),
-        ("auth_rules_set_by", "defaults"),
-        ("schema_version", "2"),
-        ("workspace_id", NULL);`
-    );
-
-    // Init the members table, which stores each account that
-    // is affiliated with this list as a row.
-    sql.exec(
-        `CREATE TABLE IF NOT EXISTS accounts(
-            "id" TEXT NOT NULL PRIMARY KEY,
-            "flags" TEXT DEFAULT NULL,
-            "role" TEXT NOT NULL
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_id
-        ON accounts(id);`
+        ("schema_version", "2");`
     );
 
     sql.exec(
@@ -522,50 +445,6 @@ export function getReplicacheClientGroupById(
     }
 
     return ReplicacheClientGroupSchema.parse(result);
-}
-
-export function setAuthorizedAccount(
-    sql: SqlStorage,
-    accountId: Account['id'],
-    accountFlags: Record<string, any> | null,
-    authorizedRole: AuthorizationRole
-) {
-    // to be clear, i have no idea if this thing rips
-    sql.exec(
-        `INSERT INTO accounts(id, flags, role)
-        VALUES (?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            flags=excluded.flags,
-            role=excluded.role;`,
-        accountId,
-        JSON.stringify(accountFlags),
-        authorizedRole
-    );
-}
-
-export function setAuthorizationDefaultRole(
-    sql: SqlStorage,
-    defaultRole: AuthorizationRole,
-    setBy: AuthorizationRules['set_by']
-) {
-    const parseResult = AuthorizationRulesSchema.pick({
-        default_role: true,
-    }).safeParse(defaultRole);
-
-    if (!parseResult.success) {
-        console.log(
-            '`setAuthorizationDefaultRole()` parse error:',
-            parseResult.error.format()
-        );
-        throw new ValidationError();
-    }
-
-    sql.exec(
-        `UPDATE kv SET value = ? WHERE key = "auth_default_role";
-         UPDATE kv SET value = ? WHERE key = "auth_rules_set_by";`,
-        defaultRole,
-        setBy
-    );
 }
 
 // Narrow UPDATE for item value + version bumps. Used by the

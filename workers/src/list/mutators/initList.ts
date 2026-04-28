@@ -1,13 +1,8 @@
 import { z } from 'zod';
 
-import { AuthorizationRoleEnum } from '../../auth/rules';
 import type { AuthorizationRules } from '../../auth/rules';
 import { ValidationError } from '../../errors';
-import {
-    createElement,
-    setAuthorizationDefaultRole,
-    setAuthorizedAccount,
-} from '../sql';
+import { createElement } from '../sql';
 import { ListSchema } from '..';
 import type { List } from '..';
 import { DEFAULT_LIST_TITLE } from '.';
@@ -41,31 +36,21 @@ export const name = 'initList' as const;
 export const requiredRole = EDIT_ROLES;
 
 /**
- * Server-side init: creates the DO-side list element row mirroring the
- * D1 entity. Worker reconciliation already inserted the canonical row
- * and resolved auth, so we just hydrate DO state.
+ * Server-side init: creates the DO-side list element row. Entity-level
+ * fields (`authorization_rules`, `workspace_id`, `forked_from_id`) live
+ * in D1 per ADR 0001 and are overlaid by the worker on response —
+ * we write placeholders here that are never observed by clients.
  */
-export const server: ServerMutator<Args> = (
-    args,
-    { sql, accountId, timestamp_client }
-) => {
+export const server: ServerMutator<Args> = (args, { sql, timestamp_client }) => {
     const ts = timestamp_client ?? new Date();
-
-    const authorizationRules: AuthorizationRules = accountId
-        ? {
-              authorized_accounts: { [accountId]: { role: 'owner' } },
-              default_role: 'restricted',
-              set_by: 'user',
-          }
-        : {
-              authorized_accounts: {},
-              default_role: 'ownerless',
-              set_by: 'defaults',
-          };
 
     const list: List = {
         id: args.listId,
-        authorization_rules: authorizationRules,
+        authorization_rules: {
+            authorized_accounts: {},
+            default_role: 'ownerless',
+            set_by: 'defaults',
+        },
         child_element_refs: [],
         forked_from_id: null,
         name: DEFAULT_LIST_TITLE,
@@ -73,20 +58,11 @@ export const server: ServerMutator<Args> = (
         time_deleted: null,
         time_updated: ts,
         type: 'list',
-        workspace_id: args.workspaceId,
+        workspace_id: null,
         version: 0,
     };
 
     createElement(sql, list);
-
-    if (accountId) {
-        setAuthorizationDefaultRole(
-            sql,
-            AuthorizationRoleEnum.enum.restricted,
-            'user'
-        );
-        setAuthorizedAccount(sql, accountId, null, 'owner');
-    }
 };
 
 export const client: ClientMutator<Args> = async (

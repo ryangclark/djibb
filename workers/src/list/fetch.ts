@@ -25,12 +25,30 @@ import { z } from 'zod';
 import { IdTypes } from '../id';
 import { GetMembership } from '../workspace/service';
 import { resolveRole } from '../auth/resolver';
-import { GetEntity, InsertEntityIfMissing } from './entity';
+import { EntityRow, GetEntity, InsertEntityIfMissing } from './entity';
 import { initListArgsSchema } from './mutators/client';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
 
 type EntityType = 'list' | 'template';
+
+/**
+ * D1 is authoritative for entity-level metadata per ADR 0001. The DO's
+ * stored list element carries placeholders for these fields; the worker
+ * overlays the real values from the D1 entity row before returning to
+ * clients. This is the single composition seam for entity metadata.
+ */
+function overlayEntityFields<T extends Record<string, unknown>>(
+    listElement: T,
+    entity: EntityRow,
+): T {
+    return {
+        ...listElement,
+        authorization_rules: entity.authorization_rules,
+        workspace_id: entity.workspace_id,
+        forked_from_id: entity.forked_from_id,
+    };
+}
 
 /**
  * Resolves a role from the session against given rules + the calling
@@ -185,7 +203,8 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
     });
 
     app.get('', async c => {
-        if (!c.get('entity')) throw new NotFoundError();
+        const entity = c.get('entity');
+        if (!entity) throw new NotFoundError();
 
         const listId = c.get('list').name ?? c.get('entity_id');
         if (!listId) throw new UnexpectedError('invalid listId');
@@ -204,7 +223,7 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
                 },
             );
         }
-        return c.json(list);
+        return c.json(overlayEntityFields(list, entity));
     });
 
     app.post('/pull', async c => {
@@ -225,7 +244,7 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
         const listId = c.get('list').name ?? c.get('entity_id');
         if (!listId) throw new UnexpectedError('invalid listId');
 
-        const { data: list, error } = await c.get('list').handlePull({
+        const { data: pullResponse, error } = await c.get('list').handlePull({
             authorizedRole: c.get('authorized_role'),
             listId,
             pullRequest: parse_result.data,
@@ -243,7 +262,20 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
                 },
             );
         }
-        return c.json(list);
+
+        const entity = c.get('entity')!;
+        const patch = pullResponse.patch.map(op =>
+            op.op === 'put' && op.key === entity.id
+                ? {
+                      ...op,
+                      value: overlayEntityFields(
+                          op.value as Record<string, unknown>,
+                          entity,
+                      ),
+                  }
+                : op,
+        );
+        return c.json({ ...pullResponse, patch });
     });
 
     app.post('/push', async c => {
