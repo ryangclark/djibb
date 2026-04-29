@@ -40,13 +40,13 @@ export function tryCatch<T, E = Error>(
  * @param promise
  * @returns
  */
-export async function tryCatchAsync<T, E = Error>(
+export async function tryCatchAsync<T>(
     promise: Promise<T>
-): Promise<Result<T, E>> {
+): Promise<Result<T, SerializedDjibbError>> {
     try {
         const data = await promise;
         return { data, error: null };
     } catch (error) {
-        return { data: null, error: error as E };
+        return { data: null, error: serializeError(error) };
     }
 }

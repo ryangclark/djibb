@@ -28,7 +28,16 @@ import {
     setReplicacheClientGroup,
 } from './sql';
 import { Account } from '../account';
-import { Result, tryCatch } from '../utils/trycatch';
+import { Result, tryCatch, tryCatchAsync } from '../utils/trycatch';
+import { EmitEntitySnapshotToCatalog } from './entity';
+
+/**
+ * Mutator names that change entity-level metadata (the fields projected
+ * to the D1 read index). Used by the push handler to decide whether to
+ * emit an entity snapshot post-commit. Add entries here as new metadata
+ * mutators land (renameList, setListAuthRules, archiveList, ...).
+ */
+const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set(['initList']);
 
 /**
  * TODO:
@@ -285,10 +294,10 @@ export class DjibbList extends DurableObject {
         listId: string;
         pushRequest: PushRequestV1;
     }) {
-        return tryCatch(() => this._handlePush(args));
+        return tryCatchAsync(this._handlePush(args));
     }
 
-    public _handlePush({
+    public async _handlePush({
         authorizedAccounts,
         authorizedRole,
         listId,
@@ -384,6 +393,13 @@ export class DjibbList extends DurableObject {
             `begin processing ${pushRequest.mutations.length} mutations`
         );
 
+        // Tracks whether any successful mutation in this push touched
+        // entity-level metadata fields. The DO emits a snapshot to the
+        // D1 read index post-commit per ADR 0003. For now the only
+        // entity-mutating mutator is `initList`; renameList / archive /
+        // setListAuthRules will join this list as they land.
+        let entityMetadataMutated = false;
+
         for (let i = 0; i < pushRequest.mutations.length; i++) {
             const mutation = pushRequest.mutations[i];
 
@@ -449,6 +465,9 @@ export class DjibbList extends DurableObject {
 
             if (didMutate) {
                 listVersion = nextVersion;
+                if (ENTITY_METADATA_MUTATORS.has(mutation.name)) {
+                    entityMetadataMutated = true;
+                }
             }
             if (ackedMutationId !== null) {
                 replicacheClient.lastMutationId = ackedMutationId;
@@ -461,6 +480,15 @@ export class DjibbList extends DurableObject {
         setReplicacheClientGroup(this.sql, replicacheClientGroup);
 
         setListVersion(this.sql, listVersion);
+
+        // Emit current entity snapshot to the D1 read index (ADR 0003).
+        // Synchronous on the request: the worker's middleware reads D1
+        // for auth on subsequent requests, so the next round-trip needs
+        // D1 to be caught up. Failures are logged and recovered on the
+        // next emit; the DO state is already committed and authoritative.
+        if (entityMetadataMutated) {
+            await this.emitEntitySnapshot(listId);
+        }
 
         this.poke();
 
@@ -692,6 +720,56 @@ export class DjibbList extends DurableObject {
             status: 101,
             webSocket: client,
         });
+    }
+
+    /**
+     * Emit a snapshot of the entity row to the D1 catalog read index.
+     * Per ADR 0003 the DO is the single writer for entity metadata; D1
+     * is a derived projection. The emit is current-state UPSERT, not a
+     * diff event — the catalog only needs latest state. When the event
+     * bus arrives this becomes one subscriber on a fan-out.
+     *
+     * Failure is logged but not fatal: the DO's state is already
+     * committed, and the next mutation that touches metadata re-emits.
+     */
+    private async emitEntitySnapshot(entityId: string): Promise<void> {
+        const entity = getElementById(this.sql, entityId);
+        if (!entity || (entity.type !== 'list' && entity.type !== 'template')) {
+            console.warn(
+                `\`emitEntitySnapshot()\` no entity row for "${entityId}"`
+            );
+            return;
+        }
+
+        try {
+            await EmitEntitySnapshotToCatalog(
+                (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+                {
+                    id: entity.id,
+                    workspace_id: entity.workspace_id,
+                    type: entity.type,
+                    name: entity.name,
+                    description: entity.description ?? null,
+                    forked_from_id: entity.forked_from_id,
+                    authorization_rules: entity.authorization_rules,
+                    time_created: Math.floor(
+                        entity.time_created.getTime() / 1000
+                    ),
+                    time_updated: Math.floor(
+                        entity.time_updated.getTime() / 1000
+                    ),
+                    time_deleted: entity.time_deleted
+                        ? Math.floor(entity.time_deleted.getTime() / 1000)
+                        : null,
+                    version: entity.version,
+                }
+            );
+        } catch (error) {
+            console.error(
+                `\`emitEntitySnapshot()\` D1 emit failed for "${entityId}":`,
+                error
+            );
+        }
     }
 
     /**

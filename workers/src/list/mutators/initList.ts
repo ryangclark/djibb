@@ -2,9 +2,10 @@ import { z } from 'zod';
 
 import type { AuthorizationRules } from '../../auth/rules';
 import { ValidationError } from '../../errors';
+import { IdTypes } from '../../id';
 import { createElement } from '../sql';
 import { ListSchema } from '..';
-import type { List } from '..';
+import type { List, Template } from '..';
 import { DEFAULT_LIST_TITLE } from '.';
 import {
     EDIT_ROLES,
@@ -59,7 +60,11 @@ export const server: ServerMutator<Args> = (
               set_by: 'defaults',
           };
 
-    const list: List = {
+    // Same mutator initializes both Lists and Templates; the entity
+    // type comes from the ID prefix. The worker's routing already
+    // rejects mismatched prefixes against the wrong endpoint.
+    const isTemplate = args.listId.startsWith(`${IdTypes.template}/`);
+    const entity: List | Template = {
         id: args.listId,
         authorization_rules,
         child_element_refs: [],
@@ -68,12 +73,12 @@ export const server: ServerMutator<Args> = (
         time_created: ts,
         time_deleted: null,
         time_updated: ts,
-        type: 'list',
+        type: isTemplate ? 'template' : 'list',
         workspace_id: args.workspaceId,
         version: 0,
     };
 
-    createElement(sql, list);
+    createElement(sql, entity);
 };
 
 export const client: ClientMutator<Args> = async (

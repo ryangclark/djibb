@@ -7,8 +7,10 @@ import {
 import { UnexpectedError } from '../errors';
 
 /**
- * Authoritative entity metadata. Lives in the D1 `workspace_entities`
- * table per ADR 0001. The DO holds a kv mirror.
+ * Snapshot of entity metadata as it lives in the D1 `workspace_entities`
+ * read index. Per ADR 0003 the DO is authoritative; this row is a
+ * derived projection emitted by the DO post-commit. The worker reads it
+ * for the auth fast path and catalog queries.
  */
 export const EntityRowSchema = z.object({
     id: z.string(),
@@ -68,54 +70,66 @@ export async function GetEntity(
     return parseRow(row);
 }
 
-export type InsertEntityArgs = {
+export type EntitySnapshot = {
     id: string;
     workspace_id: string | null;
     type: 'list' | 'template';
-    name?: string | null;
-    description?: string | null;
-    forked_from_id?: string | null;
+    name: string;
+    description: string | null;
+    forked_from_id: string | null;
     authorization_rules: AuthorizationRules;
     time_created: number;
+    time_updated: number;
+    time_deleted: number | null;
+    version: number;
 };
 
 /**
- * Idempotent on `id`. Used by the worker-orchestrated init reconciliation:
- * the first push that arrives for a fresh entity inserts the canonical
- * row, and any retry of the same push is a no-op.
+ * Emit a current-state snapshot of an entity to the D1 read index. Per
+ * ADR 0003 the DO is authoritative; this is a denormalized projection.
  *
- * Returns the row as it now exists in D1 (whether just-inserted or
- * pre-existing).
+ * Shaped as a current-state UPSERT rather than a diff event because the
+ * single subscriber (the catalog) only needs latest state. When the
+ * event bus arrives (see ADR 0003 §"Future evolution"), this becomes
+ * one subscriber on a fan-out and the payload promotes to a domain
+ * event with type-tag and prior values.
+ *
+ * Idempotent. Safe to retry. Failures are logged by the caller and
+ * recovered by the next emit (or a future sweeper).
  */
-export async function InsertEntityIfMissing(
+export async function EmitEntitySnapshotToCatalog(
     d1: D1Database,
-    args: InsertEntityArgs,
-): Promise<EntityRow> {
+    snapshot: EntitySnapshot,
+): Promise<void> {
     await d1
         .prepare(
-            `INSERT OR IGNORE INTO workspace_entities (
+            `INSERT INTO workspace_entities (
                 id, workspace_id, type, name, description, forked_from_id,
-                authorization_rules, time_created, time_updated, version
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+                authorization_rules, time_created, time_updated,
+                time_deleted, version
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                workspace_id = excluded.workspace_id,
+                name = excluded.name,
+                description = excluded.description,
+                forked_from_id = excluded.forked_from_id,
+                authorization_rules = excluded.authorization_rules,
+                time_updated = excluded.time_updated,
+                time_deleted = excluded.time_deleted,
+                version = excluded.version`,
         )
         .bind(
-            args.id,
-            args.workspace_id,
-            args.type,
-            args.name ?? null,
-            args.description ?? null,
-            args.forked_from_id ?? null,
-            JSON.stringify(args.authorization_rules),
-            args.time_created,
-            args.time_created,
+            snapshot.id,
+            snapshot.workspace_id,
+            snapshot.type,
+            snapshot.name,
+            snapshot.description,
+            snapshot.forked_from_id,
+            JSON.stringify(snapshot.authorization_rules),
+            snapshot.time_created,
+            snapshot.time_updated,
+            snapshot.time_deleted,
+            snapshot.version,
         )
         .run();
-
-    const row = await GetEntity(d1, args.id);
-    if (!row) {
-        // Insert succeeded (or was ignored) but the row is gone? Should
-        // be impossible without an external race that deleted it.
-        throw new UnexpectedError();
-    }
-    return row;
 }

@@ -25,7 +25,7 @@ import { z } from 'zod';
 import { IdTypes } from '../id';
 import { GetMembership } from '../workspace/service';
 import { resolveRole } from '../auth/resolver';
-import { EntityRow, GetEntity, InsertEntityIfMissing } from './entity';
+import { EntityRow, GetEntity } from './entity';
 import { initListArgsSchema } from './mutators/client';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
@@ -283,11 +283,13 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
             throw new ValidationError();
         })) as PushRequestV1;
 
-        // Pre-init reconciliation: if no D1 row exists for this entity
-        // yet, the first push must begin with `initList`. The worker
-        // inserts the canonical row in D1, then re-resolves the role
-        // and forwards the push to the DO.
-        // ADR 0001 §Reconciliation protocol.
+        // Pre-init authorization: per ADR 0003 the DO is the single
+        // writer for entity metadata, so the worker no longer touches
+        // D1 here. It still validates session ownership of the claimed
+        // account and workspace membership before letting the push
+        // through, and computes the request's role locally so the DO
+        // call carries the right authorization context. The DO writes
+        // its state and emits a snapshot to D1 post-commit.
         if (!c.get('entity')) {
             const first = pushRequest.mutations[0];
             if (!first || first.name !== 'initList') {
@@ -322,38 +324,13 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
                 if (!membership) throw new UnauthorizedError();
             }
 
-            const initRules: AuthorizationRules = initArgs.accountId
-                ? {
-                      authorized_accounts: {
-                          [initArgs.accountId]: { role: 'owner' },
-                      },
-                      default_role: 'restricted',
-                      set_by: 'user',
-                  }
-                : {
-                      authorized_accounts: {},
-                      default_role: 'ownerless',
-                      set_by: 'defaults',
-                  };
-
-            const inserted = await InsertEntityIfMissing(c.env.DJIBB_AUTH, {
-                id: initArgs.listId,
-                workspace_id: initArgs.workspaceId,
-                type: entityType,
-                authorization_rules: initRules,
-                time_created: Math.floor(
-                    (initArgs.timestamp_client ?? new Date()).getTime() / 1000,
-                ),
-            });
-
-            c.set('entity', inserted);
+            // Init has no prior rules to consult: the caller is the
+            // owner-to-be (if authed) or an anonymous editor of an
+            // ownerless list. Skip the rules round-trip; assign the
+            // role directly.
             c.set(
                 'authorized_role',
-                await resolveSessionRole(
-                    c,
-                    inserted.authorization_rules,
-                    inserted.workspace_id,
-                ),
+                initArgs.accountId ? 'owner' : 'ownerless',
             );
         }
 
