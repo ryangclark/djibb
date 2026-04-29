@@ -1,6 +1,6 @@
 # ADR 0001: Entity metadata in D1, elements in DO with metadata mirror
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR 0003 (2026-04-29)
 - **Date:** 2026-04-26
 
 ## Context
