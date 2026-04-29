@@ -1,4 +1,6 @@
 <script>
+	import { goto } from '$app/navigation';
+	import { newId } from '$djibb/id';
 	import { setSessionState } from '$lib/session.svelte';
 	import WorkspaceSwitcher from '$lib/components/WorkspaceSwitcher.svelte';
 	import { onMount } from 'svelte';
@@ -16,6 +18,12 @@
 	onMount(() => {
 		sessionState.fetchSession();
 	});
+
+	function newList() {
+		// Visiting /l/<fresh-id> is the create-list flow: the list page
+		// detects an empty Replicache store and fires `initList`.
+		goto(`/${newId('list')}`);
+	}
 </script>
 
 <header class="m-8 flex gap-10 items-center">
@@ -24,6 +32,7 @@
 		<a href="/">Home</a>
 		<a href="/posts">Blog</a>
 		<a href="/accounts">Accounts</a>
+		<button onclick={newList}>+ New list</button>
 	</nav>
 	<div class="ml-auto">
 		<WorkspaceSwitcher />
