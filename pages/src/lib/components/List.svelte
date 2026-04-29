@@ -37,10 +37,46 @@
 	const sessionState = getSessionState();
 
 	let show_quick_add_item_form = $state(false);
+	let editing_name = $state(false);
+	let name_draft = $state('');
 
 	// Bindings
 	/** @type {HTMLInputElement} */
 	let quick_add_list_item_input;
+	/** @type {HTMLInputElement} */
+	let edit_name_input;
+
+	function startEditName() {
+		name_draft = list.name ?? '';
+		editing_name = true;
+		tick().then(() => edit_name_input?.select());
+	}
+
+	async function commitEditName() {
+		const trimmed = name_draft.trim();
+		if (!trimmed || trimmed === list.name) {
+			editing_name = false;
+			return;
+		}
+		const result = await tryCatchAsync(
+			mutators.renameList({
+				accountId: sessionState.currentAccountId,
+				listId: list.id,
+				name: trimmed,
+				timestamp_client: new Date()
+			})
+		);
+		if (result.error) {
+			console.error('renameList mutation error:', result.error);
+			alert(`Failed to rename list: ${result.error?.message ?? result.error}`);
+			return;
+		}
+		editing_name = false;
+	}
+
+	function cancelEditName() {
+		editing_name = false;
+	}
 
 	/**
 	 * @param {Event} event
@@ -169,22 +205,40 @@
 	{/if}
 
 	<article data-elem-id={list.id} data-elem-type={list.type}>
-		<header class="flex gap-2 my-3">
-			<h2 class="text-2xl">
-				{#if list.name}
-					{list.name}
-				{:else}
-					<span class="italic">Untitled List</span>
-				{/if}
-			</h2>
-			<!-- TODO: -->
-			<!-- style the button good -->
-			<button
-				class="cursor-pointer border-2 border-amber-200 py-0.5 px-2"
-				onclick={() => {
-					alert('"edit title" not yet implemented!');
-				}}>edit</button
-			>
+		<header class="flex gap-2 my-3 items-baseline">
+			{#if editing_name}
+				<input
+					bind:this={edit_name_input}
+					bind:value={name_draft}
+					class="text-2xl border-b border-slate-400 outline-none flex-1"
+					onblur={commitEditName}
+					onkeydown={(e) => {
+						if (e.key === 'Enter') {
+							e.preventDefault();
+							commitEditName();
+						} else if (e.key === 'Escape') {
+							e.preventDefault();
+							cancelEditName();
+						}
+					}}
+				/>
+			{:else}
+				<h2
+					class="text-2xl cursor-text"
+					onclick={startEditName}
+					onkeydown={(e) => {
+						if (e.key === 'Enter') startEditName();
+					}}
+					role="button"
+					tabindex="0"
+				>
+					{#if list.name}
+						{list.name}
+					{:else}
+						<span class="italic text-slate-500">Untitled List</span>
+					{/if}
+				</h2>
+			{/if}
 		</header>
 
 		<!-- TODO: hydrate these dates elsewhere -->

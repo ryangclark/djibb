@@ -461,6 +461,39 @@ export function getReplicacheClientGroupById(
     return ReplicacheClientGroupSchema.parse(result);
 }
 
+/**
+ * Update an entity row's name and version. Used by `renameList`. Per
+ * ADR 0003 the DO is authoritative; the post-commit emit projects the
+ * new name to the D1 catalog read index.
+ */
+export function renameEntity(
+    sql: SqlStorage,
+    {
+        entityId,
+        name,
+        version,
+    }: { entityId: string; name: string; version: number }
+): void {
+    const cursor = sql.exec(
+        `UPDATE list_elements
+        SET
+            name = ?,
+            version = ?,
+            time_updated = CURRENT_TIMESTAMP
+        WHERE id = ?
+            AND (type = 'list' OR type = 'template')
+            AND time_deleted IS NULL;`,
+        name,
+        version,
+        entityId
+    );
+    if (cursor.rowsWritten !== 1) {
+        throw new NotFoundError(
+            `\`renameEntity()\` entity "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+        );
+    }
+}
+
 // Narrow UPDATE for item value + version bumps. Used by the
 // `setItemQuantity` mutator path.
 export function setItemValueAndVersion(

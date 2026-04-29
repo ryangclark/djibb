@@ -12,6 +12,7 @@ import type {
 
 import * as initList from './initList';
 import * as createListItem from './createListItem';
+import * as renameList from './renameList';
 import * as setItem from './setItem';
 import * as setItemQuantity from './setItemQuantity';
 
@@ -34,6 +35,7 @@ export const DEFAULT_LIST_TITLE = '';
 export const Mutations = {
     [initList.name]: initList,
     [createListItem.name]: createListItem,
+    [renameList.name]: renameList,
     [setItem.name]: setItem,
     [setItemQuantity.name]: setItemQuantity,
 } as const;

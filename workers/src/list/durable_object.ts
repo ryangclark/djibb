@@ -37,7 +37,10 @@ import { EmitEntitySnapshotToCatalog } from './entity';
  * emit an entity snapshot post-commit. Add entries here as new metadata
  * mutators land (renameList, setListAuthRules, archiveList, ...).
  */
-const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set(['initList']);
+const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
+    'initList',
+    'renameList',
+]);
 
 /**
  * TODO:
