@@ -46,6 +46,39 @@ Owns Lists. Every List belongs to exactly one Workspace. See `docs/workspaces.md
 ### Account
 An OAuth identity. A user can have multiple Accounts in one session. ID prefix: `a/`. URL: `/a/<suffix>`.
 
+## Homepage (djibb.com client)
+
+### Minted List
+The ownerless List that bare `djibb.com` hands an unauthed visitor. Created on first visit, seeded by copying a randomly chosen **Blank** Template from the **Seed Pool**, and persisted via a localStorage pointer keyed to bare-domain visits only (explicit `/l/<id>` visits never read or write the pointer, so shared links don't bounce). The visitor's URL is rewritten to `/l/<id>` on mint so the list is immediately shareable. The List is real in every other respect — DO, Replicache — its `default_role` is literally `ownerless` (collaborative-editable by anyone with the URL; this is exactly what `DefaultRoleEnum` provides), and its `forked_from_id` points at the chosen Blank.
+
+**Sign-in transition: Adopt.** When the visitor signs in, the existing minted List is adopted into their personal Workspace in place — same ID, same URL — rather than forked. Any current collaborators on the link are downgraded to `viewer` rather than locked out. Forking is rejected because it splits the user's mental model into two lists at the exact moment they're claiming ownership of the one they already have.
+
+### Seed Pool / Blanks
+The hand-curated set of **Blank** Templates that the Minted List can be seeded from. Curated, not algorithmic, in v1 — controls the tonal range of first impressions.
+
+**The Seed Pool is itself a djibb List.** djibb consumes itself: rather than a SQL table or a hardcoded array, the catalog of Blanks is stored as a real djibb List, edited in djibb.com like any other List. This is a deliberate dogfooding move — the platform's own primitives are the curation tool, and changes to the Blanks happen in the same editor users use. (Open: how each item in the Seed Pool List points at its Blank Template — likely a small extension to ListItem so it can carry an entity reference, but TBD when we wire the mint flow.)
+
+### Island
+The visual representation of a Workspace's Lists for an authed visitor — a hex map where each hex is one List. Bare `djibb.com` (authed) renders the **personal** Workspace's Island; team Workspaces eventually get their own Islands at `/w/<slug>`. List-of-lists views are explicitly rejected as the primary view.
+
+**Growth, not composition.** The Island grows as Lists are created — one new hex per new List, no pre-sized board, no empty hexes. Hex position is algorithmic and stable (deterministic from List ID / creation order), not user-placed. There is no manual drag-to-rearrange in v1. This is intentionally "pull, not push": the user doesn't decide where a List goes; the Island reflects their usage rather than their decorative taste. Spatial memory still works because positions are stable, the same way Catan boards are randomized but memorable once set.
+
+**Terrain reflects content, not preference.** Each hex's terrain (biome, color, art) is a function of its List's properties (seed Template, age, tags, group count, etc.) locked in at hex-creation time. Terrain is therefore *legible* — recipes cluster as one biome, camping lists as another — not arbitrary decoration. Fallback terrain is required for content-poor Lists ("Untitled, zero items").
+
+**Workspaces become the organizing tool.** Because each Workspace has its own Island and the user can't manually arrange, the way to make your maps reflect a meaningful grouping is to create Workspaces for those groupings. The composition lever is at the Workspace layer, not the hex layer.
+
+**Hex visuals carry two state axes, locked-in semantics.** Beyond identity (terrain = content type, label = name), a hex visibly reflects two universal state axes: **completion** (% of items done) and **recency** (how long since last touched). The encoding is consistent across every terrain — e.g. completion always reads the same way, recency always reads the same way — so the map functions as an ambient dashboard rather than just a navigation surface. Other axes (collaborator count, etc.) are deferred; two channels keeps the visual language legible. State and terrain are separate channels: a recipe looks like a recipe whether 0% or 100% done.
+
+**Chrome is light edge-only; creation is an Island gesture.** djibb.com (authed) is full-bleed Island. The only persistent chrome is a top-right cluster with the account avatar (which exposes workspace switcher and account menu). Creating a new List is *not* a top-bar button — it's a dedicated **Dock** affordance on the Island itself (a lighthouse-like hex on the perimeter), which physicalizes the Island's growth: tapping the Dock spawns a new hex adjacent to it. The Dock is the single visible affordance in the empty-ocean state, giving a brand-new user exactly one thing pulling them in. The workspace switcher renders other Workspaces as thumbnails of *their* Islands, extending the map metaphor to the picker.
+
+**Hex interaction is hybrid: quick-tray + full view.** Hover (or first tap on mobile) opens an inline tray on the hex showing title, status, and a short stack of unchecked items that can be checked off without leaving the map — this is the "mark one thing done in passing" path that fits djibb.com's accessory-sail frame. A click on the hex's open affordance routes to `/l/<id>` for the full List view, which remains the canonical, shareable surface. Pure inline-only is rejected because shareable URLs require a standalone route to exist anyway. Implication: the map lazily subscribes to the contents of visible Lists (not just labels) — affects perf at high List counts.
+
+**Hexes cluster by terrain, with a spiral fallback.** A new List's hex prefers an open slot adjacent to an existing hex of the *same* terrain (i.e. same content type). When no same-terrain neighbor exists yet, the hex falls back to the next slot in a deterministic spiral anchored at the origin hex. The first hex ever sits at origin. The rule composes with terrain-from-content to produce *biomes* — recipe regions, camping regions, etc. — whose existence on the Island reflects actual usage. Lakes (interior holes from deletions) are preferentially paved over by same-terrain successors, which lets the Island self-heal without ever moving an existing hex. Terrain classification must be coarse enough (a small fixed set of biomes) for clustering to do real work.
+
+**Deletion is hole-as-ocean.** When a List is deleted, its hex becomes water — ocean if on the perimeter (the Island shrinks on that edge), a lake if interior. Neighboring hexes never move. This preserves spatial memory absolutely and gives the Island a shape that records the user's history of removals, not just additions. Archive is offered alongside delete as a softer alternative (hex stays, low-saturation/fogged, restorable); true deletion is reserved for the user who actually wants the List gone.
+
+**Empty ocean for zero-List users.** A brand-new authed user with no Lists sees a deliberately empty ocean — beautiful, ambient, with at most a single unobtrusive create affordance. No starter hex. The "your Island reflects your usage" invariant is preserved by refusing to seed it with anything the user didn't make. The expected onboarding path makes this rare: bare `djibb.com` unauthed → Minted List → Adopt on sign-in means most new users land on a one-hex Island that already feels theirs.
+
 ## Use cases anchoring the model
 
 Three canonical use cases (`docs/use-cases.md`): recipe, camping pack checklist, secret santa. Diverse on purpose — proves a single List primitive can power very different frontends.
