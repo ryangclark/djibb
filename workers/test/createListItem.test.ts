@@ -50,18 +50,24 @@ function makeInitListPush({
     };
 }
 
-function makeItem(listId: string, name: string): ListItem {
+function makeItem(
+    listId: string,
+    name: string,
+    overrides: Partial<ListItem> = {}
+): ListItem {
     const now = new Date();
     return {
         id: newId('item'),
         name,
         parent_element_ref: listId,
+        references_entity_id: null,
         time_created: now,
         time_deleted: null,
         time_updated: now,
         type: 'item',
         value: { target_value: 1, value: 0, unit: 'bool' },
         version: 0,
+        ...overrides,
     };
 }
 
@@ -263,6 +269,75 @@ describe('createListItem end-to-end', () => {
 
         expect(result.error).not.toBeNull();
         expect(result.error?.name).toMatch(/Unauthorized/i);
+    });
+
+    it('round-trips a non-null references_entity_id (Seed Pool style)', async () => {
+        const { listId, stub } = getListStub('create3');
+        const clientGroupID = 'cg_create_3';
+        const clientID = 'c_create_3';
+
+        await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'ownerless',
+            listId,
+            pushRequest: makeInitListPush({
+                clientGroupID,
+                clientID,
+                listId,
+            }),
+        });
+
+        const blankId = newId('template');
+        const item = makeItem(listId, 'Pointer to a Blank', {
+            references_entity_id: blankId,
+        });
+
+        const createResult = await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'ownerless',
+            listId,
+            pushRequest: makeCreateListItemPush({
+                clientGroupID,
+                clientID,
+                item,
+                mutationId: 2,
+            }),
+        });
+        expect(createResult.error).toBeNull();
+
+        const stored = await runInDurableObject(stub, async (_i, state) => {
+            return state.storage.sql
+                .exec(
+                    `SELECT references_entity_id
+                     FROM list_elements WHERE id = ?;`,
+                    item.id
+                )
+                .one();
+        });
+        expect(stored.references_entity_id).toBe(blankId);
+
+        const pullResult = await stub.handlePull({
+            authorizedRole: 'ownerless',
+            listId,
+            pullRequest: {
+                pullVersion: 1,
+                profileID: 'p_test',
+                clientGroupID,
+                cookie: 0,
+                schemaVersion: '1',
+            },
+        });
+        expect(pullResult.error).toBeNull();
+        const itemPatch = pullResult.data!.patch.find(
+            entry => entry.op === 'put' && entry.key === item.id
+        );
+        expect(itemPatch).toBeDefined();
+        if (itemPatch?.op === 'put') {
+            expect(itemPatch.value).toMatchObject({
+                id: item.id,
+                references_entity_id: blankId,
+            });
+        }
     });
 });
 

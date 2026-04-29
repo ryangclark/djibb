@@ -128,6 +128,12 @@ export const ListItemSchema = z.object({
     id: z.string().length(ID_LENGTH + IdTypes['item'].length + 1),
     name: z.string(),
     parent_element_ref: z.string(),
+    /**
+     * Soft pointer to another entity (any type — the prefix tells you).
+     * Checking the local item does NOT propagate state to the referenced
+     * entity; this is purely lineage / navigation. See CONTEXT.md.
+     */
+    references_entity_id: z.string().nullable(),
     time_created: DatelikeToDateSchema,
     time_deleted: DatelikeToDateSchema.nullable(),
     time_updated: DatelikeToDateSchema,

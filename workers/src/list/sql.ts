@@ -119,6 +119,12 @@ export function getElementById(sql: SqlStorage, elementId: string) {
         };
     }
 
+    // Default `references_entity_id` to null for items: column is recent;
+    // older DO storage and direct-SQL seeds may omit it.
+    if (data.type === 'item' && data.references_entity_id === undefined) {
+        data.references_entity_id = null;
+    }
+
     data.child_element_refs = JSON.parse(data.child_element_refs);
     data.value = JSON.parse(data.value);
 
@@ -168,6 +174,12 @@ export function getChangedElements(sql: SqlStorage, previousVersion: number) {
                 forked_from_id: null,
                 workspace_id: null,
             };
+        }
+
+        // Default `references_entity_id` to null for items: column is recent;
+        // older DO storage and direct-SQL seeds may omit it.
+        if (data.type === 'item' && data.references_entity_id === undefined) {
+            data.references_entity_id = null;
         }
 
         data.child_element_refs = JSON.parse(data.child_element_refs);
@@ -245,6 +257,7 @@ export function InitializeTables(
             "meta" TEXT DEFAULT NULL,
             "name" TEXT NOT NULL,
             "parent_element_ref" TEXT DEFAULT NULL,
+            "references_entity_id" TEXT DEFAULT NULL,
             "time_created" INTEGER NOT NULL DEFAULT CURRENT_TIMESTAMP,
             "time_deleted" INTEGER DEFAULT NULL,
             "time_updated" INTEGER NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -487,6 +500,7 @@ export function updateListItem(sql: SqlStorage, item: ListItem): void {
             description = ?,
             name = ?,
             parent_element_ref = ?,
+            references_entity_id = ?,
             value = ?,
             version = ?,
             time_updated = CURRENT_TIMESTAMP
@@ -496,6 +510,7 @@ export function updateListItem(sql: SqlStorage, item: ListItem): void {
         item.description ?? '',
         item.name,
         item.parent_element_ref,
+        item.references_entity_id,
         JSON.stringify(item.value),
         item.version,
         item.id
@@ -517,15 +532,17 @@ export function insertListItem(sql: SqlStorage, item: ListItem): void {
             id,
             name,
             parent_element_ref,
+            references_entity_id,
             time_created,
             time_updated,
             type,
             value,
             version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`,
         item.id,
         item.name,
         item.parent_element_ref,
+        item.references_entity_id,
         Math.floor(item.time_created.getTime() / 1000),
         Math.floor(item.time_updated.getTime() / 1000),
         item.type,

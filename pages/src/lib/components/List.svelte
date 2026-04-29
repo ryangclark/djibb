@@ -119,6 +119,7 @@
 			id: newId('item'),
 			name: name.toString(),
 			parent_element_ref: list.id, // use the List as the parent for now
+			references_entity_id: null,
 			time_created: now,
 			time_deleted: null,
 			time_updated: now,

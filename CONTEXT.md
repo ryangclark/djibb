@@ -17,6 +17,8 @@ A recipe is **one List with multiple ListGroups** (Ingredients, Roast and concen
 ### ListItem
 A single checkable thing in a List. Carries name, description, and a `Quantity`. ID prefix: `item/`.
 
+**Optional `references_entity_id` — a soft pointer to another entity.** A ListItem can carry a nullable `references_entity_id` pointing at any other entity by ID; the prefix tells you the type (`l/...`, `t/...`, `item/...`, etc.). The reference is purely lineage / navigation — checking the local item does **not** propagate to the referenced entity, the same way `forked_from_id` is a soft pointer with no state coupling. State-linking across entities (Secret Santa bubble-up) remains explicitly out of scope as a custom layer, not a core primitive. Existence of the referenced entity is not enforced at write time; dangling references are a read-time concern. Used today by the **Seed Pool** to record Blank membership (each item in the Seed Pool list points at a Blank Template); broadly useful for any cross-entity reference.
+
 **Quantity covers both checkboxes and counts.** `value` and `target_value` are always `number`; the discriminator is `unit`. When `unit === 'boolean'`, the Item is a checkbox represented as bits — `value: 0 → 1` flips it, with `target_value: 1` and bounds `min_value: 0`, `max_value: 1`. When `unit` is anything else (`'tbsp'`, `'gallon'`, `'count'`, etc.), the Item carries an actual count. Completion is universal: an Item is done when `value === target_value`. The existing numeric invariants in `superRefine` apply uniformly — a checkbox is just a count from 0 to 1. This keeps a single Item shape across recipes, packing lists, instructions, and wishlists.
 
 ### Template
@@ -56,7 +58,11 @@ The ownerless List that bare `djibb.com` hands an unauthed visitor. Created on f
 ### Seed Pool / Blanks
 The hand-curated set of **Blank** Templates that the Minted List can be seeded from. Curated, not algorithmic, in v1 — controls the tonal range of first impressions.
 
-**The Seed Pool is itself a djibb List.** djibb consumes itself: rather than a SQL table or a hardcoded array, the catalog of Blanks is stored as a real djibb List, edited in djibb.com like any other List. This is a deliberate dogfooding move — the platform's own primitives are the curation tool, and changes to the Blanks happen in the same editor users use. (Open: how each item in the Seed Pool List points at its Blank Template — likely a small extension to ListItem so it can carry an entity reference, but TBD when we wire the mint flow.)
+**The Seed Pool is itself a djibb entity (List or Template).** djibb consumes itself: rather than a SQL table or a hardcoded array, the Seed Pool is a real djibb entity with its own page in djibb.com, edited like any other. Dogfood by design — the platform's own primitives are the curation tool.
+
+**Membership is via `forked_from_id`, not via items in the Seed Pool's body.** A Template is a Blank if and only if its `forked_from_id` points at the Seed Pool entity. Discovery is a query: `SELECT FROM workspace_entities WHERE type='template' AND forked_from_id = <seed-pool-id>`. Picking a random Blank for a mint is the same query plus `ORDER BY RANDOM() LIMIT 1`. No ListItem schema extension is needed; the Seed Pool's own items remain free for whatever the curator wants on its page (notes, ordering hints, descriptions) — they aren't load-bearing for discovery.
+
+This forms a real lineage chain through the existing field: a Minted List's `forked_from_id` = the Blank's id, and the Blank's `forked_from_id` = the Seed Pool's id. `forked_from_id` walks Minted-List → Blank → Seed Pool, two hops, which is exactly the truth of how the entity descended. No semantic stretch — `forked_from_id` is being used for what it already means.
 
 ### Island
 The visual representation of a Workspace's Lists for an authed visitor — a hex map where each hex is one List. Bare `djibb.com` (authed) renders the **personal** Workspace's Island; team Workspaces eventually get their own Islands at `/w/<slug>`. List-of-lists views are explicitly rejected as the primary view.
