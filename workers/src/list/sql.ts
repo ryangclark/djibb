@@ -21,54 +21,59 @@ import { Mutation, MutationSchema } from './mutators';
  *      (e.g. /replicache/sql.ts, /mutators/sql.ts? )
  */
 
-/** */
+/**
+ * Writes an entity-typed (list or template) row to the DO sql. Per ADR
+ * 0003 the DO is authoritative for every entity field — `authorization_rules`,
+ * `workspace_id`, `forked_from_id` are stored on the row itself rather than
+ * overlaid from D1.
+ */
 export function createElement(sql: SqlStorage, element: ListElement) {
-    if (element.type === 'list') {
-        // We can only have one list.
-        try {
-            const queryElem = getElementById(sql, element.id);
+    if (element.type !== 'list' && element.type !== 'template') {
+        throw new BadMutationError(
+            `\`createElement()\` not supported for type "${element.type}"`
+        );
+    }
 
-            if (queryElem) {
-                throw new BadMutationError('list already exists!');
-            }
-        } catch (error) {
-            if (error instanceof NotFoundError) {
-                // no-op
-            } else {
-                console.log(
-                    '`createElement()` unexpected error during list check:',
-                    error
-                );
-
-                throw error; // passthrough
-            }
+    // Idempotency: a duplicate init must not throw. We reject only if a
+    // row exists with a *different* shape (which would indicate a real
+    // bug, not a retry).
+    try {
+        const existing = getElementById(sql, element.id);
+        if (existing) {
+            return;
+        }
+    } catch (error) {
+        if (!(error instanceof NotFoundError)) {
+            throw error;
         }
     }
 
-    const cursor = sql.exec(
+    sql.exec(
         `INSERT INTO list_elements (
             id,
+            authorization_rules,
+            child_element_refs,
+            description,
+            forked_from_id,
             name,
+            time_created,
+            time_updated,
             type,
-            version
-        ) VALUES (
-            ?,
-            ?,
-            ?,
-            ?
-        );`,
+            version,
+            workspace_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
         element.id,
+        JSON.stringify(element.authorization_rules),
+        JSON.stringify(element.child_element_refs),
+        element.description ?? '',
+        element.forked_from_id,
         element.name,
+        Math.floor(element.time_created.getTime() / 1000),
+        Math.floor(element.time_updated.getTime() / 1000),
         element.type,
-        element.version
+        element.version,
+        element.workspace_id
     );
-
-    const EXPECTED_ROWS_WRITTEN = 2; // 2?
-    if (cursor.rowsWritten !== EXPECTED_ROWS_WRITTEN) {
-        throw new UnexpectedError(
-            `\`createElement\` bad rowsWritten: want "${EXPECTED_ROWS_WRITTEN}" got "${cursor.rowsWritten}"`
-        );
-    }
 }
 
 // export async function getChangedEntries(
@@ -104,19 +109,16 @@ export function getElementById(sql: SqlStorage, elementId: string) {
 
     // let parseResult;
 
-    let data: any = result.value;
+    let data: any = { ...result.value };
 
-    if (result.value.type === 'list') {
-        // Entity-level fields (`authorization_rules`, `workspace_id`,
-        // `forked_from_id`) live in D1 per ADR 0001. The worker
-        // overlays them onto responses; the DO writes placeholders
-        // here that are never observed by clients.
-        data = {
-            ...result.value,
-            authorization_rules: DefaultAuthorizationRules,
-            workspace_id: null,
-            forked_from_id: null,
-        };
+    // Entity-level fields are stored on the DO row per ADR 0003. Parse
+    // them out of their TEXT columns; tolerate nulls for legacy rows.
+    if (data.type === 'list' || data.type === 'template') {
+        data.authorization_rules = data.authorization_rules
+            ? JSON.parse(data.authorization_rules)
+            : DefaultAuthorizationRules;
+        data.workspace_id = data.workspace_id ?? null;
+        data.forked_from_id = data.forked_from_id ?? null;
     }
 
     // Default `references_entity_id` to null for items: column is recent;
@@ -162,18 +164,14 @@ export function getChangedElements(sql: SqlStorage, previousVersion: number) {
     //
     // For now, though, it'll surely catch some mistakes.
     for (const row of cursor) {
-        let data: any = row;
+        let data: any = { ...row };
 
         if (row.type === 'list' || row.type === 'template') {
-            // Entity-level fields live in D1 per ADR 0001; worker
-            // overlays them on responses. Placeholders here are never
-            // observed by clients.
-            data = {
-                ...row,
-                authorization_rules: DefaultAuthorizationRules,
-                forked_from_id: null,
-                workspace_id: null,
-            };
+            data.authorization_rules = data.authorization_rules
+                ? JSON.parse(data.authorization_rules as string)
+                : DefaultAuthorizationRules;
+            data.workspace_id = data.workspace_id ?? null;
+            data.forked_from_id = data.forked_from_id ?? null;
         }
 
         // Default `references_entity_id` to null for items: column is recent;
@@ -252,8 +250,10 @@ export function InitializeTables(
     sql.exec(
         `CREATE TABLE IF NOT EXISTS list_elements(
             "id" TEXT NOT NULL PRIMARY KEY,
+            "authorization_rules" TEXT DEFAULT NULL, -- JSON, entity rows only (ADR 0003)
             "child_element_refs" TEXT NOT NULL DEFAULT '[]',
             "description" TEXT DEFAULT "",
+            "forked_from_id" TEXT DEFAULT NULL, -- entity rows only
             "meta" TEXT DEFAULT NULL,
             "name" TEXT NOT NULL,
             "parent_element_ref" TEXT DEFAULT NULL,
@@ -263,7 +263,8 @@ export function InitializeTables(
             "time_updated" INTEGER NOT NULL DEFAULT CURRENT_TIMESTAMP,
             "type" TEXT NOT NULL,
             "value" TEXT DEFAULT NULL, -- this is essentially a JSON column
-            "version" INTEGER NOT NULL
+            "version" INTEGER NOT NULL,
+            "workspace_id" TEXT DEFAULT NULL -- entity rows only
         );`
     );
 
@@ -309,11 +310,11 @@ export function InitializeTables(
         );`
     );
 
-    // Initialize KV with defaults values. Auth rules and workspace_id
-    // live in D1 per ADR 0001 — not stored on the DO.
+    // Initialize KV with defaults values. Entity-level metadata is on
+    // the entity's own list_elements row per ADR 0003.
     sql.exec(
         `INSERT INTO kv VALUES
-        ("schema_version", "2");`
+        ("schema_version", "3");`
     );
 
     sql.exec(

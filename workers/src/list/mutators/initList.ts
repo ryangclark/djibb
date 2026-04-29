@@ -36,21 +36,32 @@ export const name = 'initList' as const;
 export const requiredRole = EDIT_ROLES;
 
 /**
- * Server-side init: creates the DO-side list element row. Entity-level
- * fields (`authorization_rules`, `workspace_id`, `forked_from_id`) live
- * in D1 per ADR 0001 and are overlaid by the worker on response —
- * we write placeholders here that are never observed by clients.
+ * Server-side init: writes the full entity row to the DO sql. Per ADR
+ * 0003 the DO is authoritative for every entity field. The worker still
+ * resolves auth rules from D1 on the hot path, but D1 is now a derived
+ * read index emitted by the DO post-commit, not the source of truth.
  */
-export const server: ServerMutator<Args> = (args, { sql, timestamp_client }) => {
+export const server: ServerMutator<Args> = (
+    args,
+    { sql, accountId, timestamp_client }
+) => {
     const ts = timestamp_client ?? new Date();
+
+    const authorization_rules: AuthorizationRules = accountId
+        ? {
+              authorized_accounts: { [accountId]: { role: 'owner' } },
+              default_role: 'restricted',
+              set_by: 'user',
+          }
+        : {
+              authorized_accounts: {},
+              default_role: 'ownerless',
+              set_by: 'defaults',
+          };
 
     const list: List = {
         id: args.listId,
-        authorization_rules: {
-            authorized_accounts: {},
-            default_role: 'ownerless',
-            set_by: 'defaults',
-        },
+        authorization_rules,
         child_element_refs: [],
         forked_from_id: null,
         name: DEFAULT_LIST_TITLE,
@@ -58,7 +69,7 @@ export const server: ServerMutator<Args> = (args, { sql, timestamp_client }) => 
         time_deleted: null,
         time_updated: ts,
         type: 'list',
-        workspace_id: null,
+        workspace_id: args.workspaceId,
         version: 0,
     };
 
