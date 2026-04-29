@@ -25,30 +25,12 @@ import { z } from 'zod';
 import { IdTypes } from '../id';
 import { GetMembership } from '../workspace/service';
 import { resolveRole } from '../auth/resolver';
-import { EntityRow, GetEntity } from './entity';
+import { GetEntity } from './entity';
 import { initListArgsSchema } from './mutators/client';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
 
 type EntityType = 'list' | 'template';
-
-/**
- * D1 is authoritative for entity-level metadata per ADR 0001. The DO's
- * stored list element carries placeholders for these fields; the worker
- * overlays the real values from the D1 entity row before returning to
- * clients. This is the single composition seam for entity metadata.
- */
-function overlayEntityFields<T extends Record<string, unknown>>(
-    listElement: T,
-    entity: EntityRow,
-): T {
-    return {
-        ...listElement,
-        authorization_rules: entity.authorization_rules,
-        workspace_id: entity.workspace_id,
-        forked_from_id: entity.forked_from_id,
-    };
-}
 
 /**
  * Resolves a role from the session against given rules + the calling
@@ -223,7 +205,7 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
                 },
             );
         }
-        return c.json(overlayEntityFields(list, entity));
+        return c.json(list);
     });
 
     app.post('/pull', async c => {
@@ -263,19 +245,7 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
             );
         }
 
-        const entity = c.get('entity')!;
-        const patch = pullResponse.patch.map(op =>
-            op.op === 'put' && op.key === entity.id
-                ? {
-                      ...op,
-                      value: overlayEntityFields(
-                          op.value as Record<string, unknown>,
-                          entity,
-                      ),
-                  }
-                : op,
-        );
-        return c.json({ ...pullResponse, patch });
+        return c.json({ ...pullResponse });
     });
 
     app.post('/push', async c => {
