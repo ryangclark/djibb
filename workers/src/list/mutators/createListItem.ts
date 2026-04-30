@@ -42,7 +42,11 @@ export const client: ClientMutator<Args> = async (tx, { item }) => {
     }
     const parentElement = parentParse.data;
 
-    if (parentElement.type !== 'list' && parentElement.type !== 'group') {
+    if (
+        parentElement.type !== 'list' &&
+        parentElement.type !== 'template' &&
+        parentElement.type !== 'group'
+    ) {
         throw new BadMutationError('unexpected `parentElement.type`');
     }
     parentElement.child_element_refs.push(item.id);

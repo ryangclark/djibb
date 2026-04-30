@@ -216,7 +216,7 @@ export class DjibbList extends DurableObject {
         let foundListVersion = false;
         if (listElements.length > 0) {
             for (const element of listElements) {
-                if (element.type === 'list') {
+                if (element.type === 'list' || element.type === 'template') {
                     foundListVersion = true;
                     pullResponse.cookie = element.version;
                     break;
