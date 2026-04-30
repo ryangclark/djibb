@@ -2,13 +2,17 @@
 	import { tick } from 'svelte';
 
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
+	import IconLink from '@tabler/icons-svelte/icons/link';
+	import IconX from '@tabler/icons-svelte/icons/x';
 
 	import { LIST_ELEMENT_TYPES } from '$djibb/list/constants';
 
-	import { ListItemSchema, ListSchema } from '$djibb/list/index';
+	import { ListItemSchema, ListSchema, TemplateSchema } from '$djibb/list/index';
+	import { IdTypes } from '$djibb/id';
 	import { z } from 'zod';
 	import { newId } from '$djibb/id';
 	import { tryCatch, tryCatchAsync } from '$djibb/utils/trycatch';
+	import { fetchOwnedEntities } from '$lib/entities.js';
 	import { getSessionState } from '$lib/session.svelte.js';
 
 	/**
@@ -20,7 +24,13 @@
 
 	/** @type {Props} */
 	let { data, list: rawList, mutators } = $props();
-	/** @type {import('$djibb/list').List} */
+
+	// Accept either entity type — this component renders both lists and
+	// templates using the same DO machinery; the only branch points are
+	// the type literal and the ID prefix.
+	const EntitySchema = z.discriminatedUnion('type', [ListSchema, TemplateSchema]);
+
+	/** @type {import('$djibb/list').List | import('$djibb/list').Template} */
 	let list = $derived.by(() => {
 		if (typeof rawList === 'string') {
 			const result = tryCatch(() => JSON.parse(rawList));
@@ -28,10 +38,10 @@
 				throw new Error(`invalid list JSON: ${result.error.message}`);
 			}
 
-			return ListSchema.parse(result.data);
+			return EntitySchema.parse(result.data);
 		}
 
-		return ListSchema.parse(rawList);
+		return EntitySchema.parse(rawList);
 	});
 
 	const sessionState = getSessionState();
@@ -39,6 +49,90 @@
 	let show_quick_add_item_form = $state(false);
 	let editing_name = $state(false);
 	let name_draft = $state('');
+
+	/**
+	 * Item ID currently showing the reference picker, or null if no
+	 * picker is open. Only one picker open at a time keeps the UI calm.
+	 *
+	 * @type {string | null}
+	 */
+	let picker_open_for = $state(null);
+	let picker_query = $state('');
+	/** @type {{ id: string, type: 'list' | 'template', name: string | null }[]} */
+	let picker_entities = $state([]);
+	let picker_loading = $state(false);
+
+	/** Filtered + self-excluded view of `picker_entities`. */
+	let picker_filtered = $derived.by(() => {
+		const q = picker_query.trim().toLowerCase();
+		return picker_entities
+			.filter((e) => e.id !== list.id) // can't reference the current list
+			.filter((e) => {
+				if (!q) return true;
+				return (e.name ?? '').toLowerCase().includes(q);
+			});
+	});
+
+	async function openPicker(/** @type {string} */ itemId) {
+		picker_open_for = itemId;
+		picker_query = '';
+		if (picker_entities.length === 0) {
+			picker_loading = true;
+			const result = await tryCatchAsync(
+				fetchOwnedEntities({ accountId: sessionState.currentAccountId })
+			);
+			picker_loading = false;
+			if (result.error) {
+				console.error('fetchOwnedEntities error:', result.error);
+				alert(`Failed to load entities: ${result.error.message}`);
+				picker_open_for = null;
+				return;
+			}
+			picker_entities = result.data ?? [];
+		}
+	}
+
+	function closePicker() {
+		picker_open_for = null;
+		picker_query = '';
+	}
+
+	/**
+	 * @param {import('$djibb/list').ListItem} item
+	 * @param {string | null} entityId Pass null to clear the reference.
+	 */
+	async function pickReference(item, entityId) {
+		const result = await tryCatchAsync(
+			mutators.setItem({
+				...item,
+				references_entity_id: entityId,
+				time_updated: new Date()
+			})
+		);
+		if (result.error) {
+			console.error('setItem (reference) error:', result.error);
+			alert(`Failed to set reference: ${result.error.message}`);
+			return;
+		}
+		closePicker();
+	}
+
+	/**
+	 * Maps an entity ID to the page route that renders it. Mirrors the
+	 * worker-side mapping in lib/replicache and lib/websocket.
+	 *
+	 * @param {string} id
+	 */
+	function entityHref(id) {
+		const type = id.startsWith(`${IdTypes.template}/`) ? 't' : 'l';
+		const suffix = id.split('/', 2)[1] ?? '';
+		return `/${type}/${suffix}`;
+	}
+
+	/** @param {string} id */
+	function entityTypeLabel(id) {
+		return id.startsWith(`${IdTypes.template}/`) ? 'T' : 'L';
+	}
 
 	// Bindings
 	/** @type {HTMLInputElement} */
@@ -334,17 +428,115 @@
 	/** @type {import("$djibb/list/index.ts").ListItem} */
 	elem
 )}
-	<label>
-		<input
-			data-elem-id={elem.id}
-			data-elem-type={elem.type}
-			oninput={handleCheckboxInput}
-			name={elem.name}
-			type="checkbox"
-			checked={elem.value.value === elem.value.target_value}
-		/>
-		{elem.name}
-	</label>
+	<div class="flex items-center gap-2 my-1">
+		<label class="flex items-center gap-2">
+			<input
+				data-elem-id={elem.id}
+				data-elem-type={elem.type}
+				oninput={handleCheckboxInput}
+				name={elem.name}
+				type="checkbox"
+				checked={elem.value.value === elem.value.target_value}
+			/>
+			<span>{elem.name}</span>
+		</label>
+
+		{#if elem.references_entity_id}
+			{@const ref_id = elem.references_entity_id}
+			<a
+				class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 border border-slate-300 rounded text-slate-700 hover:bg-slate-100"
+				href={entityHref(ref_id)}
+				title={`Linked: ${ref_id}`}
+			>
+				<span
+					class="font-mono text-[10px] text-slate-500"
+					aria-label={ref_id.startsWith(`${IdTypes.template}/`) ? 'template' : 'list'}
+				>{entityTypeLabel(ref_id)}</span>
+				<span>↗</span>
+			</a>
+		{/if}
+
+		<button
+			class="ml-auto cursor-pointer text-slate-500 hover:text-slate-800 p-1"
+			onclick={() => openPicker(elem.id)}
+			title="Link to another list or template"
+			aria-label="Link to another list or template"
+		>
+			<IconLink size={16} stroke={1.5} />
+		</button>
+	</div>
+
+	{#if picker_open_for === elem.id}
+		{@render reference_picker(elem)}
+	{/if}
+{/snippet}
+
+{#snippet reference_picker(
+	/** @type {import("$djibb/list/index.ts").ListItem} */
+	elem
+)}
+	<div class="ml-6 mb-2 border border-slate-300 bg-white rounded p-2 max-w-md">
+		<div class="flex items-center gap-2 mb-2">
+			<input
+				class="flex-1 border-b border-slate-300 outline-none px-1 py-0.5 text-sm"
+				placeholder="Search lists & templates…"
+				bind:value={picker_query}
+				autofocus
+			/>
+			<button
+				class="text-slate-500 hover:text-slate-800 cursor-pointer"
+				onclick={closePicker}
+				aria-label="Close"
+			>
+				<IconX size={16} stroke={1.5} />
+			</button>
+		</div>
+
+		{#if picker_loading}
+			<p class="text-sm text-slate-500 italic">Loading…</p>
+		{:else if picker_filtered.length === 0}
+			<p class="text-sm text-slate-500 italic">
+				{picker_entities.length === 0
+					? 'No lists or templates yet.'
+					: 'No matches.'}
+			</p>
+		{:else}
+			<ul class="max-h-60 overflow-y-auto">
+				{#each picker_filtered as candidate (candidate.id)}
+					<li>
+						<button
+							class="w-full text-left flex items-center gap-2 px-1 py-1 hover:bg-slate-100 cursor-pointer rounded text-sm"
+							onclick={() => pickReference(elem, candidate.id)}
+						>
+							<span
+								class="font-mono text-[10px] w-4 h-4 inline-flex items-center justify-center border border-slate-300 rounded text-slate-600"
+								aria-label={candidate.type}
+							>{candidate.type === 'template' ? 'T' : 'L'}</span>
+							<span class="flex-1 truncate">
+								{candidate.name || (
+									candidate.type === 'template' ? 'Untitled template' : 'Untitled list'
+								)}
+							</span>
+							{#if candidate.id === elem.references_entity_id}
+								<span class="text-xs text-slate-500">current</span>
+							{/if}
+						</button>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+
+		{#if elem.references_entity_id}
+			<div class="border-t border-slate-200 mt-2 pt-2">
+				<button
+					class="text-xs text-red-700 hover:underline cursor-pointer"
+					onclick={() => pickReference(elem, null)}
+				>
+					Clear reference
+				</button>
+			</div>
+		{/if}
+	</div>
 {/snippet}
 
 {#snippet list_description(
