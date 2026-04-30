@@ -1,6 +1,21 @@
 import { Replicache } from 'replicache';
 import { dev } from '$app/environment';
 import { mutators } from '$djibb/list/mutators/client';
+import { IdTypes } from '$djibb/id';
+
+/**
+ * Maps an entity ID's type prefix to the worker-side router path that
+ * serves it. The worker mounts `list_app` at `/list` and `template_app`
+ * at `/template`; both share the same DO machinery but each enforces
+ * its own ID prefix on incoming requests.
+ *
+ * @param {string} entityId
+ * @returns {string}
+ */
+function entityPath(entityId) {
+	if (entityId.startsWith(`${IdTypes.template}/`)) return 'template';
+	return 'list';
+}
 
 /**
  * Initializes the Replicache Client stuff.
@@ -85,6 +100,10 @@ export function InitReplicacheClient({ accountId, listId }) {
 
 	const protocol = `http${dev ? '' : 's'}:`;
 
+	const path = entityPath(listId);
+	const pullURL = `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/${path}/pull?l=${listId}`;
+	const pushURL = `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/${path}/push?l=${listId}`;
+
 	return new Replicache({
 		licenseKey,
 		// logLevel: import.meta.env.DEV ? 'debug' : 'error',
@@ -95,9 +114,68 @@ export function InitReplicacheClient({ accountId, listId }) {
 		// Event-driven sync: poke via websocket triggers pulls; no polling.
 		// pushDelay: null,
 		// pullInterval: null,
-		pullURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/pull?l=${listId}`,
-		pushURL: `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/list/push?l=${listId}`,
+		pullURL,
+		pushURL,
+		// Custom pusher/puller so the cross-origin push/pull sends the
+		// session cookie. Replicache's default fetch omits credentials
+		// and the worker would resolve the request as anonymous, which
+		// trips auth on lists owned by an authed account.
+		pusher: makePusher(pushURL),
+		puller: makePuller(pullURL),
 		// Bump when stored value shapes change; forces old clients to reset.
 		schemaVersion: '1'
 	});
+}
+
+/**
+ * @param {string} url
+ * @returns {import('replicache').Pusher}
+ */
+function makePusher(url) {
+	return async (requestBody, requestID) => {
+		const response = await fetch(url, {
+			method: 'POST',
+			credentials: 'include',
+			headers: {
+				'Content-Type': 'application/json',
+				'X-Replicache-RequestID': requestID
+			},
+			body: JSON.stringify(requestBody)
+		});
+		return {
+			httpRequestInfo: {
+				httpStatusCode: response.status,
+				errorMessage: response.ok ? '' : await response.text()
+			}
+		};
+	};
+}
+
+/**
+ * @param {string} url
+ * @returns {import('replicache').Puller}
+ */
+function makePuller(url) {
+	return async (requestBody, requestID) => {
+		const response = await fetch(url, {
+			method: 'POST',
+			credentials: 'include',
+			headers: {
+				'Content-Type': 'application/json',
+				'X-Replicache-RequestID': requestID
+			},
+			body: JSON.stringify(requestBody)
+		});
+		const httpRequestInfo = {
+			httpStatusCode: response.status,
+			errorMessage: response.ok ? '' : await response.clone().text()
+		};
+		if (!response.ok) {
+			return { httpRequestInfo };
+		}
+		return {
+			httpRequestInfo,
+			response: await response.json()
+		};
+	};
 }

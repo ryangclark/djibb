@@ -1,15 +1,19 @@
 import { WebSocket } from 'partysocket';
 import { dev } from '$app/environment';
+import { IdTypes } from '$djibb/id';
 
 /**
  * Initialize websocket!
- * @param {string} list_id
+ * @param {string} entity_id
  * @returns
  */
-export function initialize(list_id) {
+export function initialize(entity_id) {
+	const path = entity_id.startsWith(`${IdTypes.template}/`)
+		? 'template'
+		: 'list';
 	const url = `ws${dev ? '' : 's'}://${
 		import.meta.env.VITE_REPLICACHE_BASE_URL
-	}/list/websocket?l=${list_id}`;
+	}/${path}/websocket?l=${entity_id}`;
 
 	return new WebSocket(url);
 }

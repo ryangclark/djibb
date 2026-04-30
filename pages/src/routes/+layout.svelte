@@ -24,6 +24,12 @@
 		// detects an empty Replicache store and fires `initList`.
 		goto(`/${newId('list')}`);
 	}
+
+	function newTemplate() {
+		// Same flow as newList, but the `t/` prefix routes through the
+		// template app and the init mutator stamps `type: 'template'`.
+		goto(`/${newId('template')}`);
+	}
 </script>
 
 <header class="m-8 flex gap-10 items-center">
@@ -33,6 +39,7 @@
 		<a href="/posts">Blog</a>
 		<a href="/accounts">Accounts</a>
 		<button onclick={newList}>+ New list</button>
+		<button onclick={newTemplate}>+ New template</button>
 	</nav>
 	<div class="ml-auto">
 		<WorkspaceSwitcher />

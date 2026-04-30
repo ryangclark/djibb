@@ -24,16 +24,12 @@
 
 	const sessionState = getSessionState();
 
-	// Effects only run in the browser, not during server-side rendering.
 	$effect(() => {
 		const replicacheList = initList({
 			accountId: sessionState.currentAccountId,
-			// user_id: data.user?.username || 'my-test-user'
 			listId: data.list_id
 		});
 
-		// what if we do ListSchema.parse(replicacheList.list) or something?
-		// Hmm i think parsing within the component is better for composability
 		list_data = replicacheList.list;
 		mutators = replicacheList.client.mutate;
 
@@ -46,8 +42,6 @@
 			}
 		});
 
-		// Return a cleanup function, which is called whenever the
-		// effect refires as well as when the component is destroyed.
 		return () => {
 			replicacheList.client.close();
 			ws?.close(1000);
@@ -59,16 +53,10 @@
 	{#if list}
 		<List data={list_data} {list} {mutators}></List>
 	{:else}
-		<p>Loading list…</p>
+		<p>Loading template…</p>
 	{/if}
 </svelte:boundary>
 
-<!-- @UPGRADE
- Move the failure UI to within the <List> component for true
- composability. I don't know how to do that yet though because
- of how the error is handled/propagated. I think it'd have to handle
- all of its own errors without throwing any (if possible).
-  -->
 {#snippet failed(
 	/** @type {unknown} */
 	error,
