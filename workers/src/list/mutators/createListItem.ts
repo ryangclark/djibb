@@ -4,7 +4,7 @@ import { BadMutationError } from '../../errors';
 import { ListElementUnion, ListItemSchema } from '..';
 import { appendChildElementRef, insertListItem } from '../sql';
 import { IdTypes } from '../../id';
-import { ListSchema } from '..';
+import { ListSchema, TemplateSchema } from '..';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type { ClientMutator, ServerMutator } from './_shared';
 
@@ -55,16 +55,25 @@ export const client: ClientMutator<Args> = async (tx, { item }) => {
 };
 
 async function incrementListVersion(tx: Parameters<ClientMutator<Args>>[0]) {
-    const scanResult = tx.scan({ prefix: `${IdTypes['list']}/`, limit: 1 });
-    let listElement;
+    // Either a list or a template owns this item; check both prefixes so
+    // the optimistic client write works on either entity type.
+    const entityElement =
+        (await scanFirst(tx, `${IdTypes['list']}/`, ListSchema)) ??
+        (await scanFirst(tx, `${IdTypes['template']}/`, TemplateSchema));
+    if (!entityElement) throw new BadMutationError('entity element not found');
+    entityElement.version += 1;
+    return tx.set(entityElement.id, toStoredValue(entityElement));
+}
+
+async function scanFirst<T>(
+    tx: Parameters<ClientMutator<Args>>[0],
+    prefix: string,
+    schema: { safeParse: (x: unknown) => { success: boolean; data?: T } },
+): Promise<T | undefined> {
+    const scanResult = tx.scan({ prefix, limit: 1 });
     for await (const result of scanResult) {
-        const parseResult = ListSchema.safeParse(result);
-        if (parseResult.success) {
-            listElement = parseResult.data;
-            break;
-        }
+        const parsed = schema.safeParse(result);
+        if (parsed.success) return parsed.data;
     }
-    if (!listElement) throw new BadMutationError('list element not found');
-    listElement.version += 1;
-    return tx.set(listElement.id, toStoredValue(listElement));
+    return undefined;
 }

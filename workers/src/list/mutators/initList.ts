@@ -4,7 +4,7 @@ import type { AuthorizationRules } from '../../auth/rules';
 import { ValidationError } from '../../errors';
 import { IdTypes } from '../../id';
 import { createElement } from '../sql';
-import { ListSchema } from '..';
+import { ListSchema, TemplateSchema } from '..';
 import type { List, Template } from '..';
 import { DEFAULT_LIST_TITLE } from '.';
 import {
@@ -101,11 +101,17 @@ export const client: ClientMutator<Args> = async (
               set_by: 'defaults',
           };
 
-    const list: List = {
+    // Mirror the server mutator: derive entity type from the ID prefix
+    // so a template-page init writes `type: 'template'` instead of the
+    // wrong `type: 'list'`. Without this, scans by prefix `t/` produce
+    // values that fail TemplateSchema parsing (type mismatch) and the
+    // entity becomes invisible to downstream optimistic mutators.
+    const isTemplate = args.listId.startsWith(`${IdTypes.template}/`);
+    const entity: List | Template = {
         authorization_rules: authorizationRules,
         child_element_refs: [],
         forked_from_id: null,
-        type: 'list',
+        type: isTemplate ? 'template' : 'list',
         id: args.listId,
         name: DEFAULT_LIST_TITLE,
         time_created: ts,
@@ -115,10 +121,11 @@ export const client: ClientMutator<Args> = async (
         workspace_id: args.workspaceId,
     };
 
-    const parseResult = ListSchema.safeParse(list);
+    const schema = isTemplate ? TemplateSchema : ListSchema;
+    const parseResult = schema.safeParse(entity);
     if (!parseResult.success) {
         console.error(
-            '`initList()` list validation error:',
+            '`initList()` entity validation error:',
             z.prettifyError(parseResult.error)
         );
         throw new ValidationError();
@@ -126,6 +133,6 @@ export const client: ClientMutator<Args> = async (
 
     await Promise.all([
         tx.set('m/auth_default_role', authorizationRules.default_role),
-        tx.set(list.id, toStoredValue(list)),
+        tx.set(entity.id, toStoredValue(entity)),
     ]);
 };

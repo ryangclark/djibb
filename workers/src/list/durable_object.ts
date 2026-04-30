@@ -108,11 +108,12 @@ export class DjibbList extends DurableObject {
     _getList({ listId }: { listId: string }) {
         const list = getElementById(this.sql, listId);
 
-        // Not sure if this is necessary, really.
-        if (list?.type !== 'list') {
-            console.log('bad list:', list);
+        // Same DO machinery serves both lists and templates; accept
+        // either entity type here.
+        if (list?.type !== 'list' && list?.type !== 'template') {
+            console.log('bad entity:', list);
 
-            throw new NotFoundError(`list not found: ${listId}`);
+            throw new NotFoundError(`entity not found: ${listId}`);
         }
 
         return list;
@@ -224,18 +225,13 @@ export class DjibbList extends DurableObject {
         }
 
         if (!foundListVersion) {
-            // Pull the List Itself.
-            // TODO: update to `this.list`?
-            const list = getElementById(this.sql, listId);
+            // Pull the entity itself (list or template — same machinery).
+            const entity = getElementById(this.sql, listId);
 
-            if (list?.type !== 'list') {
-                // console.log('bad list:', list);
-
-                throw new NotFoundError(`list not found: ${listId}`);
+            if (entity?.type !== 'list' && entity?.type !== 'template') {
+                throw new NotFoundError(`entity not found: ${listId}`);
             }
-            if (list) {
-                pullResponse.cookie = list.version;
-            }
+            pullResponse.cookie = entity.version;
         }
 
         if (requestVersion === 0) {
