@@ -111,6 +111,12 @@ export function getElementById(sql: SqlStorage, elementId: string) {
 
     let data: any = { ...result.value };
 
+    // time_* columns are stored as unix seconds; the schema's
+    // z.coerce.date() treats numbers as milliseconds, so convert here.
+    if (typeof data.time_created === 'number') data.time_created *= 1000;
+    if (typeof data.time_updated === 'number') data.time_updated *= 1000;
+    if (typeof data.time_deleted === 'number') data.time_deleted *= 1000;
+
     // Entity-level fields are stored on the DO row per ADR 0003. Parse
     // them out of their TEXT columns; tolerate nulls for legacy rows.
     if (data.type === 'list' || data.type === 'template') {
@@ -165,6 +171,10 @@ export function getChangedElements(sql: SqlStorage, previousVersion: number) {
     // For now, though, it'll surely catch some mistakes.
     for (const row of cursor) {
         let data: any = { ...row };
+
+        if (typeof data.time_created === 'number') data.time_created *= 1000;
+        if (typeof data.time_updated === 'number') data.time_updated *= 1000;
+        if (typeof data.time_deleted === 'number') data.time_deleted *= 1000;
 
         if (row.type === 'list' || row.type === 'template') {
             data.authorization_rules = data.authorization_rules
@@ -288,16 +298,14 @@ export function InitializeTables(
 
     sql.exec(
         `CREATE TABLE IF NOT EXISTS mutations(
-            "id" INTEGER NOT NULL PRIMARY KEY,      -- Mutation ID is integer and matches List version
+            "id" INTEGER NOT NULL,                  -- Per-client mutation ID (Replicache assigns these monotonically per client)
+            "client_id" TEXT NOT NULL,              -- ID of the Replicache client that authored the mutation
             "account_id" TEXT DEFAULT NULL,         -- ID of the Account responsible for the mutation, if any
             "args" TEXT DEFAULT NULL,               -- Stringified arguments for the mutation, if applicable
-            "client_id" TEXT DEFAULT NULL,          -- ID of the Replicache client, if applicable
-            -- "client_group_id" TEXT DEFAULT NULL, -- ID of the Replicache Client Group, if applicable
             "name" TEXT NOT NULL,                   -- Mutation name
             "status" TEXT NOT NULL,                 -- Status of the mutation
-            -- "timestamp_client" INTEGER DEFAULT NULL, -- not doing this for now... it'll be in "args" if necessary
-            "timestamp_server" INTEGER NOT NULL
-            -- "profile_id" TEXT DEFAULT NULL       -- ID of the Replicache browser profile, if applicable
+            "timestamp_server" INTEGER NOT NULL,
+            PRIMARY KEY (client_id, id)             -- mutation IDs are unique per client, not per DO
         );`
     );
 
@@ -314,7 +322,7 @@ export function InitializeTables(
     // the entity's own list_elements row per ADR 0003.
     sql.exec(
         `INSERT INTO kv VALUES
-        ("schema_version", "3");`
+        ("schema_version", "4");`
     );
 
     sql.exec(
@@ -378,7 +386,7 @@ export function getListVersion(sql: SqlStorage) {
     const cursor = sql.exec(
         `SELECT version
         FROM list_elements
-        WHERE type = "list"
+        WHERE type IN ('list', 'template')
         LIMIT 1;`
     );
 
@@ -405,7 +413,7 @@ export function setListVersion(sql: SqlStorage, version: number) {
         SET
             time_updated = CURRENT_TIMESTAMP,
             version = ?
-        WHERE type = "list"`,
+        WHERE type IN ('list', 'template')`,
         version
     );
 
@@ -674,42 +682,23 @@ export function setMutation(sql: SqlStorage, mutation: Mutation) {
         // This would be expected to return no rows:
         // sql.exec('SELECT * FROM mutations WHERE id = ?', mutation.id)
 
-        const cursor = sql.exec(
+        sql.exec(
             `INSERT INTO mutations (
                 id,
+                client_id,
                 account_id,
                 args,
-                client_id, -- not sure if this is relevant
                 name,
                 status,
-                -- timestamp_client,
                 timestamp_server
-            ) VALUES (
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                -- ?,
-                CURRENT_TIMESTAMP
-            );`,
+            ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);`,
             mutation.id,
+            mutation.clientID,
             mutation.args.accountId,
             JSON.stringify(mutation.args),
-            mutation.clientID,
             mutation.name,
             mutation.status
         );
-
-        const EXPECTED_ROWS_WRITTEN = 1;
-        if (cursor.rowsWritten !== EXPECTED_ROWS_WRITTEN) {
-            console.log(
-                `\`setMutation()\` error: bad rowsWritten got ${cursor.rowsWritten} want ${EXPECTED_ROWS_WRITTEN}`
-            );
-
-            throw new UnexpectedError();
-        }
     } catch (error) {
         // TODO: remove
         if (
