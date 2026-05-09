@@ -42,8 +42,11 @@ import { EmitEntitySnapshotToCatalog } from './entity';
  * mutators land (renameList, setListAuthRules, archiveList, ...).
  */
 const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
+    'archiveList',
     'initList',
     'renameList',
+    'setDescription',
+    'setListAuthRules',
 ]);
 
 /**

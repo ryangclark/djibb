@@ -10,11 +10,14 @@ import type {
     ServerMutatorCtx,
 } from './_shared';
 
+import * as archiveList from './archiveList';
 import * as initList from './initList';
 import * as createListItem from './createListItem';
 import * as renameList from './renameList';
+import * as setDescription from './setDescription';
 import * as setItem from './setItem';
 import * as setItemQuantity from './setItemQuantity';
+import * as setListAuthRules from './setListAuthRules';
 
 export { EDIT_ROLES } from './_shared';
 export type { ServerMutatorCtx, ClientMutatorCtx } from './_shared';
@@ -33,11 +36,14 @@ export const DEFAULT_LIST_TITLE = '';
  * is no separate ServerMutators / ClientMutators registry to drift.
  */
 export const Mutations = {
+    [archiveList.name]: archiveList,
     [initList.name]: initList,
     [createListItem.name]: createListItem,
     [renameList.name]: renameList,
+    [setDescription.name]: setDescription,
     [setItem.name]: setItem,
     [setItemQuantity.name]: setItemQuantity,
+    [setListAuthRules.name]: setListAuthRules,
 } as const;
 
 export type MutationName = keyof typeof Mutations;

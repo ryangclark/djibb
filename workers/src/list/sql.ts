@@ -12,6 +12,7 @@ import {
     ReplicacheClientGroup,
     ReplicacheClientGroupSchema,
 } from '../replicache';
+import { AuthorizationRules } from '../auth/rules';
 import { DefaultAuthorizationRules } from './constants';
 import { MutationEnvelope, MutationStatus } from './mutators';
 
@@ -503,6 +504,115 @@ export function renameEntity(
     }
 }
 
+/**
+ * Soft-delete an entity row. Used by `archiveList`. The version bump
+ * makes the next pull re-emit the row; the pull handler emits a
+ * `del` op for any element with `time_deleted` set, hiding the entity
+ * from clients. The catalog read index also filters out soft-deleted
+ * rows, so the post-commit emit removes the entity from picker results.
+ *
+ * Idempotent on already-archived rows: re-archive bumps `time_deleted`
+ * and `version` again, which is harmless. We don't guard against
+ * double-archive because doing so would surface an error for a UI
+ * gesture that's effectively a no-op.
+ */
+export function archiveEntity(
+    sql: SqlStorage,
+    { entityId, version }: { entityId: string; version: number }
+): void {
+    const cursor = sql.exec(
+        `UPDATE list_elements
+        SET
+            time_deleted = CURRENT_TIMESTAMP,
+            version = ?,
+            time_updated = CURRENT_TIMESTAMP
+        WHERE id = ?
+            AND (type = 'list' OR type = 'template');`,
+        version,
+        entityId
+    );
+    if (cursor.rowsWritten !== 1) {
+        throw new NotFoundError(
+            `\`archiveEntity()\` entity "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+        );
+    }
+}
+
+/**
+ * Update an entity row's description. Used by `setDescription`. An
+ * empty string clears the description (the column defaults to ""; we
+ * don't distinguish unset from empty).
+ */
+export function setEntityDescription(
+    sql: SqlStorage,
+    {
+        entityId,
+        description,
+        version,
+    }: { entityId: string; description: string; version: number }
+): void {
+    const cursor = sql.exec(
+        `UPDATE list_elements
+        SET
+            description = ?,
+            version = ?,
+            time_updated = CURRENT_TIMESTAMP
+        WHERE id = ?
+            AND (type = 'list' OR type = 'template')
+            AND time_deleted IS NULL;`,
+        description,
+        version,
+        entityId
+    );
+    if (cursor.rowsWritten !== 1) {
+        throw new NotFoundError(
+            `\`setEntityDescription()\` entity "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+        );
+    }
+}
+
+/**
+ * Replace an entity row's authorization_rules whole. Used by
+ * `setListAuthRules`. Whole-replace is the simpler primitive; field-
+ * by-field deltas can be layered on later if the UI needs them.
+ *
+ * Caller is responsible for any "do not lock yourself out" guards —
+ * the SQL accepts whatever rules the mutator passes through. The DO
+ * mutator is owner-gated (per `requiredRole`), so only an admin or
+ * owner can issue this in the first place.
+ */
+export function setEntityAuthorizationRules(
+    sql: SqlStorage,
+    {
+        entityId,
+        authorization_rules,
+        version,
+    }: {
+        entityId: string;
+        authorization_rules: AuthorizationRules;
+        version: number;
+    }
+): void {
+    const cursor = sql.exec(
+        `UPDATE list_elements
+        SET
+            authorization_rules = ?,
+            version = ?,
+            time_updated = CURRENT_TIMESTAMP
+        WHERE id = ?
+            AND (type = 'list' OR type = 'template')
+            AND time_deleted IS NULL;`,
+        JSON.stringify(authorization_rules),
+        version,
+        entityId
+    );
+    if (cursor.rowsWritten !== 1) {
+        throw new NotFoundError(
+            `\`setEntityAuthorizationRules()\` entity "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+        );
+    }
+}
+
 // Narrow UPDATE for item value + version bumps. Used by the
 // `setItemQuantity` mutator path.
 export function setItemValueAndVersion(
@@ -645,7 +755,7 @@ export function setElementAsDeleted(
         `UPDATE list_elements SET
             time_deleted = CURRENT_TIMESTAMP
         WHERE id = ?
-            AND time_deleted = null`,
+            AND time_deleted IS NULL`,
         elementId
         // mutation.timestamp_server
     );

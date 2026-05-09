@@ -22,6 +22,20 @@ export const EDIT_ROLES: readonly AuthorizationRole[] = [
 ] as const;
 
 /**
+ * Roles permitted to change who can access the list. Tighter than
+ * `EDIT_ROLES` — an editor or checker can mutate list state, but only
+ * an admin or owner can re-grant access. `ownerless` is intentionally
+ * excluded: an anonymous-edit list cannot be locked down by a passing
+ * stranger; the path to claim ownership of an ownerless list goes
+ * through a separate (yet-unbuilt) "claim" flow rather than a generic
+ * auth-rules mutation.
+ */
+export const OWNER_ROLES: readonly AuthorizationRole[] = [
+    AuthorizationRoleEnum.enum.admin,
+    AuthorizationRoleEnum.enum.owner,
+] as const;
+
+/**
  * Wire-level envelope fields carried alongside every mutation's body
  * args. Replicache forces our metadata into `args`, so on the wire
  * `accountId` and `timestamp_client` ride inside `args`. Dispatch
