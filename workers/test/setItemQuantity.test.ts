@@ -177,6 +177,32 @@ describe('setItemQuantity end-to-end', () => {
         expect(listVersion).toBe(2);
         expect(JSON.parse(itemValueJson)).toEqual(newQuantity);
 
+        // 4b. Mutation log: envelope fields landed in their dedicated
+        // columns (not stuffed into the `args` JSON). `timestamp_client`
+        // is unix-seconds; `args` carries body fields only — no
+        // `accountId` / `timestamp_client` re-stuffing.
+        const mutationRows = await runInDurableObject(
+            stub,
+            async (_instance, state) => {
+                const cursor = state.storage.sql.exec(
+                    `SELECT id, name, account_id, timestamp_client, args, status
+                     FROM mutations
+                     WHERE name = 'setItemQuantity';`
+                );
+                return cursor.toArray();
+            }
+        );
+        expect(mutationRows).toHaveLength(1);
+        const mutationRow = mutationRows[0]!;
+        expect(mutationRow.status).toBe('succeeded');
+        expect(mutationRow.account_id).toBeNull();
+        expect(typeof mutationRow.timestamp_client).toBe('number');
+        expect(mutationRow.timestamp_client).toBeGreaterThan(0);
+        const persistedArgs = JSON.parse(mutationRow.args as string);
+        expect(persistedArgs).toEqual({ itemId, quantity: newQuantity });
+        expect(persistedArgs).not.toHaveProperty('accountId');
+        expect(persistedArgs).not.toHaveProperty('timestamp_client');
+
         // 5. Pull with cookie=1; the item row (version=2) should land
         // in the patch.
         const pullResult = await stub.handlePull({

@@ -66,69 +66,68 @@ export const MutationSchema = z.object({
     args: z.looseObject(MutationEnvelopeArgsSchema.shape),
 });
 
-export type MutationWire = z.infer<typeof MutationSchema>;
+export type MutationStatus = 'error' | 'skipped' | 'succeeded' | 'unknown';
 
-export type Mutation = MutationWire & {
-    status?: 'error' | 'skipped' | 'succeeded' | 'unknown';
-    timestamp_server?: Date;
+/**
+ * Server-internal envelope. The wire format (Replicache forces it)
+ * crams `accountId` and `timestamp_client` into `args`; the envelope
+ * is what the rest of the system consumes after parsing. The mutation
+ * log persists envelope fields to dedicated columns; body args are
+ * stored as opaque JSON.
+ */
+export type MutationEnvelope = {
+    clientID: string;
+    id: number;
+    name: string;
+    accountId: string | null;
+    timestamp_client: Date | null;
 };
 
 /**
- * Server dispatch helper. Validates wire shape, gates by role, splits
- * envelope metadata into ctx, and invokes the mutator. Returns a
- * descriptor for the caller to thread into mutation log + ack flow.
+ * The domain noun: a mutation as the system works with it after
+ * parsing. The wire shape (`MutationSchema`'s inferred type) is a
+ * Replicache-imposed transport detail — kept inside the parser, not
+ * surfaced as an exported type, so call sites can't accidentally
+ * reach back into raw `args` for envelope fields.
  */
-export type DispatchResult =
-    | { ok: true; status: 'succeeded' }
-    | { ok: false; status: 'skipped'; reason: string }
-    | { ok: false; status: 'unauthorized'; reason: string };
+export type Mutation = {
+    envelope: MutationEnvelope;
+    /** Body args after envelope fields are split off. Not yet validated
+     *  against the per-mutator argsSchema — that happens in
+     *  `executeServerMutation`. */
+    rawBody: Record<string, unknown>;
+};
 
-export function dispatchServerMutation(
-    rawMutation: unknown,
-    ctxBase: Pick<ServerMutatorCtx, 'sql' | 'role' | 'nextVersion'>
-): DispatchResult {
+export type EnvelopeParseResult =
+    | { ok: true; mutation: Mutation }
+    | { ok: false; reason: string };
+
+/**
+ * Parse the wire envelope and split body args off envelope metadata.
+ * Does not run the mutator and does not check role — those are
+ * `executeServerMutation`'s job. Surfaced so callers (the DO push
+ * handler) can do envelope-level pre-checks (e.g. cross-account auth)
+ * against a parsed shape rather than re-fishing fields out of raw args.
+ */
+export function parseMutationEnvelope(
+    rawMutation: unknown
+): EnvelopeParseResult {
     const envelopeParse = MutationSchema.safeParse(rawMutation);
     if (!envelopeParse.success) {
         return {
             ok: false,
-            status: 'skipped',
             reason: `envelope parse: ${z.prettifyError(envelopeParse.error)}`,
         };
     }
 
     const mutation = envelopeParse.data;
-    const entry = (Mutations as Record<string, (typeof Mutations)[MutationName]>)[
-        mutation.name
-    ];
-    if (!entry) {
-        return {
-            ok: false,
-            status: 'skipped',
-            reason: `unknown mutator "${mutation.name}"`,
-        };
-    }
-
-    if (!entry.requiredRole.includes(ctxBase.role)) {
-        return {
-            ok: false,
-            status: 'unauthorized',
-            reason: `role "${ctxBase.role}" not in requiredRole for "${mutation.name}"`,
-        };
-    }
-
     const { accountId, timestamp_client, ...rawBody } =
         mutation.args as Record<string, unknown>;
-    const bodyParse = entry.argsSchema.safeParse(rawBody);
-    if (!bodyParse.success) {
-        return {
-            ok: false,
-            status: 'skipped',
-            reason: `args parse for "${mutation.name}": ${z.prettifyError(bodyParse.error)}`,
-        };
-    }
 
-    const ctx: ServerMutatorCtx = {
-        ...ctxBase,
+    const envelope: MutationEnvelope = {
+        clientID: mutation.clientID,
+        id: mutation.id,
+        name: mutation.name,
         accountId: (accountId as string | null | undefined) ?? null,
         timestamp_client:
             timestamp_client instanceof Date
@@ -136,6 +135,58 @@ export function dispatchServerMutation(
                 : timestamp_client
                 ? new Date(timestamp_client as string)
                 : null,
+    };
+
+    return { ok: true, mutation: { envelope, rawBody } };
+}
+
+/**
+ * Execute a parsed mutation against the DO sql. Validates body args
+ * against the per-mutator argsSchema, gates by role, and invokes the
+ * server mutator with envelope fields surfaced via ctx.
+ */
+export type ExecuteResult =
+    | { ok: true; status: 'succeeded' }
+    | { ok: false; status: 'skipped'; reason: string }
+    | { ok: false; status: 'unauthorized'; reason: string };
+
+export function executeServerMutation(
+    mutation: Mutation,
+    ctxBase: Pick<ServerMutatorCtx, 'sql' | 'role' | 'nextVersion'>
+): ExecuteResult {
+    const { envelope, rawBody } = mutation;
+    const entry = (Mutations as Record<string, (typeof Mutations)[MutationName]>)[
+        envelope.name
+    ];
+    if (!entry) {
+        return {
+            ok: false,
+            status: 'skipped',
+            reason: `unknown mutator "${envelope.name}"`,
+        };
+    }
+
+    if (!entry.requiredRole.includes(ctxBase.role)) {
+        return {
+            ok: false,
+            status: 'unauthorized',
+            reason: `role "${ctxBase.role}" not in requiredRole for "${envelope.name}"`,
+        };
+    }
+
+    const bodyParse = entry.argsSchema.safeParse(rawBody);
+    if (!bodyParse.success) {
+        return {
+            ok: false,
+            status: 'skipped',
+            reason: `args parse for "${envelope.name}": ${z.prettifyError(bodyParse.error)}`,
+        };
+    }
+
+    const ctx: ServerMutatorCtx = {
+        ...ctxBase,
+        accountId: envelope.accountId,
+        timestamp_client: envelope.timestamp_client,
     };
 
     (entry.server as ServerMutator<unknown>)(bodyParse.data, ctx);

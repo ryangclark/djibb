@@ -13,7 +13,7 @@ import {
     ReplicacheClientGroupSchema,
 } from '../replicache';
 import { DefaultAuthorizationRules } from './constants';
-import { Mutation, MutationSchema } from './mutators';
+import { MutationEnvelope, MutationStatus } from './mutators';
 
 /**
  * TODO:
@@ -300,11 +300,12 @@ export function InitializeTables(
         `CREATE TABLE IF NOT EXISTS mutations(
             "id" INTEGER NOT NULL,                  -- Per-client mutation ID (Replicache assigns these monotonically per client)
             "client_id" TEXT NOT NULL,              -- ID of the Replicache client that authored the mutation
-            "account_id" TEXT DEFAULT NULL,         -- ID of the Account responsible for the mutation, if any
-            "args" TEXT DEFAULT NULL,               -- Stringified arguments for the mutation, if applicable
+            "account_id" TEXT DEFAULT NULL,         -- Account ID from the mutation envelope, if any
+            "args" TEXT DEFAULT NULL,               -- Stringified BODY args (envelope fields are NOT stored here; they have their own columns)
             "name" TEXT NOT NULL,                   -- Mutation name
             "status" TEXT NOT NULL,                 -- Status of the mutation
-            "timestamp_server" INTEGER NOT NULL,
+            "timestamp_client" INTEGER DEFAULT NULL,-- Envelope-level client clock at mutation authorship (unix seconds). Nullable for offline-queued mutations missing it.
+            "timestamp_server" INTEGER NOT NULL,    -- Server clock when the mutation was logged (unix seconds)
             PRIMARY KEY (client_id, id)             -- mutation IDs are unique per client, not per DO
         );`
     );
@@ -322,7 +323,7 @@ export function InitializeTables(
     // the entity's own list_elements row per ADR 0003.
     sql.exec(
         `INSERT INTO kv VALUES
-        ("schema_version", "4");`
+        ("schema_version", "5");`
     );
 
     sql.exec(
@@ -672,16 +673,27 @@ export function setElementAsDeleted(
     // createMutation(sql, mutation);
 }
 
-export function setMutation(sql: SqlStorage, mutation: Mutation) {
-    if (!mutation.status) {
-        throw new ValidationError('missing/invalid mutation.status');
+/**
+ * Append a row to the mutation log. Envelope fields land in their own
+ * columns (`account_id`, `timestamp_client`, `client_id`, `id`, `name`)
+ * — they are first-class. `args` carries only the per-mutator BODY (no
+ * envelope re-stuffing), stringified for the audit trail.
+ */
+export function setMutation(
+    sql: SqlStorage,
+    envelope: MutationEnvelope,
+    bodyArgs: unknown,
+    status: MutationStatus
+) {
+    if (!status) {
+        throw new ValidationError('missing/invalid mutation status');
     }
 
-    try {
-        // Could do a verification query.
-        // This would be expected to return no rows:
-        // sql.exec('SELECT * FROM mutations WHERE id = ?', mutation.id)
+    const timestampClientSec = envelope.timestamp_client
+        ? Math.floor(envelope.timestamp_client.getTime() / 1000)
+        : null;
 
+    try {
         sql.exec(
             `INSERT INTO mutations (
                 id,
@@ -690,24 +702,18 @@ export function setMutation(sql: SqlStorage, mutation: Mutation) {
                 args,
                 name,
                 status,
+                timestamp_client,
                 timestamp_server
-            ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);`,
-            mutation.id,
-            mutation.clientID,
-            mutation.args.accountId,
-            JSON.stringify(mutation.args),
-            mutation.name,
-            mutation.status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);`,
+            envelope.id,
+            envelope.clientID,
+            envelope.accountId,
+            JSON.stringify(bodyArgs ?? {}),
+            envelope.name,
+            status,
+            timestampClientSec
         );
     } catch (error) {
-        // TODO: remove
-        if (
-            error?.toString() ===
-            'Error: table mutations has no column named status: SQLITE_ERROR'
-        ) {
-            throw error;
-        }
-
         console.log('`setMutation()` query error:', error);
         throw new UnexpectedError();
     }

@@ -3,7 +3,11 @@ import { MutationV1, PullResponseOKV1, PushRequestV1 } from 'replicache';
 
 import { ReplicachePullRequest } from '../replicache';
 import { List, ListElement } from './index';
-import { dispatchServerMutation, Mutation } from './mutators';
+import {
+    executeServerMutation,
+    MutationStatus,
+    parseMutationEnvelope,
+} from './mutators';
 
 import { AuthorizationRole } from '../auth/rules';
 import { WS_MESSAGE_PULL_PLS, WS_STATE } from '../websocket/constants';
@@ -525,24 +529,35 @@ export class DjibbList extends DurableObject {
             };
         }
 
+        // Parse the wire envelope first so envelope-level checks
+        // (cross-account auth, log persistence) read from a typed
+        // shape instead of re-fishing fields out of `mutation.args`.
+        const envelopeResult = parseMutationEnvelope(mutation);
+        if (!envelopeResult.ok) {
+            console.log(
+                `\`handleMutation()\` envelope parse failed: ${envelopeResult.reason}`
+            );
+            // Skip-and-ack: malformed envelopes can't be replayed
+            // usefully, and not acking would wedge the client.
+            return { ackedMutationId: mutation.id, didMutate: false };
+        }
+        const { envelope, rawBody } = envelopeResult.mutation;
+
         // Cross-account check: a mutation may claim an `accountId`
         // (for offline / multi-account flows). If it does, that account
         // must be one the session is signed in as. Envelope-level
-        // concern, handled before dispatch.
-        const claimedAccountId =
-            (mutation.args as { accountId?: string | null } | null)
-                ?.accountId ?? null;
+        // concern, handled before execute.
         if (
-            claimedAccountId &&
-            !authorizedAccounts.some(a => a.id === claimedAccountId)
+            envelope.accountId &&
+            !authorizedAccounts.some(a => a.id === envelope.accountId)
         ) {
-            throw new UnauthorizedError(`${mutation.id} not authorized`);
+            throw new UnauthorizedError(`${envelope.id} not authorized`);
         }
 
-        let mutationStatus: Mutation['status'] = 'unknown';
+        let mutationStatus: MutationStatus = 'unknown';
 
         try {
-            const result = dispatchServerMutation(mutation, {
+            const result = executeServerMutation(envelopeResult.mutation, {
                 sql: this.sql,
                 role: authorizedRole,
                 nextVersion,
@@ -557,13 +572,13 @@ export class DjibbList extends DurableObject {
                 throw new UnauthorizedError(result.reason);
             } else {
                 console.log(
-                    `\`handleMutation()\` skipped "${mutation.name}": ${result.reason}`
+                    `\`handleMutation()\` skipped "${envelope.name}": ${result.reason}`
                 );
                 mutationStatus = 'skipped';
             }
         } catch (error) {
             console.error(
-                `\`handleMutation()\` error executing "${mutation.name}":`,
+                `\`handleMutation()\` error executing "${envelope.name}":`,
                 error
             );
 
@@ -577,25 +592,12 @@ export class DjibbList extends DurableObject {
             }
         }
 
-        // Best-effort log of skipped/succeeded mutations. Validation
-        // failures may leave args in unexpected shape; tread carefully.
+        // Best-effort log of skipped/succeeded mutations. Envelope
+        // fields land in their dedicated columns; only the body is
+        // serialized into `args`.
         if (mutationStatus === 'succeeded' || mutationStatus === 'skipped') {
             try {
-                const args = (mutation.args ?? {}) as {
-                    accountId?: string | null;
-                    timestamp_client?: string | null;
-                };
-                setMutation(this.sql, {
-                    ...mutation,
-                    args: {
-                        ...(typeof mutation.args === 'object' && mutation.args
-                            ? (mutation.args as object)
-                            : {}),
-                        accountId: args.accountId ?? null,
-                        timestamp_client: args.timestamp_client ?? null,
-                    },
-                    status: mutationStatus,
-                } as unknown as Mutation);
+                setMutation(this.sql, envelope, rawBody, mutationStatus);
             } catch (error) {
                 console.log(
                     '`handleMutation()` setMutation log error:',
