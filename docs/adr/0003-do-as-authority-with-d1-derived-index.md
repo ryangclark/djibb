@@ -127,3 +127,54 @@ The forward shape, when the second internal subscriber justifies the indirection
 - ADR 0002 — djibb.com homepage Island depends on a workspace catalog query; under 0003 that query reads the derived D1 index, same as today
 - `CONTEXT.md` — List, Template, mutation envelope semantics
 - Design conversation 2026-04-29 — friction enumeration that prompted this re-litigation
+
+---
+
+## Status update — 2026-05-09
+
+The friction list this ADR enumerated is now resolved. Each metadata
+gesture that 0001 made awkward is a Replicache mutation in the same
+shape as `createListItem` / `setItemQuantity`:
+
+- `renameList` — landed in commit `b095ccb` ("Add renameList mutator
+  end-to-end (ADR 0003 step 5)").
+- `archiveList`, `setDescription`, `setListAuthRules` — landed in
+  commit `8d8d916`. `archiveList` soft-deletes the entity row;
+  `setListAuthRules` introduces a tighter `OWNER_ROLES` gate
+  (admin + owner only).
+- The pull overlay is gone (`b0ac520`). The DO's row carries every
+  entity field; workers no longer overlay D1 fields.
+- Init flow is inverted (`6a4736f`). DO writes the full entity row,
+  then emits the snapshot to D1 as a derived projection.
+
+Mutation envelope (`accountId`, `timestamp_client`) is also now
+first-class on both sides:
+
+- Server: `MutationEnvelope` is a typed shape parsed once by
+  `parseMutationEnvelope`; the log persists envelope fields in
+  dedicated columns rather than restuffing them into `args` JSON
+  (`ee0437d`).
+- Client: a `wrapMutators` proxy in `pages/src/lib/replicache/index.svelte.js`
+  injects envelope fields per call so Svelte components pass body
+  args only (`a2acdd1`).
+
+Adding a new metadata mutator is now genuinely mechanical — see
+`docs/adding-a-mutator.md` for the checklist.
+
+### Open questions, refreshed
+
+- **Cascade delete shape.** Still open. `archiveList` soft-deletes
+  the entity row only; items under it stay in the DO. A
+  workspace-level delete that fans out to entity DOs is not yet
+  designed.
+- **D1 reconciliation sweeper.** Still open and now the most
+  pressing piece — every metadata mutator depends on the
+  post-commit emit succeeding, and there is no backstop if D1 is
+  unreachable for an extended window. The synchronous emit on the
+  push request masks this for typical traffic; a sweeper makes the
+  guarantee real.
+- **Migration plan.** No longer relevant in the way the original
+  ADR framed it. Production surface is still small enough that
+  fresh DO storage is the migration story; the metadata mutators
+  ship under the existing `CREATE TABLE IF NOT EXISTS` +
+  schema_version pattern.
