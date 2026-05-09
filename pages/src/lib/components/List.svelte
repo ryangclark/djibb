@@ -154,10 +154,8 @@
 		}
 		const result = await tryCatchAsync(
 			mutators.renameList({
-				accountId: sessionState.currentAccountId,
 				listId: list.id,
-				name: trimmed,
-				timestamp_client: new Date()
+				name: trimmed
 			})
 		);
 		if (result.error) {
@@ -213,10 +211,8 @@
 		}
 
 		mutators.setItemQuantity({
-			accountId: sessionState.currentAccountId,
 			itemId: elem_id,
-			quantity: { ...elemData.value, value: newValue },
-			timestamp_client: new Date()
+			quantity: { ...elemData.value, value: newValue }
 		});
 	}
 
@@ -270,9 +266,7 @@
 
 		const { error } = await tryCatchAsync(
 			mutators.createListItem({
-				accountId: sessionState.currentAccountId,
-				item: listItem,
-				timestamp_client: now
+				item: listItem
 			})
 		);
 

@@ -31,7 +31,7 @@
 		});
 
 		list_data = replicacheList.list;
-		mutators = replicacheList.client.mutate;
+		mutators = replicacheList.mutate;
 
 		const ws = initWebsocket(data.list_id);
 		ws.addEventListener('message', (event) => {

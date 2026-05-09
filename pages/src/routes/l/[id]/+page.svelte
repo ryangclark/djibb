@@ -35,7 +35,7 @@
 		// what if we do ListSchema.parse(replicacheList.list) or something?
 		// Hmm i think parsing within the component is better for composability
 		list_data = replicacheList.list;
-		mutators = replicacheList.client.mutate;
+		mutators = replicacheList.mutate;
 
 		const ws = initWebsocket(data.list_id);
 		ws.addEventListener('message', (event) => {

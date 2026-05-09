@@ -1,5 +1,8 @@
-import type { InitReplicacheClient } from './index.svelte';
+import type { initList } from './index.svelte';
 
-type ListReplicacheClient = ReturnType<typeof InitReplicacheClient>;
-
-export type ClientListMutators = ListReplicacheClient['mutate'];
+/**
+ * The envelope-wrapped mutator surface returned by `initList`. Body
+ * args only — `accountId` / `timestamp_client` are injected by the
+ * wrapper, not assembled at the call site.
+ */
+export type ClientListMutators = ReturnType<typeof initList>['mutate'];

@@ -35,6 +35,7 @@ export function initList({ accountId, listId }) {
 	}
 
 	const replicacheClient = InitReplicacheClient({ accountId, listId });
+	const mutate = wrapMutators(replicacheClient.mutate, { accountId });
 
 	/**
 	 * Callback function to handle updates to the Replicache store by
@@ -66,10 +67,8 @@ export function initList({ accountId, listId }) {
 		.query((tx) => tx.isEmpty())
 		.then((isEmpty) => {
 			if (isEmpty) {
-				replicacheClient.mutate.initList({
-					accountId,
+				mutate.initList({
 					listId,
-					timestamp_client: new Date(),
 					workspaceId: null // TODO: implement workspace
 				});
 			}
@@ -79,10 +78,49 @@ export function initList({ accountId, listId }) {
 	// the Replicache client.
 	return {
 		client: replicacheClient,
+		mutate,
 		get list() {
 			return listData;
 		}
 	};
+}
+
+/**
+ * Wraps Replicache's raw `client.mutate` proxy so call sites pass BODY
+ * args only — envelope fields (`accountId`, `timestamp_client`) are
+ * injected here. The wire format crams envelope into `args` because
+ * Replicache forces it; this wrapper is the client-side counterpart
+ * to `parseMutationEnvelope` on the server. Both sides treat envelope
+ * as a transport detail rather than something each call site has to
+ * remember to assemble.
+ *
+ * `accountId` is captured at wrap time — the Replicache client is
+ * per-(account, entity) so it doesn't change for the client's lifetime.
+ * `timestamp_client` is stamped at the moment of the call.
+ *
+ * @template {Record<string, (args: any) => any>} M
+ * @param {M} rawMutate
+ * @param {{ accountId: string | null }} envelope
+ * @returns {M}
+ */
+function wrapMutators(rawMutate, { accountId }) {
+	return /** @type {M} */ (
+		new Proxy(
+			{},
+			{
+				get(_, name) {
+					const raw = rawMutate[/** @type {string} */ (name)];
+					if (typeof raw !== 'function') return undefined;
+					return (/** @type {Record<string, unknown>} */ body) =>
+						raw({
+							...body,
+							accountId,
+							timestamp_client: new Date()
+						});
+				}
+			}
+		)
+	);
 }
 
 /**
