@@ -138,6 +138,25 @@
 	let quick_add_list_item_input;
 	/** @type {HTMLInputElement} */
 	let edit_name_input;
+	/**
+	 * Root container for the list view. Made focusable (tabindex="-1")
+	 * so the list-view keymap (D.1+) can capture single-key shortcuts
+	 * without colliding with native undo on editable surfaces. Focused
+	 * on mount via `tick().then(focus)` so the cursor model has somewhere
+	 * to live as soon as the list renders.
+	 *
+	 * @type {HTMLElement | undefined}
+	 */
+	let root_el = $state();
+
+	$effect(() => {
+		// Re-runs when the list mounts / remounts. tick() lets the DOM
+		// settle before we yank focus — without it the focus call can
+		// land on a detached node during the initial render.
+		tick().then(() => {
+			root_el?.focus();
+		});
+	});
 
 	function startEditName() {
 		name_draft = list.name ?? '';
@@ -291,7 +310,13 @@
 		<p class="text-slate-700 text-sm my-2">Workspace ID: {list.workspace_id}</p>
 	{/if}
 
-	<article data-elem-id={list.id} data-elem-type={list.type}>
+	<article
+		bind:this={root_el}
+		data-elem-id={list.id}
+		data-elem-type={list.type}
+		tabindex="-1"
+		class="outline-none"
+	>
 		<header class="flex gap-2 my-3 items-baseline">
 			{#if editing_name}
 				<input
@@ -340,7 +365,13 @@
 		<!-- <hr class="my-2" /> -->
 		{@render list_toolbar()}
 
-		{#each list.child_element_refs as child_ref}
+		<!--
+			Keyed each: pins each rendered row to its child_ref ID so
+			remote inserts/deletes don't shuffle DOM nodes underneath the
+			cursor (D.1+). Without the key Svelte reuses nodes by index,
+			which jitters focus when a peer inserts above your position.
+		-->
+		{#each list.child_element_refs as child_ref (child_ref)}
 			{@render child(child_ref)}
 		{:else}
 			{@render empty_list()}
@@ -408,7 +439,7 @@
 	<section class="my-8" data-elem-id={elem.id} data-elem-type={elem.type}>
 		<h3 class="text-xl">{elem.name}</h3>
 		<div class="flex flex-col">
-			{#each elem.child_element_refs as child_ref}
+			{#each elem.child_element_refs as child_ref (child_ref)}
 				{@render child(child_ref)}
 			{:else}
 				<p>Group has no child elements!</p>
