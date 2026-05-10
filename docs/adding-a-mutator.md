@@ -30,6 +30,8 @@ exports:
 | `requiredRole` | `readonly AuthorizationRole[]` | Gate. Use `EDIT_ROLES` or `OWNER_ROLES` from `_shared.ts`. |
 | `server` | `ServerMutator<Args>` | Runs in the DO. Calls a narrow SQL helper with `ctx.nextVersion`. |
 | `client` | `ClientMutator<Args>` | Runs against `WriteTransaction`. Reads existing entity, sets back with bumped version. |
+| `inverse` | `(args, preState?) => { name, args } \| null` | Returns the inverse mutator and its args, or `null` if the action is intentionally not undoable. Constructive/archive mutators ignore `preState`; set-family mutators use it. **Required** by ADR 0005 — every mutator declares an inverse, even if it's a no-op (`null`). The runtime treats `null` as silent-skip. |
+| `capturePreState` | `(tx, args) => Promise<object>` | **Set-family only.** Reads from the Replicache cache and returns *only* the fields the inverse will need. Co-locates read shape with write shape. Constructive and archive/restore mutators don't export this. Required for set-family mutators by ADR 0005. |
 
 ## Steps
 
@@ -68,7 +70,75 @@ exports:
    Body mutators (touching items / groups / quantities — anything not
    indexed in D1) skip this step.
 
-5. **Write a test.** Pattern lives in `workers/test/`. The shape:
+5. **Define the inverse.** Per ADR 0005, every mutator declares how undo
+   reverses it. There is no parallel "inverse server surface" — every
+   inverse is itself a forward mutator that lands the entity in a prior
+   state. The `inverse` export is a small client-side utility that picks
+   which forward + what args. Three categories — pick the one your mutator
+   fits:
+
+   - **Constructive** (creates new entities): inverse archives what was
+     just created. `createListItem` → `archiveListItem({id})`. No
+     pre-state needed; the id is in forward args. Don't export
+     `capturePreState`.
+   - **Archive/restore** (soft-delete or restore): inverse is the
+     mirror. `archiveListItem` → `unarchiveListItem`,
+     `archiveListItems` → `unarchiveListItems`, `archiveList` →
+     `unarchiveList`. No pre-state needed. Don't export
+     `capturePreState`.
+   - **Set-family** (replaces field values): inverse is the same
+     mutator with previous values. `renameList` → `renameList` with
+     `prev_name`. **Export `capturePreState`** alongside `inverse`;
+     return only the fields the inverse will need.
+
+   If your mutator is **set-family umbrella** (writes multiple fields
+   under one `fields` key — `setItemFields`, `setItemsAtomic`,
+   `setGroupFields`, `setGroupsAtomic`), the canonical shape is:
+
+   ```ts
+   argsSchema = z.object({
+     id: ...,
+     fields: z.object({ ...all writable keys, all .optional() }).strict(),
+     expected: z.object({ ...same shape }).strict().optional(),
+   });
+   ```
+
+   `capturePreState` returns an object whose keys exactly match the
+   keys present in `args.fields`. The inverse swaps `fields` ↔ `expected`
+   and points at the same mutator name.
+
+   For both narrow and umbrella set-family mutators, add the optional
+   `expected` arg. When present, the server checks current state
+   against each key in `expected` before applying; **any mismatch
+   no-ops the entire mutation** (all-or-nothing per envelope).
+   Forward calls don't supply `expected`; undo calls do. This is the
+   CAS that makes defensive undo policy work — see ADR 0005
+   §"Defensive conflict policy."
+
+   If the inverse mutator doesn't exist yet (e.g. you're adding
+   `archiveListItems` and there's no `unarchiveListItems`), build the
+   inverse mutator alongside it. Inverses are full mutators with their
+   own `argsSchema`, `requiredRole`, server, and client. The pattern
+   is symmetric — `unarchiveListItem`'s `inverse` returns
+   `archiveListItem`, so undo-of-undo is just redo with no special
+   tracking.
+
+   If your mutator is intentionally not undoable, export
+   `inverse: () => null`. The runtime silently skips pushing — the
+   action just doesn't enter the user's undo history. Don't reach for
+   this without a real reason; the type-system requirement to export
+   `inverse` is meant to force the design-time question "what does
+   undoing this look like?"
+
+   **Mutators that warrant extra friction.** If your mutator crosses
+   an authority threshold (auth-rules change) or a structural
+   threshold (list creation/deletion), flag it for the two-step
+   confirm-toast UX. Add the mutator's wire `name` to the friction
+   list the client consults when rendering the undo toast. ADR 0005
+   §"Auth-rules and init undos require extra friction" has the full
+   list.
+
+6. **Write a test.** Pattern lives in `workers/test/`. The shape:
    - Init the entity via a `handlePush` of `initList`.
    - Push your mutator via `handlePush`.
    - Assert against the DO sql via `runInDurableObject`.
