@@ -768,6 +768,85 @@ export function updateListItemFields(
     return cursor.rowsWritten === 1 ? 'applied' : 'gone';
 }
 
+/**
+ * Writable fields on a list group. Symmetric to `ListItemWritableFields`;
+ * `child_element_refs` is intentionally excluded — reorder/create/archive
+ * mutators own that array (A.7 / A.4 / A.5). Auto-managed columns are
+ * the same set as items.
+ */
+export type ListGroupWritableFields = Partial<{
+    description: string;
+    name: string;
+    parent_element_ref: string;
+}>;
+
+/**
+ * Field-level group update for the `setGroupFields` mutator. Same
+ * shape as `updateListItemFields` against the `type = 'group'` row.
+ */
+export function updateListGroupFields(
+    sql: SqlStorage,
+    {
+        groupId,
+        fields,
+        expected,
+        version,
+    }: {
+        groupId: string;
+        fields: ListGroupWritableFields;
+        expected?: ListGroupWritableFields;
+        version: number;
+    }
+): FieldUpdateOutcome {
+    if (Object.keys(fields).length === 0) return 'applied';
+
+    if (expected && Object.keys(expected).length > 0) {
+        const rows = sql
+            .exec(
+                `SELECT description, name, parent_element_ref
+                 FROM list_elements
+                 WHERE id = ?
+                   AND type = 'group'
+                   AND time_deleted IS NULL;`,
+                groupId
+            )
+            .toArray();
+        if (rows.length === 0) return 'gone';
+        const row = rows[0] as Record<string, unknown>;
+        for (const [k, v] of Object.entries(expected)) {
+            if (!eq(row[k], v)) return 'stale';
+        }
+    }
+
+    const setClauses: string[] = [];
+    const params: unknown[] = [];
+
+    if ('description' in fields) {
+        setClauses.push('description = ?');
+        params.push(fields.description ?? '');
+    }
+    if ('name' in fields) {
+        setClauses.push('name = ?');
+        params.push(fields.name);
+    }
+    if ('parent_element_ref' in fields) {
+        setClauses.push('parent_element_ref = ?');
+        params.push(fields.parent_element_ref);
+    }
+    setClauses.push('version = ?', 'time_updated = CURRENT_TIMESTAMP');
+    params.push(version);
+    params.push(groupId);
+
+    const cursor = sql.exec(
+        `UPDATE list_elements SET ${setClauses.join(', ')}
+         WHERE id = ?
+           AND type = 'group'
+           AND time_deleted IS NULL;`,
+        ...params
+    );
+    return cursor.rowsWritten === 1 ? 'applied' : 'gone';
+}
+
 // Idempotent: replayed mutations (the server's per-client mutation ID
 // tracking is currently incorrect, so pushes can be replayed) are a
 // no-op instead of a UNIQUE violation.
