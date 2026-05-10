@@ -539,6 +539,70 @@ export function archiveEntity(
 }
 
 /**
+ * Soft-delete a single item row. Idempotent — re-archiving an
+ * already-deleted row just refreshes `time_deleted` and bumps
+ * `version`, mirroring `archiveEntity`'s policy. Missing rows are a
+ * silent no-op (unlike `archiveEntity` which throws); item archive is
+ * a frequent UI gesture that shouldn't surface NotFoundError when a
+ * remote delete raced the local one.
+ */
+export function archiveListItem(
+    sql: SqlStorage,
+    { itemId, version }: { itemId: string; version: number }
+): void {
+    sql.exec(
+        `UPDATE list_elements
+         SET
+             time_deleted = CURRENT_TIMESTAMP,
+             version = ?,
+             time_updated = CURRENT_TIMESTAMP
+         WHERE id = ? AND type = 'item';`,
+        version,
+        itemId
+    );
+}
+
+/**
+ * Restore a soft-deleted item row by clearing `time_deleted`.
+ * Idempotent on already-live rows. Missing rows are a silent no-op.
+ */
+export function unarchiveListItem(
+    sql: SqlStorage,
+    { itemId, version }: { itemId: string; version: number }
+): void {
+    sql.exec(
+        `UPDATE list_elements
+         SET
+             time_deleted = NULL,
+             version = ?,
+             time_updated = CURRENT_TIMESTAMP
+         WHERE id = ? AND type = 'item';`,
+        version,
+        itemId
+    );
+}
+
+/** Bulk archive — applies each id independently; missing rows skipped. */
+export function archiveListItems(
+    sql: SqlStorage,
+    { itemIds, version }: { itemIds: readonly string[]; version: number }
+): void {
+    for (const itemId of itemIds) {
+        archiveListItem(sql, { itemId, version });
+    }
+}
+
+/** Bulk restore — applies each id independently; missing rows skipped. */
+export function unarchiveListItems(
+    sql: SqlStorage,
+    { itemIds, version }: { itemIds: readonly string[]; version: number }
+): void {
+    for (const itemId of itemIds) {
+        unarchiveListItem(sql, { itemId, version });
+    }
+}
+
+/**
  * Update an entity row's description. Used by `setDescription`. An
  * empty string clears the description (the column defaults to ""; we
  * don't distinguish unset from empty).

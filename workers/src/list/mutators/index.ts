@@ -11,6 +11,8 @@ import type {
 } from './_shared';
 
 import * as archiveList from './archiveList';
+import * as archiveListItem from './archiveListItem';
+import * as archiveListItems from './archiveListItems';
 import * as initList from './initList';
 import * as createListItem from './createListItem';
 import * as renameList from './renameList';
@@ -21,6 +23,8 @@ import * as setItemFields from './setItemFields';
 import * as setItemsAtomic from './setItemsAtomic';
 import * as setItemQuantity from './setItemQuantity';
 import * as setListAuthRules from './setListAuthRules';
+import * as unarchiveListItem from './unarchiveListItem';
+import * as unarchiveListItems from './unarchiveListItems';
 
 export {
     EDIT_ROLES,
@@ -51,6 +55,8 @@ export const DEFAULT_LIST_TITLE = '';
  */
 export const Mutations = {
     [archiveList.name]: archiveList,
+    [archiveListItem.name]: archiveListItem,
+    [archiveListItems.name]: archiveListItems,
     [initList.name]: initList,
     [createListItem.name]: createListItem,
     [renameList.name]: renameList,
@@ -61,6 +67,8 @@ export const Mutations = {
     [setItemsAtomic.name]: setItemsAtomic,
     [setItemQuantity.name]: setItemQuantity,
     [setListAuthRules.name]: setListAuthRules,
+    [unarchiveListItem.name]: unarchiveListItem,
+    [unarchiveListItems.name]: unarchiveListItems,
 } as const;
 
 export type MutationName = keyof typeof Mutations;
