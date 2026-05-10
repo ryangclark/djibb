@@ -139,6 +139,26 @@ export function isFrictionTier(name: string): boolean {
     return FRICTION_TIER_MUTATORS.includes(name);
 }
 
+/**
+ * The full module-level contract every mutator file must export. Used
+ * by the `Mutations` registry's `satisfies` clause to enforce the
+ * full surface at compile time, including the `inverse` requirement
+ * from ADR 0005. Forgetting `inverse` becomes a build error from A.6
+ * forward.
+ *
+ * `capturePreState` stays optional — only set-family mutators need
+ * pre-state capture; constructive and archive/restore don't.
+ */
+export type MutatorModule<A = unknown> = {
+    name: string;
+    requiredRole: readonly AuthorizationRole[];
+    argsSchema: z.ZodType<A>;
+    server: ServerMutator<A>;
+    client: ClientMutator<A>;
+    inverse: Inverse<A>;
+    capturePreState?: CapturePreState<A>;
+};
+
 /** Replicache values must be plain JSON; round-trip strips Date instances. */
 export function toStoredValue(value: unknown): ReadonlyJSONObject {
     return JSON.parse(JSON.stringify(value));

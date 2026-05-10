@@ -4,7 +4,12 @@ import { NotFoundError } from '../../errors';
 import { ListSchema } from '..';
 import { setEntityDescription } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
-import type { ClientMutator, ServerMutator } from './_shared';
+import type {
+    CapturePreState,
+    ClientMutator,
+    Inverse,
+    ServerMutator,
+} from './_shared';
 
 /**
  * Description is free-form prose; an empty string clears it. We don't
@@ -15,6 +20,13 @@ import type { ClientMutator, ServerMutator } from './_shared';
 export const argsSchema = z.object({
     listId: ListSchema.shape.id,
     description: z.string().max(10_000),
+    /** Narrow set-family CAS; see renameList for full notes. */
+    expected: z
+        .object({
+            description: z.string(),
+        })
+        .strict()
+        .optional(),
 });
 
 export type Args = z.infer<typeof argsSchema>;
@@ -23,9 +35,26 @@ export const name = 'setDescription' as const;
 export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
-    { listId, description },
+    { listId, description, expected },
     { sql, nextVersion }
 ) => {
+    if (expected?.description !== undefined) {
+        const rows = sql
+            .exec(
+                `SELECT description FROM list_elements
+                 WHERE id = ?
+                   AND (type = 'list' OR type = 'template')
+                   AND time_deleted IS NULL;`,
+                listId
+            )
+            .toArray();
+        const row = rows[0];
+        if (!row) return;
+        // Description column defaults to '' so a null read here would
+        // be unusual, but normalize defensively.
+        const current = (row.description as string | null) ?? '';
+        if (current !== expected.description) return;
+    }
     setEntityDescription(sql, {
         entityId: listId,
         description,
@@ -35,7 +64,7 @@ export const server: ServerMutator<Args> = (
 
 export const client: ClientMutator<Args> = async (
     tx,
-    { listId, description },
+    { listId, description, expected },
     { timestamp_client }
 ) => {
     const raw = await tx.get(listId);
@@ -43,8 +72,13 @@ export const client: ClientMutator<Args> = async (
         throw new NotFoundError(`entity "${listId}" not found`);
     }
     const entity = raw as Record<string, unknown> & { version?: number };
-    const ts = timestamp_client ?? new Date();
 
+    if (expected?.description !== undefined) {
+        const current = (entity.description as string | undefined) ?? '';
+        if (current !== expected.description) return;
+    }
+
+    const ts = timestamp_client ?? new Date();
     await tx.set(
         listId,
         toStoredValue({
@@ -54,4 +88,23 @@ export const client: ClientMutator<Args> = async (
             version: (entity.version ?? 0) + 1,
         })
     );
+};
+
+export const capturePreState: CapturePreState<Args> = async (tx, { listId }) => {
+    const raw = await tx.get(listId);
+    if (!raw) return {};
+    const entity = raw as Record<string, unknown>;
+    return { description: (entity.description as string | undefined) ?? '' };
+};
+
+export const inverse: Inverse<Args> = (args, preState) => {
+    if (!preState || preState.description === undefined) return null;
+    return {
+        name,
+        args: {
+            listId: args.listId,
+            description: preState.description,
+            expected: { description: args.description },
+        },
+    };
 };

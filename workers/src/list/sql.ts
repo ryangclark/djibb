@@ -539,6 +539,33 @@ export function archiveEntity(
 }
 
 /**
+ * Restore a soft-deleted entity row by clearing `time_deleted`. Inverse
+ * of `archiveEntity` for the `unarchiveList` undo path. Idempotent on
+ * already-live rows.
+ */
+export function unarchiveEntity(
+    sql: SqlStorage,
+    { entityId, version }: { entityId: string; version: number }
+): void {
+    const cursor = sql.exec(
+        `UPDATE list_elements
+        SET
+            time_deleted = NULL,
+            version = ?,
+            time_updated = CURRENT_TIMESTAMP
+        WHERE id = ?
+            AND (type = 'list' OR type = 'template');`,
+        version,
+        entityId
+    );
+    if (cursor.rowsWritten !== 1) {
+        throw new NotFoundError(
+            `\`unarchiveEntity()\` entity "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+        );
+    }
+}
+
+/**
  * Soft-delete a single item row. Idempotent — re-archiving an
  * already-deleted row just refreshes `time_deleted` and bumps
  * `version`, mirroring `archiveEntity`'s policy. Missing rows are a

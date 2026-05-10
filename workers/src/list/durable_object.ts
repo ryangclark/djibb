@@ -47,6 +47,7 @@ const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
     'renameList',
     'setDescription',
     'setListAuthRules',
+    'unarchiveList',
 ]);
 
 /**

@@ -4,7 +4,7 @@ import { NotFoundError } from '../../errors';
 import { ListSchema } from '..';
 import { archiveEntity } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
-import type { ClientMutator, ServerMutator } from './_shared';
+import type { ClientMutator, Inverse, ServerMutator } from './_shared';
 
 export const argsSchema = z.object({
     listId: ListSchema.shape.id,
@@ -65,3 +65,16 @@ export const client: ClientMutator<Args> = async (
         })
     );
 };
+
+/**
+ * Archive/restore inverse: pair is `unarchiveList`. ADR 0005 also
+ * flags entity-level archive as friction-tier when it crosses the
+ * structural-threshold question (deletes that change list visibility
+ * for other accounts) — Cmd+Z still works, but the toast surfaces a
+ * confirm prompt. The friction lookup happens in the runtime (B.2);
+ * this file just declares the inverse pair.
+ */
+export const inverse: Inverse<Args> = ({ listId }) => ({
+    name: 'unarchiveList',
+    args: { listId },
+});

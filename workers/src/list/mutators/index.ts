@@ -6,6 +6,7 @@ import { MutationEnvelopeArgsSchema } from './_shared';
 import type {
     ClientMutator,
     ClientMutatorCtx,
+    MutatorModule,
     ServerMutator,
     ServerMutatorCtx,
 } from './_shared';
@@ -25,6 +26,7 @@ import * as setItemFields from './setItemFields';
 import * as setItemsAtomic from './setItemsAtomic';
 import * as setItemQuantity from './setItemQuantity';
 import * as setListAuthRules from './setListAuthRules';
+import * as unarchiveList from './unarchiveList';
 import * as unarchiveListGroup from './unarchiveListGroup';
 import * as unarchiveListGroups from './unarchiveListGroups';
 import * as unarchiveListItem from './unarchiveListItem';
@@ -73,11 +75,12 @@ export const Mutations = {
     [setItemsAtomic.name]: setItemsAtomic,
     [setItemQuantity.name]: setItemQuantity,
     [setListAuthRules.name]: setListAuthRules,
+    [unarchiveList.name]: unarchiveList,
     [unarchiveListGroup.name]: unarchiveListGroup,
     [unarchiveListGroups.name]: unarchiveListGroups,
     [unarchiveListItem.name]: unarchiveListItem,
     [unarchiveListItems.name]: unarchiveListItems,
-} as const;
+} as const satisfies Record<string, MutatorModule<any>>;
 
 export type MutationName = keyof typeof Mutations;
 

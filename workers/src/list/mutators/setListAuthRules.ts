@@ -5,7 +5,12 @@ import { NotFoundError } from '../../errors';
 import { ListSchema } from '..';
 import { setEntityAuthorizationRules } from '../sql';
 import { OWNER_ROLES, toStoredValue } from './_shared';
-import type { ClientMutator, ServerMutator } from './_shared';
+import type {
+    CapturePreState,
+    ClientMutator,
+    Inverse,
+    ServerMutator,
+} from './_shared';
 
 /**
  * Whole-replace of the entity's authorization_rules. The simpler
@@ -20,6 +25,18 @@ import type { ClientMutator, ServerMutator } from './_shared';
 export const argsSchema = z.object({
     listId: ListSchema.shape.id,
     authorization_rules: AuthorizationRulesSchema,
+    /**
+     * Narrow set-family CAS. Whole-object equality on
+     * `authorization_rules`. Friction-tier mutator — undo prompts a
+     * confirm toast (ADR 0005 §"Friction tiers"); the CAS protects
+     * against another admin changing rules between forward and undo.
+     */
+    expected: z
+        .object({
+            authorization_rules: AuthorizationRulesSchema,
+        })
+        .strict()
+        .optional(),
 });
 
 export type Args = z.infer<typeof argsSchema>;
@@ -34,9 +51,31 @@ export const name = 'setListAuthRules' as const;
 export const requiredRole = OWNER_ROLES;
 
 export const server: ServerMutator<Args> = (
-    { listId, authorization_rules },
+    { listId, authorization_rules, expected },
     { sql, nextVersion }
 ) => {
+    if (expected?.authorization_rules !== undefined) {
+        const rows = sql
+            .exec(
+                `SELECT authorization_rules FROM list_elements
+                 WHERE id = ?
+                   AND (type = 'list' OR type = 'template')
+                   AND time_deleted IS NULL;`,
+                listId
+            )
+            .toArray();
+        const row = rows[0];
+        if (!row) return;
+        const currentRaw = row.authorization_rules;
+        const current =
+            typeof currentRaw === 'string' ? JSON.parse(currentRaw) : currentRaw;
+        if (
+            JSON.stringify(current) !==
+            JSON.stringify(expected.authorization_rules)
+        ) {
+            return;
+        }
+    }
     setEntityAuthorizationRules(sql, {
         entityId: listId,
         authorization_rules,
@@ -46,7 +85,7 @@ export const server: ServerMutator<Args> = (
 
 export const client: ClientMutator<Args> = async (
     tx,
-    { listId, authorization_rules },
+    { listId, authorization_rules, expected },
     { timestamp_client }
 ) => {
     const raw = await tx.get(listId);
@@ -54,8 +93,17 @@ export const client: ClientMutator<Args> = async (
         throw new NotFoundError(`entity "${listId}" not found`);
     }
     const entity = raw as Record<string, unknown> & { version?: number };
-    const ts = timestamp_client ?? new Date();
 
+    if (expected?.authorization_rules !== undefined) {
+        if (
+            JSON.stringify(entity.authorization_rules) !==
+            JSON.stringify(expected.authorization_rules)
+        ) {
+            return;
+        }
+    }
+
+    const ts = timestamp_client ?? new Date();
     await tx.set(
         listId,
         toStoredValue({
@@ -65,4 +113,26 @@ export const client: ClientMutator<Args> = async (
             version: (entity.version ?? 0) + 1,
         })
     );
+};
+
+export const capturePreState: CapturePreState<Args> = async (
+    tx,
+    { listId }
+) => {
+    const raw = await tx.get(listId);
+    if (!raw) return {};
+    const entity = raw as Record<string, unknown>;
+    return { authorization_rules: entity.authorization_rules };
+};
+
+export const inverse: Inverse<Args> = (args, preState) => {
+    if (!preState || preState.authorization_rules === undefined) return null;
+    return {
+        name,
+        args: {
+            listId: args.listId,
+            authorization_rules: preState.authorization_rules,
+            expected: { authorization_rules: args.authorization_rules },
+        },
+    };
 };

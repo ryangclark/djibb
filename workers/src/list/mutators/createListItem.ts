@@ -6,7 +6,7 @@ import { appendChildElementRef, insertListItem } from '../sql';
 import { IdTypes } from '../../id';
 import { ListSchema, TemplateSchema } from '..';
 import { EDIT_ROLES, toStoredValue } from './_shared';
-import type { ClientMutator, ServerMutator } from './_shared';
+import type { ClientMutator, Inverse, ServerMutator } from './_shared';
 
 export const argsSchema = z.object({
     item: ListItemSchema,
@@ -68,6 +68,15 @@ async function incrementListVersion(tx: Parameters<ClientMutator<Args>>[0]) {
     entityElement.version += 1;
     return tx.set(entityElement.id, toStoredValue(entityElement));
 }
+
+/**
+ * Constructive inverse: archive the just-created item. The id is
+ * already in `args.item`, so no `capturePreState` is needed.
+ */
+export const inverse: Inverse<Args> = ({ item }) => ({
+    name: 'archiveListItem',
+    args: { id: item.id },
+});
 
 async function scanFirst<T>(
     tx: Parameters<ClientMutator<Args>>[0],

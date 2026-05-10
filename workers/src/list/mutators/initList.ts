@@ -12,7 +12,7 @@ import {
     MutationEnvelopeArgsSchema,
     toStoredValue,
 } from './_shared';
-import type { ClientMutator, ServerMutator } from './_shared';
+import type { ClientMutator, Inverse, ServerMutator } from './_shared';
 
 export const argsSchema = z.object({
     listId: ListSchema.shape.id,
@@ -136,3 +136,16 @@ export const client: ClientMutator<Args> = async (
         tx.set(entity.id, toStoredValue(entity)),
     ]);
 };
+
+/**
+ * Constructive inverse: the inverse of "create the list" is
+ * "archive the list." Friction-tier per ADR 0005 — list creation
+ * crosses a structural threshold, so the runtime renders a confirm
+ * toast on Cmd+Z (lookup table in `_shared.ts` already lists
+ * `initList`). Plain `archiveList`, not unarchive — undoing a
+ * creation must remove the entity, not just toggle a flag.
+ */
+export const inverse: Inverse<Args> = ({ listId }) => ({
+    name: 'archiveList',
+    args: { listId },
+});
