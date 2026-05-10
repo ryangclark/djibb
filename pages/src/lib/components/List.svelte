@@ -14,17 +14,21 @@
 	import { tryCatch, tryCatchAsync } from '$djibb/utils/trycatch';
 	import { fetchOwnedEntities } from '$lib/entities.js';
 	import { getSessionState } from '$lib/session.svelte.js';
-	import { createListViewCursor } from '$lib/keymap/listView.svelte.js';
+	import { createListViewVerbs } from '$lib/keymap/listViewVerbs.svelte.js';
 
 	/**
 	 * @typedef Props
 	 * @property {*} data List data
 	 * @property {import('$djibb/list').List} list
 	 * @property {import('$lib/replicache/types').ClientListMutators} mutators
+	 * @property {import('$lib/replicache/types').ClientListMutators} mutateWithUndo
+	 *   User-firing path that pushes stack entries. The list-view
+	 *   verbs (Cmd+Backspace, Space, +/−) call this so undo restores
+	 *   them; system / native-input handlers stay on `mutators`.
 	 */
 
 	/** @type {Props} */
-	let { data, list: rawList, mutators } = $props();
+	let { data, list: rawList, mutators, mutateWithUndo } = $props();
 
 	// Accept either entity type — this component renders both lists and
 	// templates using the same DO machinery; the only branch points are
@@ -150,14 +154,15 @@
 	 */
 	let root_el = $state();
 
-	// D.1 — cursor model. The module owns cursor state + collapsed
-	// groups + flat-row sequence. We pass thunks for `list` / `data`
-	// so it sees their reactive values without us threading $state
-	// across module boundaries.
-	const cursor = createListViewCursor({
+	// D.1 cursor + D.2 verbs. The verbs module composes the cursor;
+	// we instantiate the outer one and proxy through. Thunks for
+	// `list` / `data` so the module sees their reactive values
+	// without us threading $state across module boundaries.
+	const cursor = createListViewVerbs({
 		getList: () => list,
 		getData: () => data,
-		listId: list.id
+		listId: list.id,
+		mutateWithUndo
 	});
 
 	$effect(() => {
@@ -451,10 +456,11 @@
 )}
 	{@const is_collapsed = cursor.isCollapsed(elem.id)}
 	{@const is_cursor = cursor.isCursor(elem.id)}
+	{@const is_selected = cursor.isSelected(elem.id)}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<section
-		class="my-8 px-1 {is_cursor ? 'bg-slate-100 ring-1 ring-slate-300' : ''}"
+		class="my-8 px-1 {is_cursor ? 'ring-1 ring-slate-400' : ''} {is_selected ? 'bg-sky-100' : is_cursor ? 'bg-slate-100' : ''}"
 		data-elem-id={elem.id}
 		data-elem-type={elem.type}
 		onclick={() => cursor.setCursor(elem.id)}
@@ -482,10 +488,11 @@
 	elem
 )}
 	{@const is_cursor = cursor.isCursor(elem.id)}
+	{@const is_selected = cursor.isSelected(elem.id)}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
-		class="flex items-center gap-2 my-1 px-1 {is_cursor ? 'bg-slate-100 ring-1 ring-slate-300' : ''}"
+		class="flex items-center gap-2 my-1 px-1 {is_cursor ? 'ring-1 ring-slate-400' : ''} {is_selected ? 'bg-sky-100' : is_cursor ? 'bg-slate-100' : ''}"
 		onclick={() => cursor.setCursor(elem.id)}
 	>
 		<label class="flex items-center gap-2">

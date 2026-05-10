@@ -26,6 +26,9 @@
 	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
 	let mutators = $state();
 
+	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
+	let mutateWithUndo = $state();
+
 	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
 	let toastEvent = $state(null);
 
@@ -66,6 +69,7 @@
 		// Hmm i think parsing within the component is better for composability
 		list_data = replicacheList.list;
 		mutators = replicacheList.mutate;
+		mutateWithUndo = replicacheList.mutateWithUndo;
 
 		const ws = initWebsocket(data.list_id, replicacheList.client.clientID);
 		ws.addEventListener('message', (event) => {
@@ -100,8 +104,8 @@
 </script>
 
 <svelte:boundary {failed}>
-	{#if list}
-		<List data={list_data} {list} {mutators}></List>
+	{#if list && mutators && mutateWithUndo}
+		<List data={list_data} {list} {mutators} {mutateWithUndo}></List>
 	{:else}
 		<p>Loading list…</p>
 	{/if}

@@ -1,0 +1,96 @@
+import { describe, it, expect } from 'vitest';
+
+// D.2: pure quantity math for Space toggle and +/- step.
+
+import {
+    stepQuantityValue,
+    toggleQuantityValue,
+} from '../../pages/src/lib/keymap/listViewVerbsLogic.js';
+
+describe('toggleQuantityValue', () => {
+    it('bool unchecked → checked', () => {
+        expect(toggleQuantityValue({
+            value: 0, target_value: 1, unit: 'bool',
+        })).toBe(1);
+    });
+
+    it('bool checked → unchecked', () => {
+        expect(toggleQuantityValue({
+            value: 1, target_value: 1, unit: 'bool',
+        })).toBe(0);
+    });
+
+    it('count partially filled → jumps to target', () => {
+        expect(toggleQuantityValue({
+            value: 2, target_value: 5, unit: 'count',
+        })).toBe(5);
+    });
+
+    it('count at target → drops to min (or 0)', () => {
+        expect(toggleQuantityValue({
+            value: 5, target_value: 5, unit: 'count',
+        })).toBe(0);
+    });
+
+    it('count at target with explicit min → drops to that min', () => {
+        expect(toggleQuantityValue({
+            value: 5, target_value: 5, min_value: 2, unit: 'count',
+        })).toBe(2);
+    });
+
+    it('count at zero → jumps to target', () => {
+        expect(toggleQuantityValue({
+            value: 0, target_value: 3, unit: 'count',
+        })).toBe(3);
+    });
+});
+
+describe('stepQuantityValue', () => {
+    it('step up within range', () => {
+        expect(stepQuantityValue({
+            value: 2, target_value: 5, unit: 'count',
+        }, 1)).toBe(3);
+    });
+
+    it('step down within range', () => {
+        expect(stepQuantityValue({
+            value: 2, target_value: 5, unit: 'count',
+        }, -1)).toBe(1);
+    });
+
+    it('step below 0 → clamps to 0 when no min specified', () => {
+        expect(stepQuantityValue({
+            value: 0, target_value: 5, unit: 'count',
+        }, -1)).toBe(0);
+    });
+
+    it('step below min → clamps to min', () => {
+        expect(stepQuantityValue({
+            value: 2, target_value: 5, min_value: 2, unit: 'count',
+        }, -1)).toBe(2);
+    });
+
+    it('step past max_value → clamps to max', () => {
+        expect(stepQuantityValue({
+            value: 9, target_value: 5, max_value: 10, unit: 'count',
+        }, 5)).toBe(10);
+    });
+
+    it('no max specified → unbounded above', () => {
+        expect(stepQuantityValue({
+            value: 100, target_value: 5, unit: 'count',
+        }, 1000)).toBe(1100);
+    });
+
+    it('bool item stepping up at target → clamps at 1', () => {
+        expect(stepQuantityValue({
+            value: 1, target_value: 1, unit: 'bool',
+        }, 1)).toBe(2); // bool doesn't enforce max unless max_value set
+    });
+
+    it('bool item with max_value=1 stepping up → stays at 1', () => {
+        expect(stepQuantityValue({
+            value: 1, target_value: 1, max_value: 1, unit: 'bool',
+        }, 1)).toBe(1);
+    });
+});
