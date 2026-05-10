@@ -49,11 +49,11 @@ export const server: ServerMutator<Args> = (
             )
             .toArray();
         const row = rows[0];
-        if (!row) return;
+        if (!row) return { status: 'gone' };
         // Description column defaults to '' so a null read here would
         // be unusual, but normalize defensively.
         const current = (row.description as string | null) ?? '';
-        if (current !== expected.description) return;
+        if (current !== expected.description) return { status: 'stale' };
     }
     setEntityDescription(sql, {
         entityId: listId,

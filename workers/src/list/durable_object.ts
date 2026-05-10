@@ -10,7 +10,13 @@ import {
 } from './mutators';
 
 import { AuthorizationRole } from '../auth/rules';
-import { WS_MESSAGE_PULL_PLS, WS_STATE } from '../websocket/constants';
+import {
+    encodeWSMessage,
+    WS_QUERY_CLIENT_ID,
+    WS_STATE,
+    type MutationOutcomeStatus,
+    type WSMessage,
+} from '../websocket/constants';
 import { Bindings } from '..';
 import {
     BadMutationError,
@@ -570,9 +576,29 @@ export class DjibbList extends DurableObject {
 
             if (result.ok) {
                 mutationStatus = 'succeeded';
+                // Surface failure outcomes (CAS-stale, target-gone)
+                // over the per-mutation outcome channel so the client's
+                // undo runtime (B.2) can update its toast / abort
+                // pending retry. Successes are implicit — no emit.
+                if (result.outcome !== 'applied') {
+                    this.emitMutationOutcome(
+                        envelope.clientID,
+                        envelope.id,
+                        result.outcome
+                    );
+                }
             } else if (result.status === 'unauthorized') {
                 console.log(
                     `\`handleMutation()\` unauthorized: ${result.reason}`
+                );
+                // Emit `auth` over the outcome channel BEFORE throwing.
+                // The HTTP push response will fail too; the channel
+                // gives the runtime a structured per-mutation
+                // signal so it can stop retrying that envelope.
+                this.emitMutationOutcome(
+                    envelope.clientID,
+                    envelope.id,
+                    'auth'
                 );
                 throw new UnauthorizedError(result.reason);
             } else {
@@ -717,7 +743,19 @@ export class DjibbList extends DurableObject {
             throw new UnexpectedError('bad server from WebSocketPair');
         }
 
-        this.ctx.acceptWebSocket(server);
+        // Read `?c=<clientID>` to tag this socket at accept time. Per
+        // ADR 0006, the tag is what `getWebSockets(clientID)` keys
+        // off when emitting per-mutation outcomes. Untagged upgrades
+        // are accepted (graceful-deploy invariant) — old clients
+        // that don't supply `c` keep working for poke broadcasts;
+        // they just don't receive outcomes.
+        const url = new URL(request.url);
+        const clientID = url.searchParams.get(WS_QUERY_CLIENT_ID);
+        if (clientID && clientID.length > 0 && clientID.length <= 128) {
+            this.ctx.acceptWebSocket(server, [clientID]);
+        } else {
+            this.ctx.acceptWebSocket(server);
+        }
 
         return new Response(null, {
             headers: {
@@ -779,16 +817,47 @@ export class DjibbList extends DurableObject {
     }
 
     /**
-     * Pokes each open websocket client with a message to indicate
-     * their Replicache should Pull.
+     * Pokes each open websocket client with a typed `{type:'poke'}`
+     * message to indicate their Replicache should Pull. Wire format
+     * migrated to JSON in B.1 (ADR 0006); the previous plain-string
+     * `'pull pls'` payload is gone.
      */
     poke() {
         const websockets = this.ctx.getWebSockets();
         console.log('`poke()` running! Websocket count:', websockets.length);
 
+        const payload = encodeWSMessage({ type: 'poke' });
         for (const ws of websockets) {
             if (ws.readyState === WS_STATE.OPEN) {
-                ws.send(WS_MESSAGE_PULL_PLS);
+                ws.send(payload);
+            }
+        }
+    }
+
+    /**
+     * Unicast a per-mutation outcome to the originating client over
+     * the websocket(s) tagged with its clientID at accept time
+     * (ADR 0006). Silent-drop if the client connected without a tag —
+     * supports graceful deploy across the wire-format migration. Only
+     * called for failure outcomes; success is implicit per ADR 0005.
+     */
+    private emitMutationOutcome(
+        clientID: string,
+        mutationID: number,
+        status: MutationOutcomeStatus
+    ): void {
+        const targets = this.ctx.getWebSockets(clientID);
+        if (targets.length === 0) return;
+
+        const payload: WSMessage = {
+            type: 'mutation_outcome',
+            mutationID,
+            status,
+        };
+        const encoded = encodeWSMessage(payload);
+        for (const ws of targets) {
+            if (ws.readyState === WS_STATE.OPEN) {
+                ws.send(encoded);
             }
         }
     }

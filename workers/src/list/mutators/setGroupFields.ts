@@ -41,14 +41,15 @@ export const server: ServerMutator<Args> = (
     { id, fields, expected },
     { sql, nextVersion }
 ) => {
-    updateListGroupFields(sql, {
+    const outcome = updateListGroupFields(sql, {
         groupId: id,
         fields,
         expected,
         version: nextVersion,
     });
-    // `stale` and `gone` outcomes silently drop today (B.1 wires the
-    // outcome channel).
+    if (outcome === 'stale' || outcome === 'gone') {
+        return { status: outcome };
+    }
 };
 
 export const client: ClientMutator<Args> = async (

@@ -4,7 +4,7 @@
 	import { initList } from '$lib/replicache/index.svelte.js';
 	import { initialize as initWebsocket } from '$lib/websocket';
 
-	import { WS_MESSAGE_PULL_PLS } from '$djibb/websocket/constants';
+	import { decodeWSMessage } from '$djibb/websocket/constants';
 
 	import List from '$lib/components/List.svelte';
 	import { getSessionState } from '$lib/session.svelte.js';
@@ -37,13 +37,15 @@
 		list_data = replicacheList.list;
 		mutators = replicacheList.mutate;
 
-		const ws = initWebsocket(data.list_id);
+		const ws = initWebsocket(data.list_id, replicacheList.client.clientID);
 		ws.addEventListener('message', (event) => {
-			if (event.data === WS_MESSAGE_PULL_PLS) {
-				if (replicacheList) {
-					replicacheList.client.pull();
-				}
+			const msg = decodeWSMessage(event.data);
+			if (!msg) return;
+			if (msg.type === 'poke') {
+				if (replicacheList) replicacheList.client.pull();
 			}
+			// `mutation_outcome` is consumed by the undo runtime in B.2;
+			// dropped here for now (no listener wired yet).
 		});
 
 		// Return a cleanup function, which is called whenever the

@@ -49,8 +49,8 @@ export const server: ServerMutator<Args> = (
             )
             .toArray();
         const row = rows[0];
-        if (!row) return; // gone
-        if (row.name !== expected.name) return; // stale
+        if (!row) return { status: 'gone' };
+        if (row.name !== expected.name) return { status: 'stale' };
     }
     renameEntity(sql, { entityId: listId, name: newName, version: nextVersion });
 };

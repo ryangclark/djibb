@@ -193,8 +193,24 @@ export function parseMutationEnvelope(
  * against the per-mutator argsSchema, gates by role, and invokes the
  * server mutator with envelope fields surfaced via ctx.
  */
+/**
+ * Result of attempting to execute a parsed mutation. The `outcome`
+ * field carries the structured per-mutation status surfaced over the
+ * outcome channel (ADR 0006):
+ *
+ *  - `applied`     — write landed.
+ *  - `stale`       — set-family CAS pre-check failed; whole envelope
+ *                    no-op (ADR 0005 §"Defensive conflict policy").
+ *  - `gone`        — target row missing.
+ *  - `unauthorized`— role gate denied.
+ *  - `skipped`     — args parse failed or unknown mutator.
+ *
+ * Successes (`applied`) don't flow over the outcome channel — only
+ * failures (stale | gone | unauthorized). `skipped` is server-side
+ * envelope-level diagnostic, not a per-mutation outcome.
+ */
 export type ExecuteResult =
-    | { ok: true; status: 'succeeded' }
+    | { ok: true; status: 'succeeded'; outcome: 'applied' | 'stale' | 'gone' }
     | { ok: false; status: 'skipped'; reason: string }
     | { ok: false; status: 'unauthorized'; reason: string };
 
@@ -237,9 +253,20 @@ export function executeServerMutation(
         timestamp_client: envelope.timestamp_client,
     };
 
-    (entry.server as ServerMutator<unknown>)(bodyParse.data, ctx);
+    const outcome = (entry.server as ServerMutator<unknown>)(
+        bodyParse.data,
+        ctx
+    );
 
-    return { ok: true, status: 'succeeded' };
+    // Mutators that return undefined / void are implicitly 'applied'.
+    // CAS-aware mutators return `{status: 'stale' | 'gone'}` to surface
+    // a no-op result to the runtime's outcome channel.
+    const status =
+        outcome && typeof outcome === 'object' && 'status' in outcome
+            ? outcome.status
+            : 'applied';
+
+    return { ok: true, status: 'succeeded', outcome: status };
 }
 
 /**

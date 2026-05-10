@@ -65,7 +65,7 @@ export const server: ServerMutator<Args> = (
             )
             .toArray();
         const row = rows[0];
-        if (!row) return;
+        if (!row) return { status: 'gone' };
         const currentRaw = row.authorization_rules;
         const current =
             typeof currentRaw === 'string' ? JSON.parse(currentRaw) : currentRaw;
@@ -73,7 +73,7 @@ export const server: ServerMutator<Args> = (
             JSON.stringify(current) !==
             JSON.stringify(expected.authorization_rules)
         ) {
-            return;
+            return { status: 'stale' };
         }
     }
     setEntityAuthorizationRules(sql, {

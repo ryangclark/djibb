@@ -64,7 +64,25 @@ export type ClientMutatorCtx = {
     timestamp_client: Date | null;
 };
 
-export type ServerMutator<A> = (args: A, ctx: ServerMutatorCtx) => void;
+/**
+ * Outcome a server mutator may surface up the call stack. Per ADR
+ * 0005's defensive policy, set-family CAS-stale and target-gone are
+ * structured outcomes — not exceptions. Mutators return `void` (or
+ * `undefined`) for the implicit `'applied'` case; CAS-aware mutators
+ * return the explicit status when their write was a no-op.
+ *
+ * The runtime's outcome channel (B.1, ADR 0006) maps these onto
+ * `MutationOutcomeStatus` for the client's outcome listener (B.2).
+ */
+export type ServerMutatorOutcome =
+    | undefined
+    | void
+    | { status: 'stale' | 'gone' };
+
+export type ServerMutator<A> = (
+    args: A,
+    ctx: ServerMutatorCtx
+) => ServerMutatorOutcome;
 export type ClientMutator<A> = (
     tx: WriteTransaction,
     args: A,

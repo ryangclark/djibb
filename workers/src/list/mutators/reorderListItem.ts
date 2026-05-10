@@ -57,16 +57,19 @@ export const server: ServerMutator<Args> = (
         )
         .toArray();
     const row = rows[0];
-    if (!row) return;
+    if (!row) return { status: 'gone' };
     const parentId = row['parent_element_ref'] as string;
 
-    reorderChildElement(sql, {
+    const outcome = reorderChildElement(sql, {
         parentId,
         childId: id,
         toIndex,
         expectedFromIndex: expected?.fromIndex,
         version: nextVersion,
     });
+    if (outcome === 'stale' || outcome === 'gone') {
+        return { status: outcome };
+    }
 };
 
 export const client: ClientMutator<Args> = async (

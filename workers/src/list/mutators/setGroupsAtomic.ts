@@ -43,7 +43,7 @@ export const server: ServerMutator<Args> = (
     { groups },
     { sql, nextVersion }
 ) => {
-    updateListGroupsFieldsAtomic(sql, {
+    const outcome = updateListGroupsFieldsAtomic(sql, {
         entries: groups.map(e => ({
             groupId: e.id,
             fields: e.fields,
@@ -51,6 +51,9 @@ export const server: ServerMutator<Args> = (
         })),
         version: nextVersion,
     });
+    if (outcome === 'stale' || outcome === 'gone') {
+        return { status: outcome };
+    }
 };
 
 export const client: ClientMutator<Args> = async (

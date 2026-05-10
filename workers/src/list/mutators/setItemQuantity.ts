@@ -48,12 +48,12 @@ export const server: ServerMutator<Args> = (
             )
             .toArray();
         const row = rows[0];
-        if (!row) return;
+        if (!row) return { status: 'gone' };
         const currentRaw = row.value;
         const current =
             typeof currentRaw === 'string' ? JSON.parse(currentRaw) : currentRaw;
         if (JSON.stringify(current) !== JSON.stringify(expected.quantity)) {
-            return;
+            return { status: 'stale' };
         }
     }
     setItemValueAndVersion(sql, {

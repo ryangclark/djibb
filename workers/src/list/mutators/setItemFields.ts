@@ -56,15 +56,18 @@ export const server: ServerMutator<Args> = (
     { id, fields, expected },
     { sql, nextVersion }
 ) => {
-    updateListItemFields(sql, {
+    const outcome = updateListItemFields(sql, {
         itemId: id,
         fields,
         expected,
         version: nextVersion,
     });
-    // `stale` and `gone` outcomes are silently dropped here. B.1 wires
-    // them to the per-mutation outcome channel (ADR 0006); until then,
-    // silent skip matches the existing mutator behavior on conflict.
+    // Surface CAS-stale / target-gone as a structured outcome so the
+    // outcome channel (ADR 0006) can route it back to the originating
+    // client. `applied` is implicit (return undefined).
+    if (outcome === 'stale' || outcome === 'gone') {
+        return { status: outcome };
+    }
 };
 
 export const client: ClientMutator<Args> = async (
