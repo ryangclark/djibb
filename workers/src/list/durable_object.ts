@@ -43,6 +43,7 @@ import { EmitEntitySnapshotToCatalog } from './entity';
  */
 const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
     'archiveList',
+    'initFromTemplate',
     'initList',
     'renameList',
     'setDescription',
