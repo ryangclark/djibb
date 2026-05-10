@@ -22,7 +22,12 @@
  */
 
 import { createListViewCursor } from './listView.svelte.js';
-import { stepQuantityValue, toggleQuantityValue } from './listViewVerbsLogic.js';
+import {
+    computeSelectAtDepth,
+    isSelectionEqualToSet,
+    stepQuantityValue,
+    toggleQuantityValue
+} from './listViewVerbsLogic.js';
 
 /**
  * @param {object} input
@@ -148,6 +153,82 @@ export function createListViewVerbs({ getList, getData, listId, mutateWithUndo }
     }
 
     /**
+     * D.3 — bulk archive. Splits the selection by type and fires the
+     * bulk mutators. In practice the selection is homogeneous (we
+     * enforce that in toggleSelection), so one of these is always a
+     * zero-length call — we still send both for safety in case a
+     * type-bypass slips in.
+     */
+    async function bulkArchive() {
+        if (selection.size === 0) return;
+        const ids = [...selection];
+        const data = getData();
+        const itemIds = ids.filter((id) => data[id]?.type === 'item');
+        const groupIds = ids.filter((id) => data[id]?.type === 'group');
+        clearSelection();
+        if (itemIds.length > 0) {
+            await mutateWithUndo.archiveListItems({ ids: itemIds });
+        }
+        if (groupIds.length > 0) {
+            await mutateWithUndo.archiveListGroups({ ids: groupIds });
+        }
+    }
+
+    /**
+     * D.3 — bulk Space. Spec: "each row to its own target_value".
+     * Unit-agnostic. Per-entry expected = current quantity so a
+     * concurrent peer edit drops just that entry (atomic per ADR 0005:
+     * the umbrella mutator is all-or-nothing per envelope, but a CAS
+     * miss on any one drops the whole batch — that's intentional, the
+     * UI's mental model is "this snapshot of the selection").
+     */
+    async function bulkSpace() {
+        if (selection.size === 0) return;
+        const data = getData();
+        const items = [...selection]
+            .map((id) => data[id])
+            .filter((e) => e && e.type === 'item');
+        if (items.length === 0) return;
+        const entries = items.map((item) => ({
+            id: item.id,
+            fields: {
+                value: { ...item.value, value: item.value.target_value }
+            },
+            expected: { value: item.value }
+        }));
+        await mutateWithUndo.setItemsAtomic({ items: entries });
+    }
+
+    /**
+     * D.3 — Cmd+A. First press: select all rows of the cursor's type
+     * at the cursor's depth. Second press (selection already matches
+     * that target): expand to all rows of the cursor's type, any depth.
+     *
+     * If no cursor, default to all top-level items.
+     */
+    function selectAtDepth() {
+        const rows = cursor.rows;
+        const data = getData();
+        const cursorId = cursor.cursorId;
+        const cursorRow = cursorId ? rows.find((r) => r.id === cursorId) : null;
+        // Default type when no cursor: 'item'.
+        const targetType = cursorRow?.type ?? 'item';
+        const targetDepth = cursorRow?.depth ?? 0;
+
+        const sameDepth = computeSelectAtDepth(rows, targetType, targetDepth);
+        const alreadySaturated = isSelectionEqualToSet(selection, sameDepth);
+
+        const next = alreadySaturated
+            ? new Set(rows.filter((r) => r.type === targetType).map((r) => r.id))
+            : new Set(sameDepth);
+
+        // Cross-check homogeneity (computeSelectAtDepth already filters
+        // by targetType, but be explicit).
+        selectionType = targetType;
+        selection = next;
+    }
+
+    /**
      * Space on item → flip value between min/target.
      * Space on group → toggle collapse (same as `l` toggle).
      */
@@ -216,12 +297,25 @@ export function createListViewVerbs({ getList, getData, listId, mutateWithUndo }
 
         const mod = event.metaKey || event.ctrlKey;
 
-        // Cmd/Ctrl+Backspace — archive cursor row. Item: no confirm
-        // (undo is the safety net). Group: no confirm — undo also
-        // restores the group + its children atomically.
+        // Cmd/Ctrl+Backspace — archive. D.3 routing: if selection is
+        // non-empty, fire the bulk mutators; else archive the cursor
+        // row. Undo restores either.
         if (mod && event.key === 'Backspace') {
             event.preventDefault();
-            void archiveCursor();
+            if (selection.size > 0) {
+                void bulkArchive();
+            } else {
+                void archiveCursor();
+            }
+            return;
+        }
+
+        // Cmd/Ctrl+A — select-at-depth (D.3). Hijacks the browser's
+        // native select-all on the page; cheap because nothing else
+        // here is selectable text in our model.
+        if (mod && !event.shiftKey && event.key.toLowerCase() === 'a') {
+            event.preventDefault();
+            selectAtDepth();
             return;
         }
 
@@ -248,7 +342,11 @@ export function createListViewVerbs({ getList, getData, listId, mutateWithUndo }
         switch (event.key) {
             case ' ': // Space
                 event.preventDefault();
-                void toggleCursorSpace();
+                if (selection.size > 0) {
+                    void bulkSpace();
+                } else {
+                    void toggleCursorSpace();
+                }
                 return;
             case '+':
             case '=': // `+` without holding shift on US layouts

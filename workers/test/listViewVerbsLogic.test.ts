@@ -3,6 +3,8 @@ import { describe, it, expect } from 'vitest';
 // D.2: pure quantity math for Space toggle and +/- step.
 
 import {
+    computeSelectAtDepth,
+    isSelectionEqualToSet,
     stepQuantityValue,
     toggleQuantityValue,
 } from '../../pages/src/lib/keymap/listViewVerbsLogic.js';
@@ -92,5 +94,56 @@ describe('stepQuantityValue', () => {
         expect(stepQuantityValue({
             value: 1, target_value: 1, max_value: 1, unit: 'bool',
         }, 1)).toBe(1);
+    });
+});
+
+describe('computeSelectAtDepth', () => {
+    const rows = [
+        { id: 'i/a', type: 'item' as const, depth: 0 },
+        { id: 'g/1', type: 'group' as const, depth: 0 },
+        { id: 'i/x', type: 'item' as const, depth: 1 },
+        { id: 'i/y', type: 'item' as const, depth: 1 },
+        { id: 'g/2', type: 'group' as const, depth: 0 },
+        { id: 'i/b', type: 'item' as const, depth: 0 },
+    ];
+
+    it('top-level items', () => {
+        expect(computeSelectAtDepth(rows, 'item', 0)).toEqual(['i/a', 'i/b']);
+    });
+
+    it('top-level groups', () => {
+        expect(computeSelectAtDepth(rows, 'group', 0)).toEqual(['g/1', 'g/2']);
+    });
+
+    it('items inside groups (depth 1)', () => {
+        expect(computeSelectAtDepth(rows, 'item', 1)).toEqual(['i/x', 'i/y']);
+    });
+
+    it('empty rows → empty array', () => {
+        expect(computeSelectAtDepth([], 'item', 0)).toEqual([]);
+    });
+
+    it('no matches → empty array', () => {
+        expect(computeSelectAtDepth(rows, 'group', 1)).toEqual([]);
+    });
+});
+
+describe('isSelectionEqualToSet', () => {
+    it('equal sets', () => {
+        expect(isSelectionEqualToSet(new Set(['a', 'b']), ['a', 'b'])).toBe(true);
+        expect(isSelectionEqualToSet(new Set(['a', 'b']), ['b', 'a'])).toBe(true);
+    });
+
+    it('different sizes → false', () => {
+        expect(isSelectionEqualToSet(new Set(['a']), ['a', 'b'])).toBe(false);
+        expect(isSelectionEqualToSet(new Set(['a', 'b']), ['a'])).toBe(false);
+    });
+
+    it('same size, different members → false', () => {
+        expect(isSelectionEqualToSet(new Set(['a', 'b']), ['a', 'c'])).toBe(false);
+    });
+
+    it('both empty → true', () => {
+        expect(isSelectionEqualToSet(new Set(), [])).toBe(true);
     });
 });

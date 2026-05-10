@@ -38,6 +38,38 @@ export function toggleQuantityValue(q) {
 }
 
 /**
+ * D.3 — compute the row IDs to select for Cmd+A's first press.
+ * Filters the flat-row sequence to rows matching the target type at
+ * the target depth. Pure for ease of testing.
+ *
+ * @param {Array<{ id: string, type: 'item' | 'group', depth: number }>} rows
+ * @param {'item' | 'group'} targetType
+ * @param {number} targetDepth
+ * @returns {string[]}
+ */
+export function computeSelectAtDepth(rows, targetType, targetDepth) {
+    return rows
+        .filter((r) => r.type === targetType && r.depth === targetDepth)
+        .map((r) => r.id);
+}
+
+/**
+ * D.3 — set-equality check for "is selection already saturated at
+ * this depth?" Pure. Returns true iff sets are equal by membership.
+ *
+ * @param {Set<string>} selection
+ * @param {string[]} ids
+ * @returns {boolean}
+ */
+export function isSelectionEqualToSet(selection, ids) {
+    if (selection.size !== ids.length) return false;
+    for (const id of ids) {
+        if (!selection.has(id)) return false;
+    }
+    return true;
+}
+
+/**
  * `+` / `-` step: change `value` by delta, clamped within min/max.
  *
  * Clamping rules:
