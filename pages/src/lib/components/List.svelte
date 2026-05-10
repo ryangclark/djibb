@@ -14,6 +14,7 @@
 	import { tryCatch, tryCatchAsync } from '$djibb/utils/trycatch';
 	import { fetchOwnedEntities } from '$lib/entities.js';
 	import { getSessionState } from '$lib/session.svelte.js';
+	import { createListViewCursor } from '$lib/keymap/listView.svelte.js';
 
 	/**
 	 * @typedef Props
@@ -148,6 +149,16 @@
 	 * @type {HTMLElement | undefined}
 	 */
 	let root_el = $state();
+
+	// D.1 — cursor model. The module owns cursor state + collapsed
+	// groups + flat-row sequence. We pass thunks for `list` / `data`
+	// so it sees their reactive values without us threading $state
+	// across module boundaries.
+	const cursor = createListViewCursor({
+		getList: () => list,
+		getData: () => data,
+		listId: list.id
+	});
 
 	$effect(() => {
 		// Re-runs when the list mounts / remounts. tick() lets the DOM
@@ -310,12 +321,14 @@
 		<p class="text-slate-700 text-sm my-2">Workspace ID: {list.workspace_id}</p>
 	{/if}
 
+	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 	<article
 		bind:this={root_el}
 		data-elem-id={list.id}
 		data-elem-type={list.type}
 		tabindex="-1"
 		class="outline-none"
+		onkeydown={cursor.handleKeydown}
 	>
 		<header class="flex gap-2 my-3 items-baseline">
 			{#if editing_name}
@@ -436,15 +449,31 @@
 	/** @type {import("$djibb/list/index.ts").ListGroup} */
 	elem
 )}
-	<section class="my-8" data-elem-id={elem.id} data-elem-type={elem.type}>
-		<h3 class="text-xl">{elem.name}</h3>
-		<div class="flex flex-col">
-			{#each elem.child_element_refs as child_ref (child_ref)}
-				{@render child(child_ref)}
-			{:else}
-				<p>Group has no child elements!</p>
-			{/each}
-		</div>
+	{@const is_collapsed = cursor.isCollapsed(elem.id)}
+	{@const is_cursor = cursor.isCursor(elem.id)}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<section
+		class="my-8 px-1 {is_cursor ? 'bg-slate-100 ring-1 ring-slate-300' : ''}"
+		data-elem-id={elem.id}
+		data-elem-type={elem.type}
+		onclick={() => cursor.setCursor(elem.id)}
+	>
+		<h3 class="text-xl flex items-center gap-1">
+			<span class="text-slate-500 select-none w-3 inline-block">
+				{is_collapsed ? '▸' : '▾'}
+			</span>
+			{elem.name}
+		</h3>
+		{#if !is_collapsed}
+			<div class="flex flex-col">
+				{#each elem.child_element_refs as child_ref (child_ref)}
+					{@render child(child_ref)}
+				{:else}
+					<p>Group has no child elements!</p>
+				{/each}
+			</div>
+		{/if}
 	</section>
 {/snippet}
 
@@ -452,7 +481,13 @@
 	/** @type {import("$djibb/list/index.ts").ListItem} */
 	elem
 )}
-	<div class="flex items-center gap-2 my-1">
+	{@const is_cursor = cursor.isCursor(elem.id)}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="flex items-center gap-2 my-1 px-1 {is_cursor ? 'bg-slate-100 ring-1 ring-slate-300' : ''}"
+		onclick={() => cursor.setCursor(elem.id)}
+	>
 		<label class="flex items-center gap-2">
 			<input
 				data-elem-id={elem.id}
