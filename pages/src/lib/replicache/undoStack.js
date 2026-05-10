@@ -24,6 +24,65 @@
 export const STACK_LIMIT = 50;
 
 /**
+ * Reorder-mutator coalescing. ADR 0005 §"Reorder coalescing": when
+ * the user drags an item through several intermediate positions
+ * within the 500ms window, those collapse to one undo entry whose
+ * preState is the position before the **first** move.
+ *
+ * Merge rule (reorder-specific, since this is the only coalescing
+ * shape today):
+ *   - forward     ← latest mutation's forward (current position)
+ *   - inverse.toIndex      ← original's inverse.toIndex (where we
+ *                            were before the first move)
+ *   - inverse.expected     ← {fromIndex: latest forward's toIndex}
+ *                            (CAS guard against the current state)
+ *   - timestamp   ← latest, so the window rolls with continued
+ *                   activity
+ *
+ * @param {Entry} top
+ * @param {Entry} entry
+ * @returns {Entry}
+ */
+export function coalesceReorderEntry(top, entry) {
+    const latestToIndex = /** @type {number} */ (
+        /** @type {any} */ (entry.forwardArgs).toIndex
+    );
+    return {
+        forwardName: entry.forwardName,
+        forwardArgs: entry.forwardArgs,
+        inverseName: top.inverseName,
+        inverseArgs: {
+            .../** @type {any} */ (top.inverseArgs),
+            expected: { fromIndex: latestToIndex },
+        },
+        timestamp: entry.timestamp,
+    };
+}
+
+/**
+ * Try to coalesce `entry` into the top of `stack`. Returns the new
+ * (replacement) entry when coalescing applies, or `null` to push the
+ * incoming entry normally. Caller owns the array surgery.
+ *
+ * @param {Entry[]} stack
+ * @param {Entry} entry
+ * @param {readonly string[]} coalescingMutators
+ * @param {number} windowMs
+ * @returns {Entry | null}
+ */
+export function tryCoalesce(stack, entry, coalescingMutators, windowMs) {
+    const top = stack[stack.length - 1];
+    if (!top) return null;
+    if (!coalescingMutators.includes(entry.forwardName)) return null;
+    if (top.forwardName !== entry.forwardName) return null;
+    const topId = /** @type {any} */ (top.forwardArgs).id;
+    const entryId = /** @type {any} */ (entry.forwardArgs).id;
+    if (topId !== entryId) return null;
+    if (entry.timestamp - top.timestamp > windowMs) return null;
+    return coalesceReorderEntry(top, entry);
+}
+
+/**
  * Storage-key helper. Per-account, per-list isolation; sessionStorage
  * (per-tab) for per-tab undo history (Cmd+R survives, new-tab does
  * not). ADR 0005 §"Personal/per-list/per-tab."

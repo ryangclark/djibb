@@ -1,11 +1,17 @@
 // @ts-check
-import { Mutations, FRICTION_TIER_MUTATORS } from '$djibb/list/mutators/client';
+import {
+    COALESCE_WINDOW_MS,
+    COALESCING_MUTATORS,
+    FRICTION_TIER_MUTATORS,
+    Mutations
+} from '$djibb/list/mutators/client';
 import {
     loadStack,
     popLast,
     pushWithLimit,
     saveStack,
-    stackStorageKey
+    stackStorageKey,
+    tryCoalesce
 } from './undoStack.js';
 
 /**
@@ -116,17 +122,29 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
                 if (moduleEntry.inverse) {
                     const inv = moduleEntry.inverse(body, preState);
                     if (inv) {
-                        commitStack(
-                            pushWithLimit(stack, {
-                                forwardName: name,
-                                forwardArgs: body,
-                                inverseName: inv.name,
-                                inverseArgs: /** @type {Record<string, unknown>} */ (
-                                    inv.args
-                                ),
-                                timestamp: Date.now()
-                            })
+                        const newEntry = {
+                            forwardName: name,
+                            forwardArgs: body,
+                            inverseName: inv.name,
+                            inverseArgs: /** @type {Record<string, unknown>} */ (
+                                inv.args
+                            ),
+                            timestamp: Date.now()
+                        };
+                        // Reorder coalescing: same target within 500ms
+                        // replaces the top entry rather than stacking
+                        // (ADR 0005 §"Reorder coalescing").
+                        const merged = tryCoalesce(
+                            stack,
+                            newEntry,
+                            COALESCING_MUTATORS,
+                            COALESCE_WINDOW_MS
                         );
+                        if (merged) {
+                            commitStack([...stack.slice(0, -1), merged]);
+                        } else {
+                            commitStack(pushWithLimit(stack, newEntry));
+                        }
                         // Any new user action invalidates redo history.
                         redoStack = [];
                     }

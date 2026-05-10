@@ -158,6 +158,27 @@ export function isFrictionTier(name: string): boolean {
 }
 
 /**
+ * Mutators whose rapid same-target repeats should coalesce into a
+ * single undo entry. ADR 0005 §"Reorder coalescing": dragging an
+ * item from row 0 → row 2 → row 5 inside the 500ms window is one
+ * undo gesture, not three.
+ *
+ * Set membership alone doesn't define the merge rule — that's
+ * mutator-specific. The current set is reorder-only; both reorder
+ * mutators share the same merge rule (preserve original `toIndex` of
+ * the inverse, refresh `expected.fromIndex` from the latest
+ * forward). If a new coalescing candidate emerges with a different
+ * shape, the merge rule needs to fork.
+ */
+export const COALESCING_MUTATORS: readonly string[] = [
+    'reorderListItem',
+    'reorderListGroup',
+] as const;
+
+/** Window in milliseconds within which same-target repeats coalesce. */
+export const COALESCE_WINDOW_MS = 500;
+
+/**
  * The full module-level contract every mutator file must export. Used
  * by the `Mutations` registry's `satisfies` clause to enforce the
  * full surface at compile time, including the `inverse` requirement

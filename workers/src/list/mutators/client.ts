@@ -8,7 +8,12 @@
 export { mutators, Mutations } from './index';
 export { wireArgsSchema as initListArgsSchema } from './initList';
 export { DEFAULT_LIST_TITLE } from './index';
-export { FRICTION_TIER_MUTATORS, isFrictionTier } from './_shared';
+export {
+    COALESCE_WINDOW_MS,
+    COALESCING_MUTATORS,
+    FRICTION_TIER_MUTATORS,
+    isFrictionTier,
+} from './_shared';
 export type {
     CapturePreState,
     Inverse,

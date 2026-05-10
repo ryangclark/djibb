@@ -6,12 +6,14 @@ import { describe, it, expect } from 'vitest';
 // and the workers pool can resolve the cross-package relative import.
 
 import {
+    coalesceReorderEntry,
     loadStack,
     popLast,
     pushWithLimit,
     saveStack,
     stackStorageKey,
     STACK_LIMIT,
+    tryCoalesce,
 } from '../../pages/src/lib/replicache/undoStack.js';
 
 class MemoryStorage {
@@ -132,5 +134,140 @@ describe('loadStack / saveStack', () => {
 
     it('saveStack on undefined storage is a no-op (no throw)', () => {
         expect(() => saveStack(undefined, 'k', [])).not.toThrow();
+    });
+});
+
+// B.3: reorder coalescing. Same target within the window merges; the
+// merged entry's inverse points back to the *first* move's origin
+// with a CAS guard against the latest position.
+
+function reorderEntry({
+    id,
+    fromIndex,
+    toIndex,
+    t,
+    name = 'reorderListItem',
+}: {
+    id: string;
+    fromIndex: number;
+    toIndex: number;
+    t: number;
+    name?: string;
+}) {
+    return {
+        forwardName: name,
+        forwardArgs: { id, toIndex },
+        inverseName: name,
+        inverseArgs: {
+            id,
+            toIndex: fromIndex,
+            expected: { fromIndex: toIndex },
+        },
+        timestamp: t,
+    };
+}
+
+const REORDER_MUTATORS = ['reorderListItem', 'reorderListGroup'] as const;
+
+describe('coalesceReorderEntry', () => {
+    it('preserves the inverse toIndex from top, refreshes expected.fromIndex from entry', () => {
+        // First move: A from 0 → 2.
+        const top = reorderEntry({ id: 'A', fromIndex: 0, toIndex: 2, t: 100 });
+        // Second move: A from 2 → 5.
+        const next = reorderEntry({ id: 'A', fromIndex: 2, toIndex: 5, t: 300 });
+
+        const merged = coalesceReorderEntry(top, next);
+
+        // forward reflects the latest position.
+        expect(merged.forwardArgs).toEqual({ id: 'A', toIndex: 5 });
+        // inverse still points back to ORIGINAL position (0)…
+        expect((merged.inverseArgs as any).toIndex).toBe(0);
+        // …with CAS guard against current (5).
+        expect((merged.inverseArgs as any).expected).toEqual({ fromIndex: 5 });
+        // timestamp rolls forward.
+        expect(merged.timestamp).toBe(300);
+    });
+});
+
+describe('tryCoalesce', () => {
+    it('merges same-target same-mutator within the window', () => {
+        const stack = [
+            reorderEntry({ id: 'A', fromIndex: 0, toIndex: 2, t: 100 }),
+        ];
+        const next = reorderEntry({ id: 'A', fromIndex: 2, toIndex: 5, t: 400 });
+        const result = tryCoalesce(stack, next, REORDER_MUTATORS, 500);
+        expect(result).not.toBeNull();
+        expect((result as any).inverseArgs.toIndex).toBe(0);
+    });
+
+    it('returns null when outside the window', () => {
+        const stack = [
+            reorderEntry({ id: 'A', fromIndex: 0, toIndex: 2, t: 100 }),
+        ];
+        const next = reorderEntry({ id: 'A', fromIndex: 2, toIndex: 5, t: 700 });
+        expect(tryCoalesce(stack, next, REORDER_MUTATORS, 500)).toBeNull();
+    });
+
+    it('returns null when target id differs', () => {
+        const stack = [
+            reorderEntry({ id: 'A', fromIndex: 0, toIndex: 2, t: 100 }),
+        ];
+        const next = reorderEntry({ id: 'B', fromIndex: 1, toIndex: 4, t: 200 });
+        expect(tryCoalesce(stack, next, REORDER_MUTATORS, 500)).toBeNull();
+    });
+
+    it('returns null when mutator name differs (reorder ↔ archive)', () => {
+        const stack = [
+            reorderEntry({ id: 'A', fromIndex: 0, toIndex: 2, t: 100 }),
+        ];
+        const next = {
+            forwardName: 'archiveListItem',
+            forwardArgs: { id: 'A' },
+            inverseName: 'unarchiveListItem',
+            inverseArgs: { id: 'A' },
+            timestamp: 200,
+        };
+        expect(tryCoalesce(stack, next, REORDER_MUTATORS, 500)).toBeNull();
+    });
+
+    it('returns null when the mutator is not in the coalescing registry', () => {
+        // setItemFields IS a set-family mutator but isn't on the list.
+        const entry1 = {
+            forwardName: 'setItemFields',
+            forwardArgs: { id: 'A', fields: { name: 'X' } },
+            inverseName: 'setItemFields',
+            inverseArgs: { id: 'A', fields: { name: 'Y' } },
+            timestamp: 100,
+        };
+        const entry2 = { ...entry1, timestamp: 200 };
+        expect(
+            tryCoalesce([entry1], entry2, REORDER_MUTATORS, 500)
+        ).toBeNull();
+    });
+
+    it('returns null when the stack is empty', () => {
+        const next = reorderEntry({ id: 'A', fromIndex: 0, toIndex: 2, t: 100 });
+        expect(tryCoalesce([], next, REORDER_MUTATORS, 500)).toBeNull();
+    });
+
+    it('chains: three rapid moves collapse to one entry whose inverse hits the original', () => {
+        let stack: ReturnType<typeof reorderEntry>[] = [];
+
+        const first = reorderEntry({ id: 'A', fromIndex: 0, toIndex: 2, t: 100 });
+        stack = [first];
+
+        const second = reorderEntry({ id: 'A', fromIndex: 2, toIndex: 5, t: 200 });
+        const merged2 = tryCoalesce(stack, second, REORDER_MUTATORS, 500);
+        expect(merged2).not.toBeNull();
+        stack = [merged2!];
+
+        const third = reorderEntry({ id: 'A', fromIndex: 5, toIndex: 8, t: 300 });
+        const merged3 = tryCoalesce(stack, third, REORDER_MUTATORS, 500);
+        expect(merged3).not.toBeNull();
+
+        // After three moves: forward is "go to 8", inverse is "go back to 0".
+        expect((merged3 as any).forwardArgs.toIndex).toBe(8);
+        expect((merged3 as any).inverseArgs.toIndex).toBe(0);
+        expect((merged3 as any).inverseArgs.expected.fromIndex).toBe(8);
     });
 });
