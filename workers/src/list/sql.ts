@@ -1222,6 +1222,76 @@ export function appendChildElementRef(
     );
 }
 
+/**
+ * Move `childId` to `toIndex` within `parentId`'s `child_element_refs`
+ * array. The id must already be in the array; cross-parent moves go
+ * through `setItemFields` / `setGroupFields` (parent_element_ref).
+ *
+ * `expectedFromIndex` is the optional CAS guard used by undo —
+ * silently no-ops if another client moved the same child in the
+ * interim. Per ADR 0005's defensive policy.
+ *
+ * Bumps the parent's version because pull-rebase keys diffing off
+ * entity-row version; without the bump the array change wouldn't
+ * propagate.
+ */
+export function reorderChildElement(
+    sql: SqlStorage,
+    {
+        parentId,
+        childId,
+        toIndex,
+        expectedFromIndex,
+        version,
+    }: {
+        parentId: string;
+        childId: string;
+        toIndex: number;
+        expectedFromIndex?: number;
+        version: number;
+    }
+): FieldUpdateOutcome {
+    const rows = sql
+        .exec(
+            `SELECT child_element_refs FROM list_elements
+             WHERE id = ? AND time_deleted IS NULL;`,
+            parentId
+        )
+        .toArray();
+    const row = rows[0];
+    if (!row) return 'gone';
+
+    const raw = row['child_element_refs'];
+    const refs: string[] = raw ? JSON.parse(raw as string) : [];
+    const fromIndex = refs.indexOf(childId);
+    if (fromIndex === -1) return 'gone';
+
+    if (expectedFromIndex !== undefined && fromIndex !== expectedFromIndex) {
+        return 'stale';
+    }
+
+    // Clamp target into [0, len - 1]. After splice-remove the array is
+    // one shorter; clamp to the post-remove length minus one.
+    const removed = [...refs];
+    removed.splice(fromIndex, 1);
+    const clamped = Math.max(0, Math.min(toIndex, removed.length));
+    if (clamped === fromIndex) return 'applied'; // no-op move
+
+    removed.splice(clamped, 0, childId);
+
+    sql.exec(
+        `UPDATE list_elements
+         SET child_element_refs = ?,
+             version = ?,
+             time_updated = CURRENT_TIMESTAMP
+         WHERE id = ?;`,
+        JSON.stringify(removed),
+        version,
+        parentId
+    );
+    return 'applied';
+}
+
 // I don't know how this function might be used yet.
 // Expect changes.
 //

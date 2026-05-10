@@ -19,6 +19,8 @@ import * as archiveListItems from './archiveListItems';
 import * as initList from './initList';
 import * as createListItem from './createListItem';
 import * as renameList from './renameList';
+import * as reorderListGroup from './reorderListGroup';
+import * as reorderListItem from './reorderListItem';
 import * as setDescription from './setDescription';
 import * as setGroupFields from './setGroupFields';
 import * as setGroupsAtomic from './setGroupsAtomic';
@@ -68,6 +70,8 @@ export const Mutations = {
     [initList.name]: initList,
     [createListItem.name]: createListItem,
     [renameList.name]: renameList,
+    [reorderListGroup.name]: reorderListGroup,
+    [reorderListItem.name]: reorderListItem,
     [setDescription.name]: setDescription,
     [setGroupFields.name]: setGroupFields,
     [setGroupsAtomic.name]: setGroupsAtomic,
