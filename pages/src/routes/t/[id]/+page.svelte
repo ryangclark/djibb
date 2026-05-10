@@ -6,6 +6,7 @@
 
 	import { decodeWSMessage } from '$djibb/websocket/constants';
 
+	import ConfirmToast from '$lib/components/ConfirmToast.svelte';
 	import List from '$lib/components/List.svelte';
 	import UndoToast from '$lib/components/UndoToast.svelte';
 	import { getSessionState } from '$lib/session.svelte.js';
@@ -29,6 +30,9 @@
 	/** @type {(() => void) | null} */
 	let onUndoClick = $state(null);
 
+	/** @type {import('$lib/components/ConfirmToast.svelte').Pending | null} */
+	let pendingConfirm = $state(null);
+
 	const sessionState = getSessionState();
 
 	$effect(() => {
@@ -37,7 +41,11 @@
 			listId: data.list_id,
 			onToast: (event) => {
 				toastEvent = event;
-			}
+			},
+			onConfirm: (mutator) =>
+				new Promise((resolve) => {
+					pendingConfirm = { mutator, resolve };
+				})
 		});
 
 		onUndoClick = () => {
@@ -77,6 +85,7 @@
 </svelte:boundary>
 
 <UndoToast event={toastEvent} onUndo={() => onUndoClick?.()} />
+<ConfirmToast pending={pendingConfirm} setPending={(p) => (pendingConfirm = p)} />
 
 {#snippet failed(
 	/** @type {unknown} */

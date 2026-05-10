@@ -6,6 +6,7 @@
 
 	import { decodeWSMessage } from '$djibb/websocket/constants';
 
+	import ConfirmToast from '$lib/components/ConfirmToast.svelte';
 	import List from '$lib/components/List.svelte';
 	import UndoToast from '$lib/components/UndoToast.svelte';
 	import { getSessionState } from '$lib/session.svelte.js';
@@ -29,6 +30,9 @@
 	/** @type {(() => void) | null} */
 	let onUndoClick = $state(null);
 
+	/** @type {import('$lib/components/ConfirmToast.svelte').Pending | null} */
+	let pendingConfirm = $state(null);
+
 	const sessionState = getSessionState();
 
 	// Effects only run in the browser, not during server-side rendering.
@@ -42,7 +46,14 @@
 				// UndoToast to detect; mutating fields wouldn't trigger
 				// reactivity on the prop.
 				toastEvent = event;
-			}
+			},
+			onConfirm: (mutator) =>
+				// Bridges the runtime's awaited Promise to the UI: stash
+				// the resolver alongside the mutator name; the toast
+				// component calls resolve(true|false) when the user picks.
+				new Promise((resolve) => {
+					pendingConfirm = { mutator, resolve };
+				})
 		});
 
 		onUndoClick = () => {
@@ -86,6 +97,7 @@
 </svelte:boundary>
 
 <UndoToast event={toastEvent} onUndo={() => onUndoClick?.()} />
+<ConfirmToast pending={pendingConfirm} setPending={(p) => (pendingConfirm = p)} />
 
 <!-- @UPGRADE
  Move the failure UI to within the <List> component for true
