@@ -103,14 +103,13 @@
 	 */
 	async function pickReference(item, entityId) {
 		const result = await tryCatchAsync(
-			mutators.setItem({
-				...item,
-				references_entity_id: entityId,
-				time_updated: new Date()
+			mutators.setItemFields({
+				id: item.id,
+				fields: { references_entity_id: entityId }
 			})
 		);
 		if (result.error) {
-			console.error('setItem (reference) error:', result.error);
+			console.error('setItemFields (reference) error:', result.error);
 			alert(`Failed to set reference: ${result.error.message}`);
 			return;
 		}

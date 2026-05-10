@@ -644,36 +644,128 @@ export function setItemValueAndVersion(
     }
 }
 
-// General-purpose item update for the `setItem` mutator. Only touches
-// editable columns — time_created and type are locked at insert time.
-export function updateListItem(sql: SqlStorage, item: ListItem): void {
-    const cursor = sql.exec(
-        `UPDATE list_elements
-        SET
-            description = ?,
-            name = ?,
-            parent_element_ref = ?,
-            references_entity_id = ?,
-            value = ?,
-            version = ?,
-            time_updated = CURRENT_TIMESTAMP
-        WHERE id = ?
-            AND type = 'item'
-            AND time_deleted IS NULL;`,
-        item.description ?? '',
-        item.name,
-        item.parent_element_ref,
-        item.references_entity_id,
-        JSON.stringify(item.value),
-        item.version,
-        item.id
-    );
+/**
+ * Writable fields on a list item. All optional — callers pass only the
+ * keys they want to change. Immutable columns (id, type, time_created)
+ * and auto-managed columns (version, time_updated, time_deleted) are
+ * not in this surface; archive/restore goes through a separate mutator.
+ */
+export type ListItemWritableFields = Partial<{
+    description: string;
+    name: string;
+    parent_element_ref: string;
+    references_entity_id: string | null;
+    value: Quantity;
+}>;
 
-    if (cursor.rowsWritten !== 1) {
-        throw new NotFoundError(
-            `\`updateListItem()\` item "${item.id}" not found (rowsWritten=${cursor.rowsWritten})`
-        );
+/**
+ * Outcome of an attempted field-level update.
+ *
+ *  - `applied` — write landed.
+ *  - `stale`   — `expected` was present and didn't match current state;
+ *                the entire mutation was a no-op (CAS conflict, ADR 0005).
+ *  - `gone`    — target row not found / soft-deleted.
+ *
+ * `stale` and `gone` are silently dropped today; B.1 wires them into
+ * the per-mutation outcome channel (ADR 0006).
+ */
+export type FieldUpdateOutcome = 'applied' | 'stale' | 'gone';
+
+// JSON-stringify roundtrip used by CAS comparison. Stable for the
+// shapes stored in list_elements (primitives, null, Quantity object).
+function eq(a: unknown, b: unknown): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Field-level item update for the `setItemFields` mutator (umbrella
+ * shape per ADR 0005). Replaces the previous whole-replace
+ * `updateListItem` helper.
+ *
+ *  - `fields`   — keys to write. Only listed columns are touched;
+ *                 everything else stays as-is.
+ *  - `expected` — optional CAS pre-check. If present, compares each
+ *                 listed key to the current row before writing; any
+ *                 mismatch no-ops the entire mutation
+ *                 (all-or-nothing per envelope, ADR 0005
+ *                 §"Defensive conflict policy").
+ */
+export function updateListItemFields(
+    sql: SqlStorage,
+    {
+        itemId,
+        fields,
+        expected,
+        version,
+    }: {
+        itemId: string;
+        fields: ListItemWritableFields;
+        expected?: ListItemWritableFields;
+        version: number;
     }
+): FieldUpdateOutcome {
+    if (Object.keys(fields).length === 0) return 'applied';
+
+    if (expected && Object.keys(expected).length > 0) {
+        const rows = sql
+            .exec(
+                `SELECT description, name, parent_element_ref,
+                        references_entity_id, value
+                 FROM list_elements
+                 WHERE id = ?
+                   AND type = 'item'
+                   AND time_deleted IS NULL;`,
+                itemId
+            )
+            .toArray();
+        if (rows.length === 0) return 'gone';
+        const row = rows[0] as Record<string, unknown>;
+        for (const [k, v] of Object.entries(expected)) {
+            // `value` is JSON-encoded in the column; everything else is
+            // a primitive comparable as-is.
+            const current =
+                k === 'value' && typeof row[k] === 'string'
+                    ? JSON.parse(row[k] as string)
+                    : row[k];
+            if (!eq(current, v)) return 'stale';
+        }
+    }
+
+    const setClauses: string[] = [];
+    const params: unknown[] = [];
+
+    if ('description' in fields) {
+        setClauses.push('description = ?');
+        params.push(fields.description ?? '');
+    }
+    if ('name' in fields) {
+        setClauses.push('name = ?');
+        params.push(fields.name);
+    }
+    if ('parent_element_ref' in fields) {
+        setClauses.push('parent_element_ref = ?');
+        params.push(fields.parent_element_ref);
+    }
+    if ('references_entity_id' in fields) {
+        setClauses.push('references_entity_id = ?');
+        params.push(fields.references_entity_id);
+    }
+    if ('value' in fields) {
+        setClauses.push('value = ?');
+        params.push(JSON.stringify(fields.value));
+    }
+    setClauses.push('version = ?', 'time_updated = CURRENT_TIMESTAMP');
+    params.push(version);
+    params.push(itemId);
+
+    const cursor = sql.exec(
+        `UPDATE list_elements SET ${setClauses.join(', ')}
+         WHERE id = ?
+           AND type = 'item'
+           AND time_deleted IS NULL;`,
+        ...params
+    );
+    return cursor.rowsWritten === 1 ? 'applied' : 'gone';
 }
 
 // Idempotent: replayed mutations (the server's per-client mutation ID

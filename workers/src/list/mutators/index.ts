@@ -15,7 +15,7 @@ import * as initList from './initList';
 import * as createListItem from './createListItem';
 import * as renameList from './renameList';
 import * as setDescription from './setDescription';
-import * as setItem from './setItem';
+import * as setItemFields from './setItemFields';
 import * as setItemQuantity from './setItemQuantity';
 import * as setListAuthRules from './setListAuthRules';
 
@@ -52,7 +52,7 @@ export const Mutations = {
     [createListItem.name]: createListItem,
     [renameList.name]: renameList,
     [setDescription.name]: setDescription,
-    [setItem.name]: setItem,
+    [setItemFields.name]: setItemFields,
     [setItemQuantity.name]: setItemQuantity,
     [setListAuthRules.name]: setListAuthRules,
 } as const;
