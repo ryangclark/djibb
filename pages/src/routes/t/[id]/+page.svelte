@@ -39,8 +39,12 @@
 			if (!msg) return;
 			if (msg.type === 'poke') {
 				if (replicacheList) replicacheList.client.pull();
+			} else if (msg.type === 'mutation_outcome') {
+				replicacheList.undoRuntime.handleOutcome({
+					status: msg.status,
+					mutationID: msg.mutationID
+				});
 			}
-			// `mutation_outcome` consumed by the undo runtime in B.2.
 		});
 
 		return () => {

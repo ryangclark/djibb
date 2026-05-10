@@ -2,6 +2,7 @@ import { Replicache } from 'replicache';
 import { dev } from '$app/environment';
 import { mutators } from '$djibb/list/mutators/client';
 import { IdTypes } from '$djibb/id';
+import { createUndoRuntime } from './withUndo.svelte.js';
 
 /**
  * Maps an entity ID's type prefix to the worker-side router path that
@@ -36,6 +37,16 @@ export function initList({ accountId, listId }) {
 
 	const replicacheClient = InitReplicacheClient({ accountId, listId });
 	const mutate = wrapMutators(replicacheClient.mutate, { accountId });
+
+	// Undo runtime layered on top of `mutate`. Both firing paths
+	// (`mutate.foo` / `mutateWithUndo.foo`) flow through the same
+	// envelope wrapper; only undo bookkeeping differs. Per ADR 0005.
+	const undoRuntime = createUndoRuntime({
+		client: replicacheClient,
+		mutate,
+		accountId,
+		listId
+	});
 
 	/**
 	 * Callback function to handle updates to the Replicache store by
@@ -79,6 +90,8 @@ export function initList({ accountId, listId }) {
 	return {
 		client: replicacheClient,
 		mutate,
+		mutateWithUndo: undoRuntime.mutateWithUndo,
+		undoRuntime,
 		get list() {
 			return listData;
 		}
