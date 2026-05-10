@@ -19,8 +19,19 @@ import * as setItem from './setItem';
 import * as setItemQuantity from './setItemQuantity';
 import * as setListAuthRules from './setListAuthRules';
 
-export { EDIT_ROLES } from './_shared';
-export type { ServerMutatorCtx, ClientMutatorCtx } from './_shared';
+export {
+    EDIT_ROLES,
+    FRICTION_TIER_MUTATORS,
+    isFrictionTier,
+} from './_shared';
+export type {
+    ServerMutatorCtx,
+    ClientMutatorCtx,
+    Inverse,
+    CapturePreState,
+    PreState,
+    FrictionTier,
+} from './_shared';
 
 export const DEFAULT_LIST_AUTHORIZATION_RULES: AuthorizationRules = {
     authorized_accounts: {},

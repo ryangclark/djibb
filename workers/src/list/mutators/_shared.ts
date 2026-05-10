@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type {
     MutatorReturn,
     ReadonlyJSONObject,
+    ReadTransaction,
     WriteTransaction,
 } from 'replicache';
 
@@ -69,6 +70,74 @@ export type ClientMutator<A> = (
     args: A,
     ctx: ClientMutatorCtx
 ) => MutatorReturn;
+
+/**
+ * Snapshot of fields the inverse will need to restore. Returned by
+ * `capturePreState` at forward-fire time and threaded back into
+ * `inverse` so it can populate restore values and `expected` (CAS).
+ *
+ * Per ADR 0005, only set-family mutators export `capturePreState`;
+ * constructive and archive/restore mutators don't need pre-state —
+ * the inverse is fully determined by the forward args.
+ */
+export type PreState = Record<string, unknown>;
+
+/**
+ * Reads the fields the inverse will need from the Replicache cache,
+ * at forward-fire time. Set-family mutators only. Returns an object
+ * whose keys exactly match the keys present in `args.fields` (for
+ * umbrella shape) or the single field key (for narrow shape).
+ *
+ * See ADR 0005 §"Pre-state capture" and `docs/adding-a-mutator.md`
+ * step 5.
+ */
+export type CapturePreState<A> = (
+    tx: ReadTransaction,
+    args: A
+) => Promise<PreState>;
+
+/**
+ * Picks the inverse mutator and its args for a given forward call.
+ * Returns `null` when the action is intentionally not undoable; the
+ * runtime treats `null` as a silent skip (the action just doesn't
+ * enter the user's undo history).
+ *
+ *  - Constructive mutators: ignore `preState`; the id is in `args`.
+ *  - Archive/restore mutators: ignore `preState`; the pair is the
+ *    mirror mutator (`archiveListItem` ↔ `unarchiveListItem`).
+ *  - Set-family mutators: read `preState` to populate the restore
+ *    fields + `expected` (CAS).
+ *
+ * Required by ADR 0005 — every mutator declares an inverse. The type
+ * is exported from A.0 so subsequent mutator PRs can layer onto it;
+ * A.6 makes the export required at compile time across the registry.
+ */
+export type Inverse<A> = (
+    args: A,
+    preState?: PreState
+) => { name: string; args: unknown } | null;
+
+/**
+ * Mutators that warrant a two-step confirm-toast on undo. Crossing
+ * either an authority threshold (auth-rules change) or a structural
+ * threshold (list creation) lands a mutator on this list. The undo
+ * runtime (ADR 0005 §"Friction tiers") consults this when deciding
+ * whether to render a plain undo toast or a confirm-prompt variant.
+ *
+ * Names are wire names. A.0 keeps this informational; B.2 wires the
+ * lookup; A.6 will assert every entry is a valid key of `Mutations`.
+ */
+export const FRICTION_TIER_MUTATORS: readonly string[] = [
+    'setListAuthRules',
+    'initList',
+    'initFromTemplate',
+] as const;
+
+export type FrictionTier = 'two-step-confirm';
+
+export function isFrictionTier(name: string): boolean {
+    return FRICTION_TIER_MUTATORS.includes(name);
+}
 
 /** Replicache values must be plain JSON; round-trip strips Date instances. */
 export function toStoredValue(value: unknown): ReadonlyJSONObject {
