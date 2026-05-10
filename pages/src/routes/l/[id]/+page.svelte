@@ -7,6 +7,7 @@
 	import { decodeWSMessage } from '$djibb/websocket/constants';
 
 	import List from '$lib/components/List.svelte';
+	import UndoToast from '$lib/components/UndoToast.svelte';
 	import { getSessionState } from '$lib/session.svelte.js';
 	import z, { ZodError } from 'zod';
 
@@ -22,6 +23,12 @@
 	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
 	let mutators = $state();
 
+	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
+	let toastEvent = $state(null);
+
+	/** @type {(() => void) | null} */
+	let onUndoClick = $state(null);
+
 	const sessionState = getSessionState();
 
 	// Effects only run in the browser, not during server-side rendering.
@@ -29,8 +36,18 @@
 		const replicacheList = initList({
 			accountId: sessionState.currentAccountId,
 			// user_id: data.user?.username || 'my-test-user'
-			listId: data.list_id
+			listId: data.list_id,
+			onToast: (event) => {
+				// Reassign creates a new reference for the $effect in
+				// UndoToast to detect; mutating fields wouldn't trigger
+				// reactivity on the prop.
+				toastEvent = event;
+			}
 		});
+
+		onUndoClick = () => {
+			replicacheList.undoRuntime.undo();
+		};
 
 		// what if we do ListSchema.parse(replicacheList.list) or something?
 		// Hmm i think parsing within the component is better for composability
@@ -67,6 +84,8 @@
 		<p>Loading list…</p>
 	{/if}
 </svelte:boundary>
+
+<UndoToast event={toastEvent} onUndo={() => onUndoClick?.()} />
 
 <!-- @UPGRADE
  Move the failure UI to within the <List> component for true

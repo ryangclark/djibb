@@ -52,9 +52,22 @@ import {
 /**
  * @typedef {import('./undoStack.js').Entry} Entry
  *
- * @typedef {object} ToastEvent
- * @property {'auth' | 'stale' | 'gone'} status
- * @property {number} mutationID
+ * Toast events the runtime emits, all through one `onToast` callback
+ * with a discriminated `kind`. The receiver (C.1's UndoToast) renders
+ * different surfaces per kind:
+ *
+ *   'action' — a user mutation just landed on the stack; show "Undid
+ *              X — Cmd+Z to undo" with an Undo CTA.
+ *   'auth' | 'stale' | 'gone' — the server rejected the mutation;
+ *              show the failure reason. Per-mutation outcome from
+ *              ADR 0006. No Undo CTA — the mutation didn't apply.
+ *
+ * Most-recent-wins collapse is the UI's job; the runtime fires
+ * regardless of pacing.
+ *
+ * @typedef {{kind: 'action'} & {entry: Entry}} ActionToastEvent
+ * @typedef {{kind: 'auth' | 'stale' | 'gone', mutationID: number}} OutcomeToastEvent
+ * @typedef {ActionToastEvent | OutcomeToastEvent} ToastEvent
  *
  * @typedef {object} CreateInput
  * @property {import('replicache').Replicache} client
@@ -140,13 +153,22 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
                             COALESCING_MUTATORS,
                             COALESCE_WINDOW_MS
                         );
+                        /** @type {Entry} */
+                        let pushedEntry;
                         if (merged) {
+                            pushedEntry = merged;
                             commitStack([...stack.slice(0, -1), merged]);
                         } else {
+                            pushedEntry = newEntry;
                             commitStack(pushWithLimit(stack, newEntry));
                         }
                         // Any new user action invalidates redo history.
                         redoStack = [];
+
+                        // Fire the action toast — UI shows "Undo" CTA.
+                        // Coalesced entries fire as a fresh toast too;
+                        // most-recent-wins collapse is the UI's job.
+                        onToast?.({ kind: 'action', entry: pushedEntry });
                     }
                 }
 
@@ -206,17 +228,23 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
     }
 
     /**
-     * Outcome-channel sink. Today: pure toast dispatch. ADR 0005's
-     * follow-on cleanup (prune entries whose forward `auth`/`gone`'d
-     * server-side) is a B.2.x TODO — requires associating Replicache
-     * mutationIDs with stack entries.
+     * Outcome-channel sink. The page route calls this for every
+     * `mutation_outcome` WS frame; the runtime maps the wire shape
+     * to a discriminated toast event for the UI.
      *
-     * @param {ToastEvent} event
+     * ADR 0005's follow-on cleanup (prune entries whose forward
+     * `auth`/`gone`'d server-side) is a B.2.x TODO — requires
+     * associating Replicache mutationIDs with stack entries.
+     *
+     * @param {{status: 'auth' | 'stale' | 'gone', mutationID: number}} event
      */
     function handleOutcome(event) {
         // TODO(B.2.x): tag stack entries with the Replicache mutationID
         // they emit so we can prune on auth/gone outcomes.
-        onToast?.(event);
+        onToast?.({
+            kind: event.status,
+            mutationID: event.mutationID,
+        });
     }
 
     return {

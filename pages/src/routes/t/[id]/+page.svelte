@@ -7,6 +7,7 @@
 	import { decodeWSMessage } from '$djibb/websocket/constants';
 
 	import List from '$lib/components/List.svelte';
+	import UndoToast from '$lib/components/UndoToast.svelte';
 	import { getSessionState } from '$lib/session.svelte.js';
 	import z, { ZodError } from 'zod';
 
@@ -22,13 +23,26 @@
 	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
 	let mutators = $state();
 
+	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
+	let toastEvent = $state(null);
+
+	/** @type {(() => void) | null} */
+	let onUndoClick = $state(null);
+
 	const sessionState = getSessionState();
 
 	$effect(() => {
 		const replicacheList = initList({
 			accountId: sessionState.currentAccountId,
-			listId: data.list_id
+			listId: data.list_id,
+			onToast: (event) => {
+				toastEvent = event;
+			}
 		});
+
+		onUndoClick = () => {
+			replicacheList.undoRuntime.undo();
+		};
 
 		list_data = replicacheList.list;
 		mutators = replicacheList.mutate;
@@ -61,6 +75,8 @@
 		<p>Loading template…</p>
 	{/if}
 </svelte:boundary>
+
+<UndoToast event={toastEvent} onUndo={() => onUndoClick?.()} />
 
 {#snippet failed(
 	/** @type {unknown} */

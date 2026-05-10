@@ -26,8 +26,14 @@ function entityPath(entityId) {
  * @param {object} input List ID
  * @param {string | null} input.accountId Account ID
  * @param {string} input.listId List ID
+ * @param {(event: import('./withUndo.svelte.js').ToastEvent) => void} [input.onToast]
+ *   Wired to the route's UndoToast component. Discriminated union;
+ *   `kind:'action'` for stack pushes, `kind:'auth'|'stale'|'gone'`
+ *   for outcome-channel failures. ADR 0005.
+ * @param {(name: string) => Promise<boolean>} [input.onConfirm]
+ *   Friction-tier prompt; C.2 wires this to the confirm toast.
  */
-export function initList({ accountId, listId }) {
+export function initList({ accountId, listId, onToast, onConfirm }) {
 	/** @type {Object.<string, import('replicache').ReadonlyJSONValue>} */
 	const listData = $state({});
 
@@ -45,7 +51,9 @@ export function initList({ accountId, listId }) {
 		client: replicacheClient,
 		mutate,
 		accountId,
-		listId
+		listId,
+		onToast,
+		onConfirm
 	});
 
 	/**
