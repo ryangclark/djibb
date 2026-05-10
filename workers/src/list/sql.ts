@@ -603,6 +603,67 @@ export function unarchiveListItems(
 }
 
 /**
+ * Soft-delete a single group row. Symmetric to `archiveListItem`.
+ * Does NOT cascade to child items — the cascade-on-group-delete UI
+ * question (ADR 0004 §"Slice E") sits at the D.5 layer, not here.
+ * Children whose `parent_element_ref` points at an archived group
+ * are filtered out of the rendered tree by virtue of the parent
+ * being gone; restore the group and they reappear.
+ */
+export function archiveListGroup(
+    sql: SqlStorage,
+    { groupId, version }: { groupId: string; version: number }
+): void {
+    sql.exec(
+        `UPDATE list_elements
+         SET
+             time_deleted = CURRENT_TIMESTAMP,
+             version = ?,
+             time_updated = CURRENT_TIMESTAMP
+         WHERE id = ? AND type = 'group';`,
+        version,
+        groupId
+    );
+}
+
+/** Restore a soft-deleted group row by clearing `time_deleted`. */
+export function unarchiveListGroup(
+    sql: SqlStorage,
+    { groupId, version }: { groupId: string; version: number }
+): void {
+    sql.exec(
+        `UPDATE list_elements
+         SET
+             time_deleted = NULL,
+             version = ?,
+             time_updated = CURRENT_TIMESTAMP
+         WHERE id = ? AND type = 'group';`,
+        version,
+        groupId
+    );
+}
+
+/** Bulk archive — applies each id independently; missing rows skipped. */
+export function archiveListGroups(
+    sql: SqlStorage,
+    { groupIds, version }: { groupIds: readonly string[]; version: number }
+): void {
+    for (const groupId of groupIds) {
+        archiveListGroup(sql, { groupId, version });
+    }
+}
+
+/** Bulk restore — applies each id independently; missing rows skipped. */
+export function unarchiveListGroups(
+    sql: SqlStorage,
+    { groupIds, version }: { groupIds: readonly string[]; version: number }
+): void {
+    for (const groupId of groupIds) {
+        unarchiveListGroup(sql, { groupId, version });
+    }
+}
+
+/**
  * Update an entity row's description. Used by `setDescription`. An
  * empty string clears the description (the column defaults to ""; we
  * don't distinguish unset from empty).

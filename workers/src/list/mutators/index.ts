@@ -11,6 +11,8 @@ import type {
 } from './_shared';
 
 import * as archiveList from './archiveList';
+import * as archiveListGroup from './archiveListGroup';
+import * as archiveListGroups from './archiveListGroups';
 import * as archiveListItem from './archiveListItem';
 import * as archiveListItems from './archiveListItems';
 import * as initList from './initList';
@@ -23,6 +25,8 @@ import * as setItemFields from './setItemFields';
 import * as setItemsAtomic from './setItemsAtomic';
 import * as setItemQuantity from './setItemQuantity';
 import * as setListAuthRules from './setListAuthRules';
+import * as unarchiveListGroup from './unarchiveListGroup';
+import * as unarchiveListGroups from './unarchiveListGroups';
 import * as unarchiveListItem from './unarchiveListItem';
 import * as unarchiveListItems from './unarchiveListItems';
 
@@ -55,6 +59,8 @@ export const DEFAULT_LIST_TITLE = '';
  */
 export const Mutations = {
     [archiveList.name]: archiveList,
+    [archiveListGroup.name]: archiveListGroup,
+    [archiveListGroups.name]: archiveListGroups,
     [archiveListItem.name]: archiveListItem,
     [archiveListItems.name]: archiveListItems,
     [initList.name]: initList,
@@ -67,6 +73,8 @@ export const Mutations = {
     [setItemsAtomic.name]: setItemsAtomic,
     [setItemQuantity.name]: setItemQuantity,
     [setListAuthRules.name]: setListAuthRules,
+    [unarchiveListGroup.name]: unarchiveListGroup,
+    [unarchiveListGroups.name]: unarchiveListGroups,
     [unarchiveListItem.name]: unarchiveListItem,
     [unarchiveListItems.name]: unarchiveListItems,
 } as const;
