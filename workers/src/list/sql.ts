@@ -768,6 +768,95 @@ export function updateListItemFields(
     return cursor.rowsWritten === 1 ? 'applied' : 'gone';
 }
 
+// Read the CAS-relevant columns for one item by id. Returns `null`
+// when the row is missing / soft-deleted. Used by bulk pre-checks.
+function readItemForCAS(
+    sql: SqlStorage,
+    itemId: string
+): Record<string, unknown> | null {
+    const rows = sql
+        .exec(
+            `SELECT description, name, parent_element_ref,
+                    references_entity_id, value
+             FROM list_elements
+             WHERE id = ?
+               AND type = 'item'
+               AND time_deleted IS NULL;`,
+            itemId
+        )
+        .toArray();
+    return rows.length === 0 ? null : (rows[0] as Record<string, unknown>);
+}
+
+function checkItemCAS(
+    row: Record<string, unknown>,
+    expected: ListItemWritableFields
+): boolean {
+    for (const [k, v] of Object.entries(expected)) {
+        const current =
+            k === 'value' && typeof row[k] === 'string'
+                ? JSON.parse(row[k] as string)
+                : row[k];
+        if (!eq(current, v)) return false;
+    }
+    return true;
+}
+
+export type ItemFieldsBatchEntry = {
+    itemId: string;
+    fields: ListItemWritableFields;
+    expected?: ListItemWritableFields;
+};
+
+/**
+ * Bulk field-level item update for `setItemsAtomic`. All-or-nothing
+ * across the batch: pre-checks every entry's `expected` against
+ * current state, and if any mismatch (`stale`) or missing row
+ * (`gone`) is found, no entries are written. ADR 0005
+ * §"Defensive conflict policy" — the whole envelope is the unit.
+ *
+ * The DO is single-threaded so the two-pass (check-all then write-all)
+ * doesn't race against itself. Replays interleaved with other mutators
+ * are serialized by the DO input gate.
+ */
+export function updateListItemsFieldsAtomic(
+    sql: SqlStorage,
+    {
+        entries,
+        version,
+    }: {
+        entries: ItemFieldsBatchEntry[];
+        version: number;
+    }
+): FieldUpdateOutcome {
+    if (entries.length === 0) return 'applied';
+
+    // Pass 1: CAS pre-check every entry that has `expected`. Any
+    // mismatch bails the whole batch.
+    for (const entry of entries) {
+        if (!entry.expected || Object.keys(entry.expected).length === 0) {
+            continue;
+        }
+        const row = readItemForCAS(sql, entry.itemId);
+        if (!row) return 'gone';
+        if (!checkItemCAS(row, entry.expected)) return 'stale';
+    }
+
+    // Pass 2: apply all writes. `expected` is now redundant — already
+    // checked — so call the single-update helper without it.
+    for (const entry of entries) {
+        const outcome = updateListItemFields(sql, {
+            itemId: entry.itemId,
+            fields: entry.fields,
+            version,
+        });
+        // Only `gone` is possible here (row deleted between passes —
+        // impossible in a single-threaded DO call). Defensive return.
+        if (outcome !== 'applied') return outcome;
+    }
+    return 'applied';
+}
+
 /**
  * Writable fields on a list group. Symmetric to `ListItemWritableFields`;
  * `child_element_refs` is intentionally excluded — reorder/create/archive
@@ -845,6 +934,75 @@ export function updateListGroupFields(
         ...params
     );
     return cursor.rowsWritten === 1 ? 'applied' : 'gone';
+}
+
+function readGroupForCAS(
+    sql: SqlStorage,
+    groupId: string
+): Record<string, unknown> | null {
+    const rows = sql
+        .exec(
+            `SELECT description, name, parent_element_ref
+             FROM list_elements
+             WHERE id = ?
+               AND type = 'group'
+               AND time_deleted IS NULL;`,
+            groupId
+        )
+        .toArray();
+    return rows.length === 0 ? null : (rows[0] as Record<string, unknown>);
+}
+
+function checkGroupCAS(
+    row: Record<string, unknown>,
+    expected: ListGroupWritableFields
+): boolean {
+    for (const [k, v] of Object.entries(expected)) {
+        if (!eq(row[k], v)) return false;
+    }
+    return true;
+}
+
+export type GroupFieldsBatchEntry = {
+    groupId: string;
+    fields: ListGroupWritableFields;
+    expected?: ListGroupWritableFields;
+};
+
+/**
+ * Bulk field-level group update for `setGroupsAtomic`. Symmetric to
+ * `updateListItemsFieldsAtomic` against `type = 'group'` rows.
+ */
+export function updateListGroupsFieldsAtomic(
+    sql: SqlStorage,
+    {
+        entries,
+        version,
+    }: {
+        entries: GroupFieldsBatchEntry[];
+        version: number;
+    }
+): FieldUpdateOutcome {
+    if (entries.length === 0) return 'applied';
+
+    for (const entry of entries) {
+        if (!entry.expected || Object.keys(entry.expected).length === 0) {
+            continue;
+        }
+        const row = readGroupForCAS(sql, entry.groupId);
+        if (!row) return 'gone';
+        if (!checkGroupCAS(row, entry.expected)) return 'stale';
+    }
+
+    for (const entry of entries) {
+        const outcome = updateListGroupFields(sql, {
+            groupId: entry.groupId,
+            fields: entry.fields,
+            version,
+        });
+        if (outcome !== 'applied') return outcome;
+    }
+    return 'applied';
 }
 
 // Idempotent: replayed mutations (the server's per-client mutation ID
