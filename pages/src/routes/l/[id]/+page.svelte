@@ -1,8 +1,10 @@
 <script>
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 
 	import { initList } from '$lib/replicache/index.svelte.js';
 	import { initialize as initWebsocket } from '$lib/websocket';
+	import { bindUndoKeymap } from '$lib/keymap/global.js';
 
 	import { decodeWSMessage } from '$djibb/websocket/constants';
 
@@ -79,9 +81,18 @@
 			}
 		});
 
+		const unbindKeymap = bindUndoKeymap({
+			runtime: replicacheList.undoRuntime,
+			onShareShortcut: () => {
+				const suffix = data.list_id.split('/', 2)[1] ?? '';
+				goto(`/l/${suffix}/share`);
+			}
+		});
+
 		// Return a cleanup function, which is called whenever the
 		// effect refires as well as when the component is destroyed.
 		return () => {
+			unbindKeymap();
 			replicacheList.client.close();
 			ws?.close(1000);
 		};
