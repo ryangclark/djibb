@@ -26,11 +26,26 @@ working state. No big-bang merges.
   inside each phase (notes below), but cross-phase parallelism is
   intentionally avoided so each phase's tests can gate the next.
 
-## Pre-flight: B.1 mini-ADR before any code lands
+## Pre-flight: B.1 mini-ADR (resolved)
 
-B.1 (the per-mutation outcome channel) has one architectural unknown:
+**Resolved as ADR 0006** (`docs/adr/0006-clientid-tagged-websockets-for-outcome-routing.md`).
+B.1's PR shape is locked: server tags websockets at accept time using
+Cloudflare's hibernatable websocket API, emits outcomes via
+`getWebSockets(clientID)`. Client awaits Replicache's clientID before
+opening the websocket, supplies it as `?c=<clientID>`. Wire format
+migrates from the `'pull pls'` plain string to typed JSON (`{type:
+'poke'}` and `{type: 'mutation_outcome', mutationID, status}`).
+Untagged upgrades accepted for graceful deploy. Only failure outcomes
+flow over the channel; success is implicit per ADR 0005.
+
+This plan was not amended — the ADR settled cleanly inside B.1's
+existing scope, without surfacing prerequisite work.
+
+The original spike-and-decide framing (preserved below for context):
+
+B.1 (the per-mutation outcome channel) had one architectural unknown:
 the DO's `clientID → WebSocket` registry. Three known constraints
-that shape the design:
+shaped the design:
 
 - **Multiple websockets per viewer session.** Every connected client
   has at least one websocket (the existing pull-poke transport). The
@@ -195,5 +210,5 @@ minutes individually. The full sequence is multi-week work.
 - `docs/adr/0005-undo-and-inverse-mutators.md`
 - `docs/keymaps/list-view.md`
 - `docs/adding-a-mutator.md`
-- ADR 0006 (TBD) — `clientID → WebSocket` routing in the DO. Pre-flight
-  for B.1.
+- `docs/adr/0006-clientid-tagged-websockets-for-outcome-routing.md` —
+  resolves the pre-flight question for B.1.
