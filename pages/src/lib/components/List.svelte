@@ -397,8 +397,16 @@
 			}
 		}
 
+		// Inline-create routes through the undo path so Cmd+Z removes
+		// the just-created item. The previous code called `mutators`
+		// (the wrapMutators proxy) directly which (a) didn't push a
+		// stack entry, and (b) hit a runtime "createListItem is not a
+		// function" against the wrapMutators proxy's typeof-function
+		// gate. mutateWithUndo bypasses that gate via its own Proxy
+		// keyed on the Mutations registry, where createListItem is a
+		// registered module.
 		const { error } = await tryCatchAsync(
-			mutators.createListItem({
+			mutateWithUndo.createListItem({
 				item: listItem
 			})
 		);
