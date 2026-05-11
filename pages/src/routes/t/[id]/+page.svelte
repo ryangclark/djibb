@@ -23,14 +23,18 @@
 	// @ts-ignore
 	let list = $derived(list_data?.[data.list_id]);
 
+	// $state.raw, not $state. mutators / mutateWithUndo are custom
+	// JavaScript Proxies; Svelte's deep-reactive state proxy
+	// short-circuits property access on them. See /l/[id]/+page.svelte
+	// for the full explanation.
 	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
-	let mutators = $state();
+	let mutators = $state.raw();
 
 	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
-	let mutateWithUndo = $state();
+	let mutateWithUndo = $state.raw();
 
 	/** @type {any} */
-	let undoRuntime = $state();
+	let undoRuntime = $state.raw();
 
 	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
 	let toastEvent = $state(null);

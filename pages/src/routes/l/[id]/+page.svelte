@@ -23,14 +23,23 @@
 	// @ts-ignore
 	let list = $derived(list_data?.[data.list_id]);
 
+	// $state.raw, not $state. mutators / mutateWithUndo are custom
+	// JavaScript Proxies; wrapping them in Svelte's deep-reactive
+	// state proxy short-circuits property access and returns undefined
+	// for everything (the state proxy's target is the inner Proxy's
+	// empty `{}` target, and Svelte's get trap appears to check
+	// own-property descriptors before falling through to Reflect.get,
+	// so our inner Proxy's get trap never fires). $state.raw keeps
+	// the value un-wrapped and still triggers reactivity on
+	// re-assignment, which is all the template gate cares about.
 	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
-	let mutators = $state();
+	let mutators = $state.raw();
 
 	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
-	let mutateWithUndo = $state();
+	let mutateWithUndo = $state.raw();
 
 	/** @type {any} */
-	let undoRuntime = $state();
+	let undoRuntime = $state.raw();
 
 	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
 	let toastEvent = $state(null);

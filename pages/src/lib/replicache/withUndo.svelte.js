@@ -101,16 +101,6 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
      *
      * @type {Record<string, (args: any) => Promise<unknown>>}
      */
-    console.log(
-        '%c[withUndo] proxy ctor',
-        'background: #ff0; color: #000; padding: 2px 6px',
-        'Mutations keys:',
-        Object.keys(Mutations || {}),
-        '| typeof Mutations.createListItem:',
-        // @ts-expect-error diag
-        typeof Mutations?.createListItem
-    );
-
     const mutateWithUndo = new Proxy(/** @type {any} */ ({}), {
         get(_, name) {
             if (typeof name !== 'string') return undefined;
@@ -118,21 +108,8 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
             // @ts-expect-error — Mutations is a typed registry but the
             // string-keyed proxy access is intentionally loose here.
             const moduleEntry = Mutations[name];
-            console.log(
-                '%c[withUndo] proxy get',
-                'background: #0ff; color: #000; padding: 2px 6px',
-                'name:',
-                name,
-                '| moduleEntry?',
-                !!moduleEntry,
-                '| keys:',
-                moduleEntry ? Object.keys(moduleEntry) : null
-            );
             if (!moduleEntry) {
-                console.warn(
-                    `[withUndo] unknown mutator "${name}" — Mutations keys:`,
-                    Object.keys(Mutations || {})
-                );
+                console.warn(`[withUndo] unknown mutator "${name}"`);
                 return undefined;
             }
 
