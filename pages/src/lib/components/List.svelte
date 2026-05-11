@@ -15,6 +15,7 @@
 	import { fetchOwnedEntities } from '$lib/entities.js';
 	import { getSessionState } from '$lib/session.svelte.js';
 	import { createListViewVerbs } from '$lib/keymap/listViewVerbs.svelte.js';
+	import EditPanel from '$lib/components/EditPanel.svelte';
 
 	/**
 	 * @typedef Props
@@ -154,16 +155,30 @@
 	 */
 	let root_el = $state();
 
-	// D.1 cursor + D.2 verbs. The verbs module composes the cursor;
-	// we instantiate the outer one and proxy through. Thunks for
-	// `list` / `data` so the module sees their reactive values
-	// without us threading $state across module boundaries.
+	// D.4 — edit panel id. When set, EditPanel renders.
+	/** @type {string | null} */
+	let editing_id = $state(null);
+
+	// D.1 cursor + D.2 verbs + D.4 callbacks. The verbs module composes
+	// the cursor; we instantiate the outer one and proxy through.
+	// Thunks for `list` / `data` so the module sees their reactive
+	// values without us threading $state across module boundaries.
 	const cursor = createListViewVerbs({
 		getList: () => list,
 		getData: () => data,
 		listId: list.id,
-		mutateWithUndo
+		mutateWithUndo,
+		onOpenEditPanel: () => {
+			editing_id = cursor.cursorId;
+		},
+		onOpenInlineCreate: () => {
+			show_quick_add_item_form = true;
+			tick().then(() => quick_add_list_item_input?.focus());
+		}
 	});
+
+	// Element under edit (null when panel is closed).
+	let editing_elem = $derived(editing_id ? data[editing_id] : null);
 
 	$effect(() => {
 		// Re-runs when the list mounts / remounts. tick() lets the DOM
@@ -412,6 +427,14 @@
 			</button>
 		{/if}
 	</article>
+
+	{#if editing_elem}
+		<EditPanel
+			elem={editing_elem}
+			{mutateWithUndo}
+			onClose={() => (editing_id = null)}
+		/>
+	{/if}
 {:else}
 	<p>Loading data!</p>
 {/if}

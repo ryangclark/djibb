@@ -37,8 +37,21 @@ import {
  * @param {import('$lib/replicache/types').ClientListMutators & { archiveListItem: any, archiveListGroup: any, setItemQuantity: any }} input.mutateWithUndo
  *   The undo-stack-pushing mutator surface from
  *   `replicacheList.undoRuntime.mutateWithUndo`. User-firing path.
+ * @param {() => void} [input.onOpenEditPanel]
+ *   D.4: called when Enter fires on the cursor row. The component
+ *   owns the panel state — the verbs module only signals intent.
+ * @param {() => void} [input.onOpenInlineCreate]
+ *   D.4: called when `n` fires. Component shows the inline create row
+ *   and focuses the input.
  */
-export function createListViewVerbs({ getList, getData, listId, mutateWithUndo }) {
+export function createListViewVerbs({
+    getList,
+    getData,
+    listId,
+    mutateWithUndo,
+    onOpenEditPanel,
+    onOpenInlineCreate
+}) {
     const cursor = createListViewCursor({ getList, getData, listId });
 
     /** @type {'item' | 'group' | null} */
@@ -360,6 +373,22 @@ export function createListViewVerbs({ getList, getData, listId, mutateWithUndo }
             case 'x':
                 event.preventDefault();
                 toggleCursorInSelection();
+                return;
+            case 'Enter':
+                // D.4: open edit panel for the cursor row. If no
+                // cursor, no-op (panel needs a target). Component
+                // gates on cursorId itself; we just signal intent.
+                if (cursor.cursorId && onOpenEditPanel) {
+                    event.preventDefault();
+                    onOpenEditPanel();
+                }
+                return;
+            case 'n':
+                // D.4: inline-create. Component shows the input row.
+                if (onOpenInlineCreate) {
+                    event.preventDefault();
+                    onOpenInlineCreate();
+                }
                 return;
             case 'Escape':
                 // Esc cascade (D.1+): if selection is non-empty, clear
