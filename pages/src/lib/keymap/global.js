@@ -9,6 +9,11 @@
  *   Cmd/Ctrl + Shift + Z      → undoRuntime.redo()
  *   Cmd/Ctrl + Shift + S      → onShareShortcut() (route owns goto)
  *
+ * D.7's Cmd+K (palette) and Cmd+Shift+A (archive list) live in
+ * List.svelte's own window listener — they need direct access to
+ * the overlay state and the list's mutateWithUndo, both of which
+ * are adjacent in the component.
+ *
  * Skip rules — discipline from ADR 0004:
  *   - Inputs / textareas / contenteditable get first dibs on their
  *     native undo. We don't hijack typing.

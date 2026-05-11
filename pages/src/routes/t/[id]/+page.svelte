@@ -29,6 +29,9 @@
 	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
 	let mutateWithUndo = $state();
 
+	/** @type {any} */
+	let undoRuntime = $state();
+
 	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
 	let toastEvent = $state(null);
 
@@ -60,6 +63,7 @@
 		list_data = replicacheList.list;
 		mutators = replicacheList.mutate;
 		mutateWithUndo = replicacheList.mutateWithUndo;
+		undoRuntime = replicacheList.undoRuntime;
 
 		const ws = initWebsocket(data.list_id, replicacheList.client.clientID);
 		ws.addEventListener('message', (event) => {
@@ -92,8 +96,14 @@
 </script>
 
 <svelte:boundary {failed}>
-	{#if list && mutators && mutateWithUndo}
-		<List data={list_data} {list} {mutators} {mutateWithUndo}></List>
+	{#if list && mutators && mutateWithUndo && undoRuntime}
+		<List
+			data={list_data}
+			{list}
+			{mutators}
+			{mutateWithUndo}
+			{undoRuntime}
+		></List>
 	{:else}
 		<p>Loading template…</p>
 	{/if}

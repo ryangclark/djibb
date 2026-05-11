@@ -43,6 +43,8 @@ import {
  * @param {() => void} [input.onOpenInlineCreate]
  *   D.4: called when `n` fires. Component shows the inline create row
  *   and focuses the input.
+ * @param {() => void} [input.onOpenCheatsheet]
+ *   D.7: called when `?` fires. Route/component owns the overlay state.
  */
 export function createListViewVerbs({
     getList,
@@ -50,7 +52,8 @@ export function createListViewVerbs({
     listId,
     mutateWithUndo,
     onOpenEditPanel,
-    onOpenInlineCreate
+    onOpenInlineCreate,
+    onOpenCheatsheet
 }) {
     const cursor = createListViewCursor({ getList, getData, listId });
 
@@ -472,6 +475,15 @@ export function createListViewVerbs({
                 if (onOpenInlineCreate) {
                     event.preventDefault();
                     onOpenInlineCreate();
+                }
+                return;
+            case '?':
+                // D.7: cheatsheet overlay. Single-key bind so only fires
+                // when list container is focused — outside an input the
+                // `?` key is otherwise meaningless in our model.
+                if (onOpenCheatsheet) {
+                    event.preventDefault();
+                    onOpenCheatsheet();
                 }
                 return;
             case 'Escape':

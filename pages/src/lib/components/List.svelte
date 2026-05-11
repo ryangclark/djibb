@@ -15,7 +15,11 @@
 	import { fetchOwnedEntities } from '$lib/entities.js';
 	import { getSessionState } from '$lib/session.svelte.js';
 	import { createListViewVerbs } from '$lib/keymap/listViewVerbs.svelte.js';
+	import { buildKeymapRegistry } from '$lib/keymap/registry.js';
+	import { goto } from '$app/navigation';
 	import EditPanel from '$lib/components/EditPanel.svelte';
+	import CheatsheetOverlay from '$lib/components/CheatsheetOverlay.svelte';
+	import CommandPalette from '$lib/components/CommandPalette.svelte';
 
 	/**
 	 * @typedef Props
@@ -26,10 +30,16 @@
 	 *   User-firing path that pushes stack entries. The list-view
 	 *   verbs (Cmd+Backspace, Space, +/−) call this so undo restores
 	 *   them; system / native-input handlers stay on `mutators`.
+	 * @property {{
+	 *   undo: () => Promise<boolean>,
+	 *   redo: () => Promise<boolean>,
+	 * }} undoRuntime
+	 *   Used by the command palette so ⌘Z / ⌘⇧Z are first-class
+	 *   palette commands (alongside the global keymap bindings).
 	 */
 
 	/** @type {Props} */
-	let { data, list: rawList, mutators, mutateWithUndo } = $props();
+	let { data, list: rawList, mutators, mutateWithUndo, undoRuntime } = $props();
 
 	// Accept either entity type — this component renders both lists and
 	// templates using the same DO machinery; the only branch points are
@@ -159,6 +169,77 @@
 	/** @type {string | null} */
 	let editing_id = $state(null);
 
+	// D.7 — overlays
+	let show_cheatsheet = $state(false);
+	let show_palette = $state(false);
+
+	async function archiveCurrentList() {
+		await mutateWithUndo.archiveList({ listId: list.id });
+	}
+
+	function navigateToShare() {
+		const entityType = list.id.startsWith('t/') ? 't' : 'l';
+		const suffix = list.id.split('/', 2)[1] ?? '';
+		goto(`/${entityType}/${suffix}/share`);
+	}
+
+	// D.7 — keymap registry. Rebuilt reactively because actions
+	// close over `mutateWithUndo` / `list` / overlay setters — Svelte
+	// runes captures references via the thunks so this stays cheap.
+	let registry = $derived(
+		buildKeymapRegistry({
+			openCheatsheet: () => {
+				show_cheatsheet = true;
+			},
+			openPalette: () => {
+				show_palette = true;
+			},
+			closeOverlays: () => {
+				show_cheatsheet = false;
+				show_palette = false;
+			},
+			archiveList: () => void archiveCurrentList(),
+			navigateToShare,
+			undo: () => void undoRuntime.undo(),
+			redo: () => void undoRuntime.redo()
+		})
+	);
+
+	// D.7 — Cmd+K and Cmd+Shift+A window listener. Cmd+K must open
+	// the palette even when an input is focused, so we don't share
+	// the editable-skip discipline of the list-view keymap. The
+	// global.js Cmd+Z keymap still handles undo/redo/share.
+	$effect(() => {
+		/** @param {KeyboardEvent} event */
+		function onWindowKey(event) {
+			const mod = event.metaKey || event.ctrlKey;
+			if (!mod) return;
+			const key = event.key.toLowerCase();
+			if (key === 'k' && !event.shiftKey) {
+				event.preventDefault();
+				show_palette = true;
+				return;
+			}
+			if (key === 'a' && event.shiftKey) {
+				// Don't hijack Cmd+Shift+A inside inputs — let native
+				// select-all-and-friends behave.
+				const t = event.target;
+				if (
+					t instanceof HTMLInputElement ||
+					t instanceof HTMLTextAreaElement ||
+					(t instanceof HTMLElement && t.isContentEditable)
+				) {
+					return;
+				}
+				event.preventDefault();
+				void archiveCurrentList();
+				return;
+			}
+		}
+		window.addEventListener('keydown', onWindowKey);
+		return () => window.removeEventListener('keydown', onWindowKey);
+	});
+
 	// D.1 cursor + D.2 verbs + D.4 callbacks. The verbs module composes
 	// the cursor; we instantiate the outer one and proxy through.
 	// Thunks for `list` / `data` so the module sees their reactive
@@ -174,6 +255,9 @@
 		onOpenInlineCreate: () => {
 			show_quick_add_item_form = true;
 			tick().then(() => quick_add_list_item_input?.focus());
+		},
+		onOpenCheatsheet: () => {
+			show_cheatsheet = true;
 		}
 	});
 
@@ -433,6 +517,20 @@
 			elem={editing_elem}
 			{mutateWithUndo}
 			onClose={() => (editing_id = null)}
+		/>
+	{/if}
+
+	{#if show_cheatsheet}
+		<CheatsheetOverlay
+			bindings={registry}
+			onClose={() => (show_cheatsheet = false)}
+		/>
+	{/if}
+
+	{#if show_palette}
+		<CommandPalette
+			bindings={registry}
+			onClose={() => (show_palette = false)}
 		/>
 	{/if}
 {:else}
