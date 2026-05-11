@@ -397,14 +397,22 @@
 			}
 		}
 
+		// DIAGNOSTIC — surface what mutateWithUndo actually is at the
+		// call site. Two layered Proxies are between us and Replicache;
+		// when this fails it's been hard to tell which layer dropped
+		// the lookup.
+		console.log('[quick-add] mutateWithUndo is:', mutateWithUndo);
+		console.log(
+			'[quick-add] typeof mutateWithUndo.createListItem:',
+			typeof mutateWithUndo?.createListItem
+		);
+		console.log(
+			'[quick-add] typeof mutators.createListItem:',
+			typeof mutators?.createListItem
+		);
+
 		// Inline-create routes through the undo path so Cmd+Z removes
-		// the just-created item. The previous code called `mutators`
-		// (the wrapMutators proxy) directly which (a) didn't push a
-		// stack entry, and (b) hit a runtime "createListItem is not a
-		// function" against the wrapMutators proxy's typeof-function
-		// gate. mutateWithUndo bypasses that gate via its own Proxy
-		// keyed on the Mutations registry, where createListItem is a
-		// registered module.
+		// the just-created item.
 		const { error } = await tryCatchAsync(
 			mutateWithUndo.createListItem({
 				item: listItem

@@ -101,6 +101,20 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
      *
      * @type {Record<string, (args: any) => Promise<unknown>>}
      */
+    // DIAGNOSTIC — surface registry contents at construction so we
+    // can tell if Mutations is actually populated when the proxy is
+    // built. Remove after the createListItem dispatch issue is root-
+    // caused.
+    console.log(
+        '[withUndo] proxy ctor — Mutations keys:',
+        Object.keys(Mutations || {})
+    );
+    console.log(
+        '[withUndo] proxy ctor — typeof Mutations.createListItem:',
+        // @ts-expect-error — diagnostic
+        typeof Mutations?.createListItem
+    );
+
     const mutateWithUndo = new Proxy(/** @type {any} */ ({}), {
         get(_, name) {
             if (typeof name !== 'string') return undefined;
@@ -109,7 +123,10 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
             // string-keyed proxy access is intentionally loose here.
             const moduleEntry = Mutations[name];
             if (!moduleEntry) {
-                console.warn(`[withUndo] unknown mutator "${name}"`);
+                console.warn(
+                    `[withUndo] unknown mutator "${name}" — registry keys:`,
+                    Object.keys(Mutations || {})
+                );
                 return undefined;
             }
 
