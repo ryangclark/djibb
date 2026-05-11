@@ -68,11 +68,14 @@ export function initList({ accountId, listId, onToast, onConfirm }) {
 		for (const diff of diffs) {
 			if (diff.op === 'add' || diff.op === 'change') {
 				listData[diff.key] = diff.newValue;
-			} else {
-				console.warn(
-					'replicacheExperimentalWatchCallback unhandled diff.op:',
-					diff
-				);
+			} else if (diff.op === 'del') {
+				// Archive flow: the server's pull omits time_deleted
+				// rows, so an archive (or an undo-of-create) lands as
+				// a `del` op against the row's key. Drop the entry so
+				// the row stops rendering. Parent.child_element_refs
+				// may still reference the id transiently — the
+				// rendering snippet filters those out silently.
+				delete listData[diff.key];
 			}
 		}
 	}

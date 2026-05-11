@@ -564,7 +564,16 @@
 
 {#snippet child(/** @type {string} */ child_ref)}
 	{@const child = data[child_ref]}
-	{#if child}
+	<!--
+		Silently skip missing or soft-deleted children. Parent
+		child_element_refs aren't pruned eagerly on archive — the row
+		gets `time_deleted` set and the next pull emits `del` for the
+		row key, but the parent's refs array still contains the id
+		until the parent's own pull update lands. Showing "Element
+		not found" during this normal flicker would be noisy. Cursor
+		model already excludes missing rows from the flat sequence.
+	-->
+	{#if child && !child.time_deleted}
 		{#if child.type === LIST_ELEMENT_TYPES.GROUP}
 			{@render group(child)}
 		{:else if child.type === LIST_ELEMENT_TYPES.ITEM}
@@ -572,8 +581,6 @@
 		{:else}
 			<p>UNSUPPORTED LIST ELEMENT TYPE: "{child.type}"</p>
 		{/if}
-	{:else}
-		<p>Element not found: "{child_ref}"</p>
 	{/if}
 {/snippet}
 

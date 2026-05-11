@@ -71,12 +71,17 @@ export function buildFlatRows(list, data, collapsed) {
     for (const child_ref of list.child_element_refs ?? []) {
         const elem = data[child_ref];
         if (!elem) continue;
+        // Skip soft-deleted rows. The render layer hides them too;
+        // keeping them out of the flat sequence prevents the cursor
+        // from landing on a row the user can't see.
+        if (elem.time_deleted) continue;
         if (elem.type === 'group') {
             rows.push({ id: child_ref, type: 'group', depth: 0, parentGroupId: null });
             if (!collapsed.has(child_ref)) {
                 for (const grand of elem.child_element_refs ?? []) {
                     const grandElem = data[grand];
                     if (!grandElem) continue;
+                    if (grandElem.time_deleted) continue;
                     rows.push({
                         id: grand,
                         type: 'item',

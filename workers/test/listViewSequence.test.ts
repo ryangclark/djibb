@@ -175,6 +175,41 @@ describe('buildFlatRows', () => {
     it('handles list with missing child_element_refs field', () => {
         expect(buildFlatRows({}, {}, new Set())).toEqual([]);
     });
+
+    it('skips soft-deleted (time_deleted) items at depth 0', () => {
+        const list = { child_element_refs: ['i/a', 'i/b'] };
+        const data = {
+            'i/a': { ...makeItem('i/a'), time_deleted: '2026-05-11T00:00:00Z' },
+            'i/b': makeItem('i/b'),
+        };
+        const rows = buildFlatRows(list, data, new Set());
+        expect(rows.map((r) => r.id)).toEqual(['i/b']);
+    });
+
+    it('skips soft-deleted items inside an expanded group', () => {
+        const list = { child_element_refs: ['g/1'] };
+        const data = {
+            'g/1': makeGroup('g/1', ['i/a', 'i/b']),
+            'i/a': { ...makeItem('i/a'), time_deleted: '2026-05-11T00:00:00Z' },
+            'i/b': makeItem('i/b'),
+        };
+        const rows = buildFlatRows(list, data, new Set());
+        expect(rows.map((r) => r.id)).toEqual(['g/1', 'i/b']);
+    });
+
+    it('skips soft-deleted groups (and their children) at the top level', () => {
+        const list = { child_element_refs: ['g/1', 'i/x'] };
+        const data = {
+            'g/1': {
+                ...makeGroup('g/1', ['i/a']),
+                time_deleted: '2026-05-11T00:00:00Z',
+            },
+            'i/a': makeItem('i/a'),
+            'i/x': makeItem('i/x'),
+        };
+        const rows = buildFlatRows(list, data, new Set());
+        expect(rows.map((r) => r.id)).toEqual(['i/x']);
+    });
 });
 
 describe('nextCursorId', () => {
