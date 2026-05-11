@@ -286,6 +286,32 @@ export function createListViewVerbs({
     }
 
     /**
+     * D.5 — Shift+Space on a group: bulk-check every item child to
+     * its own target_value. No-op if the cursor isn't on a group or
+     * the group has no item children (e.g. all children are groups).
+     * Uses setItemsAtomic so the whole batch shares one envelope and
+     * undo is one stack entry.
+     */
+    async function checkAllInGroup() {
+        const elem = cursorElement();
+        if (!elem || elem.type !== 'group') return;
+        const data = getData();
+        const refs = elem.child_element_refs ?? [];
+        const items = refs
+            .map((/** @type {string} */ id) => data[id])
+            .filter((/** @type {any} */ e) => e && e.type === 'item');
+        if (items.length === 0) return;
+        const entries = items.map((/** @type {any} */ item) => ({
+            id: item.id,
+            fields: {
+                value: { ...item.value, value: item.value.target_value }
+            },
+            expected: { value: item.value }
+        }));
+        await mutateWithUndo.setItemsAtomic({ items: entries });
+    }
+
+    /**
      * Toggle the cursor row in selection. Bound to `x`.
      */
     function toggleCursorInSelection() {
@@ -343,6 +369,15 @@ export function createListViewVerbs({
         if (event.shiftKey && !mod && event.key === 'ArrowUp') {
             event.preventDefault();
             extendSelection(-1);
+            return;
+        }
+
+        // D.5 — Shift+Space on group: check all items in group. The
+        // bulk Space (D.3 selection) takes precedence if a selection
+        // is open; otherwise we route by cursor's row type.
+        if (event.shiftKey && !mod && event.key === ' ') {
+            event.preventDefault();
+            void checkAllInGroup();
             return;
         }
 
