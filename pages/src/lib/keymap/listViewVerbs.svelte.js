@@ -34,9 +34,12 @@ import {
  * @param {() => import('$djibb/list').List | import('$djibb/list').Template} input.getList
  * @param {() => Record<string, any>} input.getData
  * @param {string} input.listId
- * @param {import('$lib/replicache/types').ClientListMutators & { archiveListItem: any, archiveListGroup: any, setItemQuantity: any }} input.mutateWithUndo
- *   The undo-stack-pushing mutator surface from
- *   `replicacheList.undoRuntime.mutateWithUndo`. User-firing path.
+ * @param {() => import('$lib/replicache/types').ClientListMutators & { archiveListItem: any, archiveListGroup: any, setItemQuantity: any }} input.getMutateWithUndo
+ *   Thunk for the undo-stack-pushing mutator surface. Must be a
+ *   thunk because in Svelte 5, prop bindings (like `mutateWithUndo`
+ *   in the consuming component) lose reactivity when passed directly
+ *   to a function — they capture the value at construction time
+ *   (state_referenced_locally). Same pattern as `getList` / `getData`.
  * @param {() => void} [input.onOpenEditPanel]
  *   D.4: called when Enter fires on the cursor row. The component
  *   owns the panel state — the verbs module only signals intent.
@@ -49,13 +52,13 @@ import {
 export function createListViewVerbs({
     getList,
     getData,
-    listId,
-    mutateWithUndo,
+    getListId,
+    getMutateWithUndo,
     onOpenEditPanel,
     onOpenInlineCreate,
     onOpenCheatsheet
 }) {
-    const cursor = createListViewCursor({ getList, getData, listId });
+    const cursor = createListViewCursor({ getList, getData, getListId });
 
     /** @type {'item' | 'group' | null} */
     let selectionType = $state(null);
@@ -162,9 +165,9 @@ export function createListViewVerbs({
         const elem = cursorElement();
         if (!elem) return;
         if (elem.type === 'item') {
-            await mutateWithUndo.archiveListItem({ id: elem.id });
+            await getMutateWithUndo().archiveListItem({ id: elem.id });
         } else if (elem.type === 'group') {
-            await mutateWithUndo.archiveListGroup({ id: elem.id });
+            await getMutateWithUndo().archiveListGroup({ id: elem.id });
         }
     }
 
@@ -183,10 +186,10 @@ export function createListViewVerbs({
         const groupIds = ids.filter((id) => data[id]?.type === 'group');
         clearSelection();
         if (itemIds.length > 0) {
-            await mutateWithUndo.archiveListItems({ ids: itemIds });
+            await getMutateWithUndo().archiveListItems({ ids: itemIds });
         }
         if (groupIds.length > 0) {
-            await mutateWithUndo.archiveListGroups({ ids: groupIds });
+            await getMutateWithUndo().archiveListGroups({ ids: groupIds });
         }
     }
 
@@ -212,7 +215,7 @@ export function createListViewVerbs({
             },
             expected: { value: item.value }
         }));
-        await mutateWithUndo.setItemsAtomic({ items: entries });
+        await getMutateWithUndo().setItemsAtomic({ items: entries });
     }
 
     /**
@@ -267,7 +270,7 @@ export function createListViewVerbs({
         }
         if (elem.type === 'item') {
             const nextValue = toggleQuantityValue(elem.value);
-            await mutateWithUndo.setItemQuantity({
+            await getMutateWithUndo().setItemQuantity({
                 itemId: elem.id,
                 quantity: { ...elem.value, value: nextValue },
                 expected: { quantity: elem.value }
@@ -281,7 +284,7 @@ export function createListViewVerbs({
         if (!elem || elem.type !== 'item') return;
         const nextValue = stepQuantityValue(elem.value, delta);
         if (nextValue === elem.value.value) return; // clamp no-op
-        await mutateWithUndo.setItemQuantity({
+        await getMutateWithUndo().setItemQuantity({
             itemId: elem.id,
             quantity: { ...elem.value, value: nextValue },
             expected: { quantity: elem.value }
@@ -318,7 +321,7 @@ export function createListViewVerbs({
         if (toIndex < 0 || toIndex >= refs.length) return; // edge clamp
         const mutatorName =
             row.type === 'group' ? 'reorderListGroup' : 'reorderListItem';
-        await mutateWithUndo[mutatorName]({
+        await getMutateWithUndo()[mutatorName]({
             id: cursorId,
             toIndex,
             expected: { fromIndex }
@@ -348,7 +351,7 @@ export function createListViewVerbs({
             },
             expected: { value: item.value }
         }));
-        await mutateWithUndo.setItemsAtomic({ items: entries });
+        await getMutateWithUndo().setItemsAtomic({ items: entries });
     }
 
     /**

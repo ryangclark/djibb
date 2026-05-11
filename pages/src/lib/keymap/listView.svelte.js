@@ -35,10 +35,14 @@ import {
  *   Thunk so callers can pass a $derived value without unwrapping it
  *   at construction time.
  * @param {() => Record<string, any>} input.getData
- * @param {string} input.listId
- *   Stable list ID for storage scoping. The container's ID, not a row.
+ * @param {() => string} input.getListId
+ *   Thunk for the list ID. Used for storage scoping. Must be a
+ *   thunk for the same state_referenced_locally reason as getList:
+ *   reading `list.id` at construction captures a snapshot of the
+ *   $derived value at that moment.
  */
-export function createListViewCursor({ getList, getData, listId }) {
+export function createListViewCursor({ getList, getData, getListId }) {
+    const listId = getListId();
     const storage = typeof localStorage === 'undefined' ? undefined : localStorage;
 
     /** @type {string | null} */

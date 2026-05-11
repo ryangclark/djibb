@@ -247,8 +247,12 @@
 	const cursor = createListViewVerbs({
 		getList: () => list,
 		getData: () => data,
-		listId: list.id,
-		mutateWithUndo,
+		// Every reactive value is passed as a thunk. Direct references
+		// would trip state_referenced_locally — the destructured prop
+		// bindings + $derived `list` capture initial values when read
+		// in non-reactive scope (object-literal construction).
+		getListId: () => list.id,
+		getMutateWithUndo: () => mutateWithUndo,
 		onOpenEditPanel: () => {
 			editing_id = cursor.cursorId;
 		},
@@ -396,20 +400,6 @@
 				return;
 			}
 		}
-
-		// DIAGNOSTIC — surface what mutateWithUndo actually is at the
-		// call site. Two layered Proxies are between us and Replicache;
-		// when this fails it's been hard to tell which layer dropped
-		// the lookup.
-		console.log('[quick-add] mutateWithUndo is:', mutateWithUndo);
-		console.log(
-			'[quick-add] typeof mutateWithUndo.createListItem:',
-			typeof mutateWithUndo?.createListItem
-		);
-		console.log(
-			'[quick-add] typeof mutators.createListItem:',
-			typeof mutators?.createListItem
-		);
 
 		// Inline-create routes through the undo path so Cmd+Z removes
 		// the just-created item.
