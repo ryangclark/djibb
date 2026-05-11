@@ -286,6 +286,43 @@ export function createListViewVerbs({
     }
 
     /**
+     * D.6 — Cmd+↑ / Cmd+↓ reorder. Moves the cursor row up or down
+     * within its parent's child_element_refs.
+     *
+     * Parent resolution:
+     *   - depth-0 row: parent is the list itself (list.id)
+     *   - depth-1 row: parent is the row's group (row.parentGroupId)
+     *
+     * Coalescing (500ms same-target merge) lives inside withUndo so
+     * the undo stack collapses a rapid Cmd+↓ Cmd+↓ Cmd+↓ run into
+     * one entry. No work needed here — we just fire the mutator.
+     *
+     * @param {-1 | 1} delta
+     */
+    async function reorderCursor(delta) {
+        const cursorId = cursor.cursorId;
+        if (!cursorId) return;
+        const row = cursor.rows.find((r) => r.id === cursorId);
+        if (!row) return;
+        const list = getList();
+        const data = getData();
+        const parentId = row.parentGroupId ?? list.id;
+        const parent = parentId === list.id ? list : data[parentId];
+        const refs = parent?.child_element_refs ?? [];
+        const fromIndex = refs.indexOf(cursorId);
+        if (fromIndex === -1) return;
+        const toIndex = fromIndex + delta;
+        if (toIndex < 0 || toIndex >= refs.length) return; // edge clamp
+        const mutatorName =
+            row.type === 'group' ? 'reorderListGroup' : 'reorderListItem';
+        await mutateWithUndo[mutatorName]({
+            id: cursorId,
+            toIndex,
+            expected: { fromIndex }
+        });
+    }
+
+    /**
      * D.5 — Shift+Space on a group: bulk-check every item child to
      * its own target_value. No-op if the cursor isn't on a group or
      * the group has no item children (e.g. all children are groups).
@@ -355,6 +392,18 @@ export function createListViewVerbs({
         if (mod && !event.shiftKey && event.key.toLowerCase() === 'a') {
             event.preventDefault();
             selectAtDepth();
+            return;
+        }
+
+        // D.6 — Cmd+ArrowUp / Cmd+ArrowDown reorder within parent.
+        if (mod && !event.shiftKey && event.key === 'ArrowUp') {
+            event.preventDefault();
+            void reorderCursor(-1);
+            return;
+        }
+        if (mod && !event.shiftKey && event.key === 'ArrowDown') {
+            event.preventDefault();
+            void reorderCursor(1);
             return;
         }
 
