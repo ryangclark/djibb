@@ -401,6 +401,17 @@
 			}
 		}
 
+		console.log(
+			'%c[quick-add] call site',
+			'background: #f0f; color: #fff; padding: 2px 6px',
+			'mutateWithUndo:',
+			mutateWithUndo,
+			'| typeof mutateWithUndo.createListItem:',
+			typeof mutateWithUndo?.createListItem,
+			'| typeof mutators.createListItem:',
+			typeof mutators?.createListItem
+		);
+
 		// Inline-create routes through the undo path so Cmd+Z removes
 		// the just-created item.
 		const { error } = await tryCatchAsync(
