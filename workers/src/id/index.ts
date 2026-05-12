@@ -15,24 +15,21 @@ export const IdTypes = {
     session: 's',
     template: 't',
     workspace: 'w',
-};
+} as const;
 
 export type IdType = keyof typeof IdTypes;
-
-let idGenerator: (size?: number) => string;
 
 // Does this work?? Woah...
 export type DjibbId = `${IdType}/${string}`;
 
+const idGenerator = customAlphabet(urlAlphabet, ID_LENGTH);
+
 /**
  * Creates a randomly generated ID with a prefix for the given ID Type.
  */
-export function newId(idType: IdType): string {
-    // Enables reuse of the generator. I think this works.
-    if (idGenerator === undefined) {
-        idGenerator = customAlphabet(urlAlphabet, ID_LENGTH);
-    }
-
+export function newId<T extends IdType>(
+    idType: T
+): `${(typeof IdTypes)[T]}/${string}` {
     return `${IdTypes[idType]}/${idGenerator()}`;
 }
 
@@ -50,15 +47,25 @@ const PrefixToIdType: Record<string, IdType> = Object.entries(IdTypes).reduce(
 );
 
 /**
- * Parses an key like "l/abc123" and returns a typed result if valid.
+ * Matches the suffix portion of an ID we generate: ID_LENGTH chars
+ * drawn from nanoid's `urlAlphabet` (A-Z, a-z, 0-9, `_`, `-`).
+ */
+const ID_SUFFIX_RE = new RegExp(`^[A-Za-z0-9_-]{${ID_LENGTH}}$`);
+
+/**
+ * Parses a key like "l/abc123..." and returns a typed result if valid.
+ * Returns `null` if the prefix is unknown or the suffix doesn't look
+ * like an ID we'd have minted.
  */
 export function parseKey(key: string): [IdType, string] | null {
     const [prefix, id] = key.split('/', 2);
 
-    if (!prefix) return null;
+    if (!prefix || !id) return null;
 
     const type = PrefixToIdType[prefix];
-    if (!type || !id) return null;
+    if (!type) return null;
+
+    if (!ID_SUFFIX_RE.test(id)) return null;
 
     return [type, id];
 }
