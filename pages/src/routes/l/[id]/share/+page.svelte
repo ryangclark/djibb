@@ -1,43 +1,119 @@
 <script>
 	// @ts-check
 	/**
-	 * Share-route stub. Cmd+Shift+S from a list view lands here.
+	 * Share-route for Lists. Wires Replicache + websocket the same
+	 * way /l/[id]/+page.svelte does, then hands the entity and
+	 * mutators to the Share component. Same lifecycle: Replicache
+	 * client per page mount, websocket cleaned up on unmount.
 	 *
-	 * The full share UI is out of scope until the share-flow design
-	 * conversation lands — ADR 0005 §"Open questions" calls out the
-	 * self-demotion forward-warning copy as a gating decision. Until
-	 * then this page is a placeholder so the keymap binding resolves
-	 * to a real route.
+	 * setListAuthRules has an inverse (ADR 0005), so changes made
+	 * here participate in the undo stack; the share form's "Save"
+	 * still drives the mutation, and Cmd+Z from elsewhere in the
+	 * app can roll it back via the standard friction-tier flow.
 	 */
 	import { page } from '$app/state';
 
-	let listId = $derived(page.params.id);
+	import { initList } from '$lib/replicache/index.svelte.js';
+	import { initialize as initWebsocket } from '$lib/websocket';
+
+	import { decodeWSMessage } from '$djibb/websocket/constants';
+
+	import ConfirmToast from '$lib/components/ConfirmToast.svelte';
+	import Share from '$lib/components/Share.svelte';
+	import UndoToast from '$lib/components/UndoToast.svelte';
+	import { getSessionState } from '$lib/session.svelte.js';
+
+	let data = $derived(page.data);
+
+	/** @type {{ [x: string]: import('replicache').ReadonlyJSONValue }} */
+	let list_data = $state({});
+
+	/** @type {import('$djibb/list').List} */
+	// @ts-ignore
+	let list = $derived(list_data?.[data.list_id]);
+
+	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
+	let mutators = $state.raw();
+
+	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
+	let toastEvent = $state(null);
+
+	/** @type {(() => void) | null} */
+	let onUndoClick = $state(null);
+
+	/** @type {import('$lib/components/ConfirmToast.svelte').Pending | null} */
+	let pendingConfirm = $state(null);
+
+	const sessionState = getSessionState();
+
+	$effect(() => {
+		const replicacheList = initList({
+			accountId: sessionState.currentAccountId,
+			listId: data.list_id,
+			onToast: (event) => {
+				toastEvent = event;
+			},
+			onConfirm: (mutator) =>
+				new Promise((resolve) => {
+					pendingConfirm = { mutator, resolve };
+				})
+		});
+
+		onUndoClick = () => {
+			replicacheList.undoRuntime.undo();
+		};
+
+		list_data = replicacheList.list;
+		mutators = replicacheList.mutate;
+
+		const ws = initWebsocket(data.list_id, replicacheList.client.clientID);
+		ws.addEventListener('message', (event) => {
+			const msg = decodeWSMessage(event.data);
+			if (!msg) return;
+			if (msg.type === 'poke') {
+				if (replicacheList) replicacheList.client.pull();
+			} else if (msg.type === 'mutation_outcome') {
+				replicacheList.undoRuntime.handleOutcome({
+					status: msg.status,
+					mutationID: msg.mutationID
+				});
+			}
+		});
+
+		return () => {
+			replicacheList.client.close();
+			ws?.close(1000);
+		};
+	});
+
+	let suffix = $derived(data.list_id.split('/', 2)[1] ?? '');
 </script>
 
 <svelte:head>
 	<title>Share list — djibb</title>
 </svelte:head>
 
-<main>
-	<h1>Share list</h1>
-	<p>List ID: <code>l/{listId}</code></p>
-	<p class="placeholder">
-		The share UI hasn't been built yet. See ADR 0005 §"Open questions"
-		for the design conversation that gates this route.
-	</p>
-	<p>
-		<a href="/l/{listId}">← Back to list</a>
-	</p>
-</main>
+{#if list && mutators}
+	<Share
+		entityId={data.list_id}
+		entityType="list"
+		entity={list}
+		mutators={mutators}
+		currentAccountId={sessionState.currentAccountId}
+		backHref={`/l/${suffix}`}
+	/>
+{:else}
+	<p class="loading">Loading list…</p>
+{/if}
+
+<UndoToast event={toastEvent} onUndo={() => onUndoClick?.()} />
+<ConfirmToast pending={pendingConfirm} setPending={(p) => (pendingConfirm = p)} />
 
 <style>
-	main {
-		max-width: 40rem;
+	.loading {
+		max-width: 42rem;
 		margin: 2rem auto;
 		padding: 0 1rem;
-	}
-	.placeholder {
 		opacity: 0.7;
-		font-style: italic;
 	}
 </style>
