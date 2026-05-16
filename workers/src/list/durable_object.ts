@@ -30,6 +30,7 @@ import {
 import {
     getChangedElements,
     getElementById,
+    getEntityId,
     getListVersion,
     getReplicacheClientGroupById,
     InitializeTables,
@@ -39,7 +40,7 @@ import {
 } from './sql';
 import { Account } from '../account';
 import { Result, tryCatch, tryCatchAsync } from '../utils/trycatch';
-import { EmitEntitySnapshotToCatalog } from './entity';
+import { EmitEntitySnapshotToCatalog, GetEntityVersion } from './entity';
 
 /**
  * Mutator names that change entity-level metadata (the fields projected
@@ -499,10 +500,18 @@ export class DjibbList extends DurableObject {
         // Synchronous on the request: the worker's middleware reads D1
         // for auth on subsequent requests, so the next round-trip needs
         // D1 to be caught up. Failures are logged and recovered on the
-        // next emit; the DO state is already committed and authoritative.
+        // next emit, or on the next reconciliation alarm (ADR 0007);
+        // the DO state is already committed and authoritative.
         if (entityMetadataMutated) {
             await this.emitEntitySnapshot(listId);
         }
+
+        // Bootstrap the reconciliation alarm per ADR 0007. Idempotent;
+        // ensureReconcileAlarm() no-ops when an alarm is already
+        // scheduled. Runs on every push so a DO that came up before
+        // ADR 0007 (or one whose alarm storage was cleared by a
+        // migration) picks the schedule back up on its next touch.
+        await this.ensureReconcileAlarm();
 
         this.poke();
 
@@ -814,6 +823,121 @@ export class DjibbList extends DurableObject {
                 error
             );
         }
+    }
+
+    /**
+     * Reconciliation cadence per ADR 0007. The healthy interval is
+     * 24h — the synchronous post-commit emit handles freshness, so
+     * the alarm only buys recovery time after a missed emit. The
+     * retry path uses exponential backoff from 5min and caps at the
+     * healthy interval, so a partial-D1 outage doesn't quietly
+     * stockpile retry attempts.
+     *
+     * Exposed as static so tests can reference them without
+     * instantiating the DO.
+     */
+    static readonly RECONCILE_HEALTHY_MS = 24 * 60 * 60 * 1000;
+    static readonly RECONCILE_RETRY_INITIAL_MS = 5 * 60 * 1000;
+    /** Storage key holding the next retry interval (ms) after a
+     *  failed alarm-driven emit. Absent ⇒ last run succeeded. */
+    static readonly RECONCILE_RETRY_KEY = 'reconcile:nextRetryMs';
+
+    /**
+     * Schedule the first reconciliation alarm if one isn't already
+     * set. Called at the tail of every successful push so a freshly-
+     * created DO picks up the schedule on its first interaction; a
+     * pre-existing DO that came up before ADR 0007 also picks it up
+     * on its next push. Idempotent — `getAlarm()` returns the
+     * scheduled time, not a count, so we only set when there's no
+     * pending alarm.
+     */
+    private async ensureReconcileAlarm(): Promise<void> {
+        const existing = await this.ctx.storage.getAlarm();
+        if (existing !== null) return;
+        await this.ctx.storage.setAlarm(
+            Date.now() + DjibbList.RECONCILE_HEALTHY_MS
+        );
+    }
+
+    /**
+     * Reconciliation handler invoked by Cloudflare on the scheduled
+     * alarm. Per ADR 0007:
+     *
+     *   1. Look up this DO's entity ID. If there isn't one, the DO
+     *      was scheduled before it owned an entity (shouldn't
+     *      happen, but defensive); skip and re-arm.
+     *   2. Read D1's current version. If it matches the DO's,
+     *      nothing to do — re-arm at the healthy cadence.
+     *   3. Otherwise (drift or missing row) call the same
+     *      `emitEntitySnapshot()` the push path uses. The version-
+     *      guarded upsert handles concurrent writers.
+     *   4. On success: clear retry state, re-arm at healthy.
+     *      On failure: re-arm at the retry interval (exp backoff
+     *      capped at healthy) so a transient outage doesn't stick.
+     *
+     * The alarm is the only writer of `RECONCILE_RETRY_KEY`. Push
+     * handlers don't touch retry state — a fresh successful push
+     * implicitly proves D1 is reachable, but we wait until the next
+     * alarm to observe that rather than racing it.
+     */
+    async alarm(): Promise<void> {
+        const entityId = getEntityId(this.sql);
+        if (!entityId) {
+            console.warn('`alarm()` no entity row; re-arming at healthy');
+            await this.ctx.storage.setAlarm(
+                Date.now() + DjibbList.RECONCILE_HEALTHY_MS
+            );
+            return;
+        }
+
+        const entity = getElementById(this.sql, entityId);
+        const doVersion =
+            entity && (entity.type === 'list' || entity.type === 'template')
+                ? entity.version
+                : null;
+
+        let nextDelayMs = DjibbList.RECONCILE_HEALTHY_MS;
+        try {
+            const d1Version = await GetEntityVersion(
+                (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+                entityId
+            );
+
+            if (d1Version !== null && d1Version === doVersion) {
+                // Steady state — D1 already mirrors the DO. The
+                // skip path is the 99% case and what makes the
+                // alarm budget cheap. ADR 0007.
+                console.log(
+                    `\`alarm()\` no drift (v=${doVersion}); skipping emit`
+                );
+            } else {
+                console.log(
+                    `\`alarm()\` drift: do=${doVersion} d1=${d1Version}; emitting`
+                );
+                await this.emitEntitySnapshot(entityId);
+                // emitEntitySnapshot swallows its own errors; we
+                // can't observe the failure here without
+                // restructuring. Best-effort: assume success and
+                // let the next alarm catch persistent failures via
+                // the same drift detection. Retry-on-throw is for
+                // failures bubbling out of GetEntityVersion etc.
+            }
+
+            await this.ctx.storage.delete(DjibbList.RECONCILE_RETRY_KEY);
+        } catch (error) {
+            console.error('`alarm()` reconciliation threw:', error);
+            const prev =
+                (await this.ctx.storage.get<number>(
+                    DjibbList.RECONCILE_RETRY_KEY
+                )) ?? DjibbList.RECONCILE_RETRY_INITIAL_MS;
+            nextDelayMs = Math.min(prev * 2, DjibbList.RECONCILE_HEALTHY_MS);
+            await this.ctx.storage.put(
+                DjibbList.RECONCILE_RETRY_KEY,
+                nextDelayMs
+            );
+        }
+
+        await this.ctx.storage.setAlarm(Date.now() + nextDelayMs);
     }
 
     /**

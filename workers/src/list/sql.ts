@@ -384,6 +384,28 @@ export function InitializeTables(
 //     );
 // }
 
+/**
+ * ID of the list/template entity this DO serves. Each DO holds exactly
+ * one entity row (`type IN ('list','template')`); used by alarm-driven
+ * reconciliation (ADR 0007) which has no caller-supplied entityId.
+ *
+ * Returns null if the DO has not been initialized yet (no entity row).
+ */
+export function getEntityId(sql: SqlStorage): string | null {
+    const cursor = sql.exec(
+        `SELECT id
+        FROM list_elements
+        WHERE type IN ('list', 'template')
+        LIMIT 1;`
+    );
+
+    const result = cursor.next();
+    if (result.done) return null;
+
+    const id = result.value['id'];
+    return typeof id === 'string' ? id : null;
+}
+
 export function getListVersion(sql: SqlStorage) {
     const cursor = sql.exec(
         `SELECT version

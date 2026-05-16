@@ -53,6 +53,27 @@ function parseRow(row: any): EntityRow {
     return parsed.data;
 }
 
+/**
+ * Read just the `version` column for an entity. Used by the alarm-
+ * driven reconciliation sweeper (ADR 0007) to decide whether the
+ * full snapshot upsert is necessary — when D1's version already
+ * matches the DO's, the upsert is skipped and the alarm re-arms.
+ *
+ * Returns null when the row doesn't exist (D1 missing the entity
+ * entirely — drift the alarm needs to repair via an unconditional
+ * emit).
+ */
+export async function GetEntityVersion(
+    d1: D1Database,
+    id: string,
+): Promise<number | null> {
+    const row = await d1
+        .prepare(`SELECT version FROM workspace_entities WHERE id = ? LIMIT 1`)
+        .bind(id)
+        .first<{ version: number }>();
+    return row?.version ?? null;
+}
+
 export async function GetEntity(
     d1: D1Database,
     id: string,
