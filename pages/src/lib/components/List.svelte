@@ -552,6 +552,22 @@
 			id="quick_add_list_item-name"
 			name="name"
 			placeholder="new item"
+			onkeydown={(e) => {
+				// After a successful submit we refocus this input so the
+				// user can keep adding items. That leaves focus inside an
+				// <input>, where the global Cmd+Z keymap defers to native
+				// text-undo (global.js skips editable targets). When the
+				// field is empty there's no in-progress edit to preserve,
+				// so route Cmd+Z / Cmd+Shift+Z to the app undo runtime —
+				// the user's intent is "undo the item I just added".
+				const mod = e.metaKey || e.ctrlKey;
+				if (!mod) return;
+				if (e.key.toLowerCase() !== 'z') return;
+				if (e.currentTarget.value !== '') return;
+				e.preventDefault();
+				if (e.shiftKey) void undoRuntime.redo();
+				else void undoRuntime.undo();
+			}}
 		/>
 	</form>
 {/snippet}
