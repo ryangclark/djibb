@@ -151,3 +151,71 @@ describe('ListOwnedEntities', () => {
         expect(result.map(e => e.id)).toEqual([newId_, oldId]);
     });
 });
+
+// Version-guarded upsert per ADR 0007. The post-commit emit path is
+// the only writer today, but the reconciliation sweeper will become a
+// second concurrent writer; the guard ensures a stale emit cannot
+// roll back a fresh one.
+describe('EmitEntitySnapshotToCatalog (version guard)', () => {
+    async function read(id: string) {
+        const row = await env.DJIBB_AUTH.prepare(
+            'SELECT name, version FROM workspace_entities WHERE id = ?',
+        )
+            .bind(id)
+            .first<{ name: string; version: number }>();
+        return row;
+    }
+
+    function makeSnapshot(id: string, name: string, version: number) {
+        const now = Math.floor(Date.now() / 1000);
+        return {
+            id,
+            workspace_id: null,
+            type: 'list' as const,
+            name,
+            description: null,
+            forked_from_id: null,
+            authorization_rules: {
+                authorized_accounts: {},
+                default_role: 'ownerless' as const,
+                set_by: 'defaults' as const,
+            },
+            time_created: now,
+            time_updated: now,
+            time_deleted: null,
+            version,
+        };
+    }
+
+    it('applies the update when excluded.version > current version', async () => {
+        const id = newId('list');
+        await EmitEntitySnapshotToCatalog(env.DJIBB_AUTH, makeSnapshot(id, 'v1', 1));
+        await EmitEntitySnapshotToCatalog(env.DJIBB_AUTH, makeSnapshot(id, 'v2', 2));
+        const row = await read(id);
+        expect(row?.name).toBe('v2');
+        expect(row?.version).toBe(2);
+    });
+
+    it('applies the update when excluded.version == current version (retry-safe)', async () => {
+        // Re-emitting the same version (e.g. sweeper retry) replays
+        // current state. Useful for content-only repairs without
+        // bumping the DO's version counter.
+        const id = newId('list');
+        await EmitEntitySnapshotToCatalog(env.DJIBB_AUTH, makeSnapshot(id, 'v1', 1));
+        await EmitEntitySnapshotToCatalog(env.DJIBB_AUTH, makeSnapshot(id, 'v1-replay', 1));
+        const row = await read(id);
+        expect(row?.name).toBe('v1-replay');
+        expect(row?.version).toBe(1);
+    });
+
+    it('silently no-ops when excluded.version < current version', async () => {
+        // Sweeper reads DO version 5 → fresh mutation lands version 6
+        // and emits → sweeper's late emit (version 5) MUST NOT clobber.
+        const id = newId('list');
+        await EmitEntitySnapshotToCatalog(env.DJIBB_AUTH, makeSnapshot(id, 'fresh', 6));
+        await EmitEntitySnapshotToCatalog(env.DJIBB_AUTH, makeSnapshot(id, 'stale', 5));
+        const row = await read(id);
+        expect(row?.name).toBe('fresh');
+        expect(row?.version).toBe(6);
+    });
+});

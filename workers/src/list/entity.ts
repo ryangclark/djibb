@@ -95,7 +95,14 @@ export type EntitySnapshot = {
  * event with type-tag and prior values.
  *
  * Idempotent. Safe to retry. Failures are logged by the caller and
- * recovered by the next emit (or a future sweeper).
+ * recovered by the next emit (or the reconciliation sweeper per
+ * ADR 0007).
+ *
+ * Version-guarded: the DO UPDATE only fires when `excluded.version`
+ * (the version being emitted) is at least as high as the version
+ * currently in D1. Prevents a stale emit — for instance, an alarm-
+ * driven reconciliation that read DO version N concurrently with a
+ * fresh mutation landing N+1 — from downgrading the read index.
  */
 export async function EmitEntitySnapshotToCatalog(
     d1: D1Database,
@@ -116,7 +123,8 @@ export async function EmitEntitySnapshotToCatalog(
                 authorization_rules = excluded.authorization_rules,
                 time_updated = excluded.time_updated,
                 time_deleted = excluded.time_deleted,
-                version = excluded.version`,
+                version = excluded.version
+             WHERE excluded.version >= workspace_entities.version`,
         )
         .bind(
             snapshot.id,

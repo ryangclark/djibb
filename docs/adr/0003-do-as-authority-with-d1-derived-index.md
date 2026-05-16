@@ -167,12 +167,13 @@ Adding a new metadata mutator is now genuinely mechanical — see
   the entity row only; items under it stay in the DO. A
   workspace-level delete that fans out to entity DOs is not yet
   designed.
-- **D1 reconciliation sweeper.** Still open and now the most
-  pressing piece — every metadata mutator depends on the
-  post-commit emit succeeding, and there is no backstop if D1 is
-  unreachable for an extended window. The synchronous emit on the
-  push request masks this for typical traffic; a sweeper makes the
-  guarantee real.
+- **D1 reconciliation sweeper.** Resolved by ADR 0007 — per-DO
+  alarm at 24h cadence, read-then-maybe-write skip, version-guarded
+  upsert. Synchronous post-commit emit stays the fast path; the
+  alarm is the recovery backstop. Version guard on
+  `EmitEntitySnapshotToCatalog` lands ahead of the alarm work as a
+  prerequisite fix for the upsert's downgrade hazard under
+  concurrent writers.
 - **Migration plan.** No longer relevant in the way the original
   ADR framed it. Production surface is still small enough that
   fresh DO storage is the migration story; the metadata mutators
