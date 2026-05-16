@@ -18,6 +18,13 @@
  * @property {string} inverseName
  * @property {Record<string, unknown>} inverseArgs
  * @property {number} timestamp
+ * @property {number} [mutationID]
+ *   Replicache mutationID of the forward, captured at push time.
+ *   Lets the outcome channel prune this entry when the server
+ *   reports `auth`/`stale`/`gone` for the same mutationID — i.e.
+ *   the forward never landed, so there's nothing to inverse.
+ *   Optional because pendingMutations capture is best-effort
+ *   (race: a mutation can push+ack before we read pending).
  */
 
 /** Maximum entries kept in the undo stack. ADR 0005. */
@@ -109,6 +116,22 @@ export function pushWithLimit(stack, entry, limit = STACK_LIMIT) {
         return next.slice(next.length - limit);
     }
     return next;
+}
+
+/**
+ * Remove every entry whose forward was rejected. Used by the outcome
+ * channel: when the server reports `auth`/`stale`/`gone` for a
+ * mutationID, the matching entry (if any) is dropped because its
+ * forward never took effect — inversing it would clobber unrelated
+ * state. Returns `[nextStack, removedCount]`.
+ *
+ * @param {Entry[]} stack
+ * @param {number} mutationID
+ * @returns {[Entry[], number]}
+ */
+export function pruneByMutationID(stack, mutationID) {
+    const next = stack.filter((e) => e.mutationID !== mutationID);
+    return [next, stack.length - next.length];
 }
 
 /**

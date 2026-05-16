@@ -9,6 +9,7 @@ import {
     coalesceReorderEntry,
     loadStack,
     popLast,
+    pruneByMutationID,
     pushWithLimit,
     saveStack,
     stackStorageKey,
@@ -134,6 +135,44 @@ describe('loadStack / saveStack', () => {
 
     it('saveStack on undefined storage is a no-op (no throw)', () => {
         expect(() => saveStack(undefined, 'k', [])).not.toThrow();
+    });
+});
+
+describe('pruneByMutationID', () => {
+    function tagged(name: string, mutationID: number | undefined) {
+        return { ...entry(name), mutationID };
+    }
+
+    it('removes the entry whose mutationID matches', () => {
+        const stack = [tagged('a', 1), tagged('b', 2), tagged('c', 3)];
+        const [next, removed] = pruneByMutationID(stack, 2);
+        expect(removed).toBe(1);
+        expect(next.map(e => e.forwardName)).toEqual(['a', 'c']);
+    });
+
+    it('removes nothing when no entry matches', () => {
+        const stack = [tagged('a', 1), tagged('b', 2)];
+        const [next, removed] = pruneByMutationID(stack, 999);
+        expect(removed).toBe(0);
+        expect(next).toEqual(stack);
+    });
+
+    it('leaves untagged entries (capture race) alone', () => {
+        // mutationID undefined ↔ best-effort capture missed it. Such
+        // entries are never pruned by outcome events.
+        const stack = [tagged('a', undefined), tagged('b', 5)];
+        const [next, removed] = pruneByMutationID(stack, 5);
+        expect(removed).toBe(1);
+        expect(next.map(e => e.forwardName)).toEqual(['a']);
+    });
+
+    it('removes all entries that share an id (defensive)', () => {
+        // Shouldn't happen — IDs are unique per client — but the
+        // filter is permissive so duplicates would all go.
+        const stack = [tagged('a', 7), tagged('b', 7), tagged('c', 8)];
+        const [next, removed] = pruneByMutationID(stack, 7);
+        expect(removed).toBe(2);
+        expect(next.map(e => e.forwardName)).toEqual(['c']);
     });
 });
 

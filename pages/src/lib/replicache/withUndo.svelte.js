@@ -8,6 +8,7 @@ import {
 import {
     loadStack,
     popLast,
+    pruneByMutationID,
     pushWithLimit,
     saveStack,
     stackStorageKey,
@@ -130,7 +131,44 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
                     }
                 }
 
+                // Snapshot pending mutationIDs before the call so we
+                // can identify the new one after. Per-client IDs are
+                // monotonic, so any id we see post-await that wasn't
+                // in `beforeIds` belongs to a mutation queued during
+                // (or by) this call.
+                /** @type {Set<number>} */
+                let beforeIds = new Set();
+                try {
+                    const before = await client.experimentalPendingMutations();
+                    beforeIds = new Set(before.map((p) => p.id));
+                } catch (err) {
+                    console.warn(`[withUndo] pendingMutations pre-snapshot threw:`, err);
+                }
+
                 const result = await mutate[name](body);
+
+                // Find our mutationID. Best-effort: if a fast
+                // push+ack already removed it from pending, we
+                // proceed without an ID and lose the prune-on-failure
+                // affordance for this entry only.
+                /** @type {number | undefined} */
+                let mutationID = undefined;
+                try {
+                    const after = await client.experimentalPendingMutations();
+                    for (const p of after) {
+                        if (beforeIds.has(p.id)) continue;
+                        if (p.name !== name) continue;
+                        // Highest matching new id wins — concurrent
+                        // mutates of the same name resolve in queue
+                        // order, so the most recent one belongs to
+                        // the just-awaited call.
+                        if (mutationID === undefined || p.id > mutationID) {
+                            mutationID = p.id;
+                        }
+                    }
+                } catch (err) {
+                    console.warn(`[withUndo] pendingMutations post-snapshot threw:`, err);
+                }
 
                 if (moduleEntry.inverse) {
                     const inv = moduleEntry.inverse(body, preState);
@@ -142,7 +180,8 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
                             inverseArgs: /** @type {Record<string, unknown>} */ (
                                 inv.args
                             ),
-                            timestamp: Date.now()
+                            timestamp: Date.now(),
+                            mutationID
                         };
                         // Reorder coalescing: same target within 500ms
                         // replaces the top entry rather than stacking
@@ -232,15 +271,21 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
      * `mutation_outcome` WS frame; the runtime maps the wire shape
      * to a discriminated toast event for the UI.
      *
-     * ADR 0005's follow-on cleanup (prune entries whose forward
-     * `auth`/`gone`'d server-side) is a B.2.x TODO — requires
-     * associating Replicache mutationIDs with stack entries.
+     * Pruning: when the server rejects a mutation
+     * (`auth`/`stale`/`gone`), the forward never landed, so any
+     * undo/redo entry tagged with that mutationID is invalid —
+     * inversing would clobber unrelated state. Drop it from
+     * whichever stack it lives on before emitting the toast.
      *
      * @param {{status: 'auth' | 'stale' | 'gone', mutationID: number}} event
      */
     function handleOutcome(event) {
-        // TODO(B.2.x): tag stack entries with the Replicache mutationID
-        // they emit so we can prune on auth/gone outcomes.
+        const [prunedStack, undoRemoved] = pruneByMutationID(stack, event.mutationID);
+        if (undoRemoved > 0) commitStack(prunedStack);
+
+        const [prunedRedo, redoRemoved] = pruneByMutationID(redoStack, event.mutationID);
+        if (redoRemoved > 0) redoStack = prunedRedo;
+
         onToast?.({
             kind: event.status,
             mutationID: event.mutationID,
