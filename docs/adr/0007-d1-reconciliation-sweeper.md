@@ -222,13 +222,14 @@ above. The two designs compose.
   sink when there's somewhere to send it.
 - **Cross-D1 orphan sweep.** Deferred to its own follow-up; will
   most naturally hang off `scheduled` once the workspace DO lands
-  and the deletion semantics in ADR cascade-delete (TBD) are
-  decided.
-- **Coordination with cascade-delete.** When `archiveList` someday
-  fan-outs to items, the alarm-driven emit must continue to be
-  monotonic by `version`. No conflict expected — the items are not
-  in `workspace_entities` — but worth re-checking when that ADR
-  lands.
+  and ADR 0008's hard-delete pipeline produces orphans to sweep.
+- **Coordination with cascade-delete.** Resolved by ADR 0008:
+  cascade is entity-level only (does not fan-out to items inside
+  a List), and the cascade-archive bumps `version` monotonically
+  on the entity row, so the alarm-driven emit invariant holds
+  unchanged. The dispatcher refactor in ADR 0008 generalizes this
+  ADR's single-event alarm into a multi-event handler; the
+  reconciliation event is one entry in that dispatcher.
 
 ## References
 
