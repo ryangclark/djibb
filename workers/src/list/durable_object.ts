@@ -499,11 +499,21 @@ export class DjibbList extends DurableObject {
         // Emit current entity snapshot to the D1 read index (ADR 0003).
         // Synchronous on the request: the worker's middleware reads D1
         // for auth on subsequent requests, so the next round-trip needs
-        // D1 to be caught up. Failures are logged and recovered on the
-        // next emit, or on the next reconciliation alarm (ADR 0007);
-        // the DO state is already committed and authoritative.
+        // D1 to be caught up. The push path is fire-and-pray on failure
+        // — the DO is already committed and authoritative, and the
+        // reconciliation alarm (ADR 0007) repairs persistent drift.
+        // We catch here rather than letting the throw mark the push
+        // failed, since a successful mutation should still ack to the
+        // client even if its D1 projection lagged.
         if (entityMetadataMutated) {
-            await this.emitEntitySnapshot(listId);
+            try {
+                await this.emitEntitySnapshot(listId);
+            } catch (error) {
+                console.error(
+                    `\`emitEntitySnapshot()\` D1 emit failed for "${listId}":`,
+                    error
+                );
+            }
         }
 
         // Bootstrap the reconciliation alarm per ADR 0007. Idempotent;
@@ -782,8 +792,18 @@ export class DjibbList extends DurableObject {
      * diff event — the catalog only needs latest state. When the event
      * bus arrives this becomes one subscriber on a fan-out.
      *
-     * Failure is logged but not fatal: the DO's state is already
-     * committed, and the next mutation that touches metadata re-emits.
+     * Throws on D1 emit failure so callers can decide how to react —
+     * the push-path caller logs and moves on (fire-and-pray; the DO
+     * is already committed, the alarm sweeper will catch persistent
+     * drift), while the alarm-path caller lets the throw bubble to
+     * its retry-backoff handler. Previously this method swallowed
+     * the error itself, which silently masked emit failures from the
+     * alarm path's retry logic (ADR 0007).
+     *
+     * The "entity row missing in this DO's own sql" branch is a
+     * separate concern: it's an invariant violation, not a transient
+     * fault, so retry would not help. Logged-and-returned, not
+     * thrown.
      */
     private async emitEntitySnapshot(entityId: string): Promise<void> {
         const entity = getElementById(this.sql, entityId);
@@ -794,35 +814,28 @@ export class DjibbList extends DurableObject {
             return;
         }
 
-        try {
-            await EmitEntitySnapshotToCatalog(
-                (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
-                {
-                    id: entity.id,
-                    workspace_id: entity.workspace_id,
-                    type: entity.type,
-                    name: entity.name,
-                    description: entity.description ?? null,
-                    forked_from_id: entity.forked_from_id,
-                    authorization_rules: entity.authorization_rules,
-                    time_created: Math.floor(
-                        entity.time_created.getTime() / 1000
-                    ),
-                    time_updated: Math.floor(
-                        entity.time_updated.getTime() / 1000
-                    ),
-                    time_deleted: entity.time_deleted
-                        ? Math.floor(entity.time_deleted.getTime() / 1000)
-                        : null,
-                    version: entity.version,
-                }
-            );
-        } catch (error) {
-            console.error(
-                `\`emitEntitySnapshot()\` D1 emit failed for "${entityId}":`,
-                error
-            );
-        }
+        await EmitEntitySnapshotToCatalog(
+            (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+            {
+                id: entity.id,
+                workspace_id: entity.workspace_id,
+                type: entity.type,
+                name: entity.name,
+                description: entity.description ?? null,
+                forked_from_id: entity.forked_from_id,
+                authorization_rules: entity.authorization_rules,
+                time_created: Math.floor(
+                    entity.time_created.getTime() / 1000
+                ),
+                time_updated: Math.floor(
+                    entity.time_updated.getTime() / 1000
+                ),
+                time_deleted: entity.time_deleted
+                    ? Math.floor(entity.time_deleted.getTime() / 1000)
+                    : null,
+                version: entity.version,
+            }
+        );
     }
 
     /**
@@ -915,22 +928,27 @@ export class DjibbList extends DurableObject {
                     `\`alarm()\` drift: do=${doVersion} d1=${d1Version}; emitting`
                 );
                 await this.emitEntitySnapshot(entityId);
-                // emitEntitySnapshot swallows its own errors; we
-                // can't observe the failure here without
-                // restructuring. Best-effort: assume success and
-                // let the next alarm catch persistent failures via
-                // the same drift detection. Retry-on-throw is for
-                // failures bubbling out of GetEntityVersion etc.
+                // emitEntitySnapshot throws on D1 failure; the throw
+                // propagates to the outer catch below, which records
+                // the retry interval and re-arms at backoff. A
+                // persistent emit failure now drives the retry loop
+                // instead of silently waiting 24h for the next pass.
             }
 
             await this.ctx.storage.delete(DjibbList.RECONCILE_RETRY_KEY);
         } catch (error) {
             console.error('`alarm()` reconciliation threw:', error);
-            const prev =
-                (await this.ctx.storage.get<number>(
-                    DjibbList.RECONCILE_RETRY_KEY
-                )) ?? DjibbList.RECONCILE_RETRY_INITIAL_MS;
-            nextDelayMs = Math.min(prev * 2, DjibbList.RECONCILE_HEALTHY_MS);
+            // First failure: store the initial interval. Subsequent
+            // consecutive failures: double the previous, capped at
+            // the healthy cadence. Matches ADR 0007's "starting at
+            // 5 minutes" phrasing.
+            const prev = await this.ctx.storage.get<number>(
+                DjibbList.RECONCILE_RETRY_KEY
+            );
+            nextDelayMs =
+                prev === undefined
+                    ? DjibbList.RECONCILE_RETRY_INITIAL_MS
+                    : Math.min(prev * 2, DjibbList.RECONCILE_HEALTHY_MS);
             await this.ctx.storage.put(
                 DjibbList.RECONCILE_RETRY_KEY,
                 nextDelayMs

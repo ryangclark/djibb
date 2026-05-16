@@ -4,7 +4,11 @@ import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes } from '../src/id';
-import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
+import {
+    ensureD1Schema,
+    resetWorkspaceData,
+    withMissingEntitiesTable,
+} from './helpers/d1';
 
 // ADR 0007: D1 reconciliation sweeper via DO alarms. Verifies the
 // per-DO alarm() handler (skip-when-matched, emit-on-drift) and the
@@ -280,6 +284,61 @@ describe('reconciliation alarm handler', () => {
         expect(await readD1Version(listId)).toBe(doVersion);
         // Stale name overwritten by the DO's current name (empty by default).
         expect(await readD1Name(listId)).not.toBe('stale-name');
+    });
+
+    it('persists a retry interval and re-arms at backoff when the emit throws', async () => {
+        const { listId, stub } = getListStub('retry2');
+
+        await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'ownerless',
+            listId,
+            pushRequest: makeInitListPush({
+                clientGroupID: 'cg_retry_2',
+                clientID: 'c_retry_2',
+                listId,
+            }),
+        });
+
+        // Force drift so the alarm path attempts an emit (rather
+        // than taking the skip-when-matched branch). Without this
+        // the alarm would see D1 == DO version and never call
+        // emitEntitySnapshot at all.
+        await env.DJIBB_AUTH.prepare(
+            'UPDATE workspace_entities SET version = 0 WHERE id = ?',
+        )
+            .bind(listId)
+            .run();
+
+        const beforeAlarm = Date.now();
+
+        await withMissingEntitiesTable(async () => {
+            await runInDurableObject(stub, (instance, _state) =>
+                instance.alarm(),
+            );
+        });
+
+        const afterAlarm = Date.now();
+
+        // Retry interval was persisted (starts at the initial
+        // backoff per ADR 0007).
+        const retry = await runInDurableObject(stub, (_i, state) =>
+            state.storage.get<number>(DjibbList.RECONCILE_RETRY_KEY),
+        );
+        expect(retry).toBe(DjibbList.RECONCILE_RETRY_INITIAL_MS);
+
+        // Alarm re-armed at the retry interval, not the healthy
+        // cadence.
+        const next = await runInDurableObject(stub, (_i, state) =>
+            state.storage.getAlarm(),
+        );
+        expect(next).not.toBeNull();
+        expect(next!).toBeGreaterThanOrEqual(
+            beforeAlarm + DjibbList.RECONCILE_RETRY_INITIAL_MS,
+        );
+        expect(next!).toBeLessThanOrEqual(
+            afterAlarm + DjibbList.RECONCILE_RETRY_INITIAL_MS,
+        );
     });
 
     it('clears any persisted retry interval after a successful run', async () => {

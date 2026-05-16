@@ -42,6 +42,25 @@ export async function ensureD1Schema(): Promise<void> {
     }
 }
 
+/**
+ * Run `fn` with the `workspace_entities` table dropped, so any UPSERT
+ * against it inside `fn` throws a SQL error. Used to exercise alarm
+ * retry-on-failure paths (ADR 0007). The table is recreated from the
+ * migration on the way out, even on throw.
+ */
+export async function withMissingEntitiesTable<T>(
+    fn: () => Promise<T>,
+): Promise<T> {
+    await env.DJIBB_AUTH.exec('DROP TABLE IF EXISTS workspace_entities');
+    try {
+        return await fn();
+    } finally {
+        for (const stmt of splitStatements(migration0004)) {
+            await env.DJIBB_AUTH.exec(stmt.replace(/\n/g, ' '));
+        }
+    }
+}
+
 /** Wipe rows from the workspace-related tables between tests. */
 export async function resetWorkspaceData(): Promise<void> {
     await env.DJIBB_AUTH.batch([
