@@ -87,6 +87,21 @@
 	});
 
 	let suffix = $derived(data.list_id.split('/', 2)[1] ?? '');
+
+	/**
+	 * Pending invitations on this entity, surfaced by the
+	 * `pending_invites/*` Replicache keyspace (ADR 0009 Slice 2).
+	 * Only visible to owners/admins — the pull filter elides the
+	 * keyspace for everyone else, so this array is naturally empty
+	 * for non-managers.
+	 *
+	 * @type {import('$lib/components/Share.svelte').PendingInvite[]}
+	 */
+	let pendingInvites = $derived(
+		Object.entries(list_data)
+			.filter(([k]) => k.startsWith('pending_invites/'))
+			.map(([, v]) => /** @type {any} */ (v))
+	);
 </script>
 
 <svelte:head>
@@ -101,6 +116,7 @@
 		mutators={mutators}
 		currentAccountId={sessionState.currentAccountId}
 		backHref={`/l/${suffix}`}
+		{pendingInvites}
 	/>
 {:else}
 	<p class="loading">Loading list…</p>

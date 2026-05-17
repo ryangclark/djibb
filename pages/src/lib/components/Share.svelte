@@ -52,6 +52,16 @@
 	const OWNER_ROLES = ['admin', 'owner'];
 
 	/**
+	 * @typedef {Object} PendingInvite
+	 * @property {'email'} identity_kind
+	 * @property {string} identity_value
+	 * @property {import('$djibb/auth/rules').AccountRole} role
+	 * @property {string} inviter_account_id
+	 * @property {number} time_created  unix seconds
+	 * @property {number} time_expires  unix seconds
+	 */
+
+	/**
 	 * @typedef {Object} Props
 	 * @property {string} entityId
 	 * @property {'list' | 'template'} entityType
@@ -62,11 +72,24 @@
 	 * @property {import('$lib/replicache/types').ClientListMutators} mutators
 	 * @property {string | null} currentAccountId
 	 * @property {string} backHref
+	 * @property {PendingInvite[]} [pendingInvites]
+	 *   Live pending invitations on this entity, surfaced by the
+	 *   `pending_invites/*` Replicache keyspace (ADR 0009 Slice 2).
+	 *   Visible only to owners/admins per the role-gated pull filter;
+	 *   passed in by the route which filters `list_data` for keys
+	 *   beginning with `pending_invites/`.
 	 */
 
 	/** @type {Props} */
-	let { entityId, entityType, entity, mutators, currentAccountId, backHref } =
-		$props();
+	let {
+		entityId,
+		entityType,
+		entity,
+		mutators,
+		currentAccountId,
+		backHref,
+		pendingInvites = []
+	} = $props();
 
 	// Snapshot of the rules at page load. The save call passes this
 	// as `expected` so the server CAS catches a concurrent admin's
@@ -221,6 +244,63 @@
 	function cancelDemotion() {
 		pendingDemotion = null;
 	}
+
+	// Pending-invitation revoke flow. The mutator goes through the
+	// standard Replicache push — no HTTP preflight gate (unlike
+	// `inviteByIdentity` / `acceptInvitation`), so failures flow back
+	// through the outcome channel as usual. Owners/admins only; the
+	// pull filter wouldn't have surfaced the rows otherwise.
+	let revoking = $state(/** @type {Set<string>} */ (new Set()));
+	let revokeError = $state(/** @type {string | null} */ (null));
+
+	let pendingInviteRows = $derived(
+		(pendingInvites ?? [])
+			.slice()
+			.sort((a, b) => a.time_created - b.time_created)
+	);
+
+	/** @param {PendingInvite} invite */
+	async function revoke(invite) {
+		revokeError = null;
+		const key = `${invite.identity_kind}|${invite.identity_value}`;
+		if (revoking.has(key)) return;
+		revoking.add(key);
+		revoking = new Set(revoking);
+
+		const result = await tryCatchAsync(
+			mutators.revokeInvitation({
+				listId: entityId,
+				identity_kind: invite.identity_kind,
+				identity_value: invite.identity_value
+			})
+		);
+
+		revoking.delete(key);
+		revoking = new Set(revoking);
+
+		if (result.error) {
+			revokeError = `Failed to revoke: ${result.error.message ?? result.error}`;
+		}
+	}
+
+	/**
+	 * Format unix seconds as a relative-ish label suitable for the
+	 * row metadata ("expires in 6 days", "expired"). Cheap; no date
+	 * library — the UI just needs a glanceable hint.
+	 * @param {number} timeExpiresSeconds
+	 */
+	function expiryLabel(timeExpiresSeconds) {
+		const nowSec = Math.floor(Date.now() / 1000);
+		const deltaSec = timeExpiresSeconds - nowSec;
+		if (deltaSec <= 0) return 'expired';
+		const days = Math.floor(deltaSec / 86400);
+		if (days >= 2) return `expires in ${days} days`;
+		if (days === 1) return 'expires tomorrow';
+		const hours = Math.floor(deltaSec / 3600);
+		if (hours >= 2) return `expires in ${hours}h`;
+		if (hours === 1) return 'expires in 1h';
+		return 'expires soon';
+	}
 </script>
 
 <svelte:head>
@@ -325,6 +405,54 @@
 			changed or be removed.
 		</p>
 	</section>
+
+	{#if canManage}
+		<section>
+			<h2>Pending invitations</h2>
+			{#if pendingInviteRows.length === 0}
+				<p class="hint">
+					No invitations are currently pending. Once you send
+					one, it'll appear here until the recipient accepts
+					it or you revoke it.
+				</p>
+			{:else}
+				<ul class="account-list">
+					{#each pendingInviteRows as invite (`${invite.identity_kind}|${invite.identity_value}`)}
+						{@const key = `${invite.identity_kind}|${invite.identity_value}`}
+						{@const isExpired =
+							invite.time_expires <
+							Math.floor(Date.now() / 1000)}
+						<li>
+							<span class="account-id">
+								<code>{invite.identity_value}</code>
+								<span class="role-badge">
+									{ROLE_LABELS[invite.role] ?? invite.role}
+								</span>
+								<span
+									class="expiry"
+									class:expired={isExpired}
+								>
+									{expiryLabel(invite.time_expires)}
+								</span>
+							</span>
+							<span class="placeholder-cell"></span>
+							<button
+								type="button"
+								class="remove"
+								disabled={revoking.has(key)}
+								onclick={() => revoke(invite)}
+							>
+								{revoking.has(key) ? 'Revoking…' : 'Revoke'}
+							</button>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+			{#if revokeError}
+				<p class="error" role="alert">{revokeError}</p>
+			{/if}
+		</section>
+	{/if}
 
 	{#if errorMsg}
 		<p class="error" role="alert">{errorMsg}</p>
@@ -492,6 +620,27 @@
 		font-size: 0.7rem;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
+	}
+	.role-badge {
+		margin-left: 0.4rem;
+		padding: 0.05rem 0.4rem;
+		border-radius: 999px;
+		background: rgba(0, 0, 0, 0.06);
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+	.expiry {
+		margin-left: 0.4rem;
+		font-size: 0.75rem;
+		opacity: 0.6;
+	}
+	.expiry.expired {
+		color: rgb(160, 0, 0);
+		opacity: 1;
+	}
+	.placeholder-cell {
+		display: inline-block;
 	}
 	.remove {
 		background: transparent;
