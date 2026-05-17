@@ -127,9 +127,9 @@ describe('archiveList end-to-end', () => {
         expect(row.time_deleted).not.toBeNull();
         expect(row.version).toBe(2);
 
-        // A pull from cookie=1 (i.e. "I have version 1") sees the
-        // archived row's bumped version and emits a `del` op so the
-        // client drops the entity from its store.
+        // A pull from v=1 ("I have version 1") sees the archived row's
+        // bumped version and emits a `del` op so the client drops the
+        // entity from its store.
         const pullResult = await stub.handlePull({
             authorizedRole: 'ownerless',
             listId,
@@ -137,7 +137,7 @@ describe('archiveList end-to-end', () => {
                 pullVersion: 1,
                 profileID: 'p_test',
                 clientGroupID,
-                cookie: 1,
+                cookie: { v: 1, r: 'ownerless' },
                 schemaVersion: '1',
             },
         });
@@ -198,7 +198,7 @@ describe('setDescription end-to-end', () => {
                 pullVersion: 1,
                 profileID: 'p_test',
                 clientGroupID,
-                cookie: 0,
+                cookie: null,
                 schemaVersion: '1',
             },
         });

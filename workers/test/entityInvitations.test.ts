@@ -304,7 +304,7 @@ describe('revokeInvitation', () => {
         await resetWorkspaceData();
     });
 
-    it('hard-deletes the DO row and marks the D1 row revoked', async () => {
+    it('tombstones the DO row and marks the D1 row revoked', async () => {
         const { listId, stub } = getListStub('rev1');
         const clientGroupID = 'cg_rev_1';
         const clientID = 'c_rev_1';
@@ -351,13 +351,30 @@ describe('revokeInvitation', () => {
         });
         expect(revokeResult.error).toBeNull();
 
-        // DO: row is gone.
-        const doCount = await runInDurableObject(stub, async (_i, state) =>
+        // DO: ADR 0009 Slice 2 — revoke is soft-delete. The row
+        // survives with `time_deleted` set and `version` bumped so the
+        // pull keyspace can surface `op:'del'` to clients that had
+        // previously cached it.
+        const tombstone = await runInDurableObject(stub, async (_i, state) =>
             state.storage.sql
-                .exec(`SELECT COUNT(*) AS c FROM pending_invites;`)
+                .exec(
+                    `SELECT time_deleted, version FROM pending_invites;`
+                )
                 .one()
         );
-        expect(doCount.c).toBe(0);
+        expect(tombstone.time_deleted).not.toBeNull();
+        expect(tombstone.version).toBe(3);
+
+        // The active set (filtered by time_deleted IS NULL) is empty.
+        const liveCount = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(
+                    `SELECT COUNT(*) AS c FROM pending_invites
+                     WHERE time_deleted IS NULL;`
+                )
+                .one()
+        );
+        expect(liveCount.c).toBe(0);
 
         // D1: row is retained as audit, status flipped to revoked.
         const d1Rows = await env.DJIBB_AUTH.prepare(
@@ -447,10 +464,13 @@ describe('revokeInvitation', () => {
         expect(revokeResult.error).not.toBeNull();
         expect(revokeResult.error?.name).toMatch(/Unauthorized/i);
 
-        // Invite still present in both DO and D1.
+        // Invite still present in both DO and D1 (live, not tombstoned).
         const doCount = await runInDurableObject(stub, async (_i, state) =>
             state.storage.sql
-                .exec(`SELECT COUNT(*) AS c FROM pending_invites;`)
+                .exec(
+                    `SELECT COUNT(*) AS c FROM pending_invites
+                     WHERE time_deleted IS NULL;`
+                )
                 .one()
         );
         expect(doCount.c).toBe(1);

@@ -125,7 +125,7 @@ describe('renameList end-to-end', () => {
                 pullVersion: 1,
                 profileID: 'p_test',
                 clientGroupID,
-                cookie: 0,
+                cookie: null,
                 schemaVersion: '1',
             },
         });

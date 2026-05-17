@@ -46,6 +46,12 @@ import {
     ensurePendingInvitesTable,
     listPendingInvites,
 } from './invitations';
+import { LIST_PULL_KEYSPACES } from './pull';
+import {
+    appendKeyspacePatches,
+    encodePullCookie,
+    parsePullCookie,
+} from '../replicache/keyspaces';
 import { newId } from '../id';
 
 /**
@@ -196,13 +202,29 @@ export class DjibbList extends DurableObject {
             throw new UnauthorizedError();
         }
 
-        const requestVersion = pullRequest.cookie ?? 0;
+        // Cookie shape is `{v, r}` (entity version + the role this
+        // client last pulled as). `null` is the canonical fresh-pull
+        // form. Role transitions (promotion / demotion) are detected
+        // by comparing `previousRole` against the request's current
+        // `authorizedRole` to decide per-keyspace patches (ADR 0009).
+        const parsedCookie = parsePullCookie(pullRequest.cookie);
+        const requestVersion = parsedCookie.v;
+        const previousRole = parsedCookie.r;
 
         let listElements: Array<ListElement>;
 
-        // Init our response with default property values.
+        // Track the resolved entity version in a local; emit the
+        // role-versioned cookie shape once at the end via
+        // `encodePullCookie`. `-1` is the legacy bad-version sentinel;
+        // kept as the starting value so an early-return through one
+        // of the catch-and-return branches surfaces unchanged.
+        let resolvedEntityVersion = -1;
+
+        // Init our response with default property values. The cookie
+        // is set to the role-versioned shape just before return; -1
+        // here mirrors the legacy bad-version sentinel.
         const pullResponse: PullResponseOKV1 = {
-            cookie: -1, // Indicates bad version
+            cookie: -1,
             lastMutationIDChanges: {},
             patch: [],
         };
@@ -267,7 +289,7 @@ export class DjibbList extends DurableObject {
             for (const element of listElements) {
                 if (element.type === 'list' || element.type === 'template') {
                     foundListVersion = true;
-                    pullResponse.cookie = element.version;
+                    resolvedEntityVersion = element.version;
                     break;
                 }
             }
@@ -280,7 +302,7 @@ export class DjibbList extends DurableObject {
             if (entity?.type !== 'list' && entity?.type !== 'template') {
                 throw new NotFoundError(`entity not found: ${listId}`);
             }
-            pullResponse.cookie = entity.version;
+            resolvedEntityVersion = entity.version;
         }
 
         if (requestVersion === 0) {
@@ -319,8 +341,31 @@ export class DjibbList extends DurableObject {
             }
         }
 
+        // ADR 0009 Slice 2: append role-gated keyspaces (e.g.
+        // `pending_invites/*`). The orchestration handles promotion
+        // (full sync from version 0 if this role newly gained visibility),
+        // demotion (emit `del` for every key the prior role could see
+        // that the current role can't), and steady-state diffing.
+        pullResponse.patch.push(
+            ...appendKeyspacePatches({
+                keyspaces: LIST_PULL_KEYSPACES,
+                sql: this.sql,
+                currentRole: authorizedRole,
+                previousRole,
+                previousVersion: requestVersion,
+            })
+        );
+
+        // Emit the role-versioned cookie. The client carries it
+        // verbatim into the next pull, where its `r` powers the
+        // demotion-eviction path in the keyspaces orchestrator.
+        pullResponse.cookie = encodePullCookie({
+            v: resolvedEntityVersion,
+            r: authorizedRole,
+        });
+
         console.log(
-            `Patch count to get from v${requestVersion} to v${pullResponse.cookie}:`,
+            `Patch count to get from v${requestVersion} to v${resolvedEntityVersion}:`,
             pullResponse.patch.length
         );
 

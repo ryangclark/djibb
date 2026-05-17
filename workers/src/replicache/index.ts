@@ -10,12 +10,19 @@ export const MutationSchema = z.object({
 
 /**
  * Request body for a Replicache Pull Request.
+ *
+ * Cookie shape (ADR 0009 Slice 2): a small object
+ * `{v: number, r: role|null}` whose `r` lets the pull handler detect
+ * role transitions across pulls (demotion ⇒ emit `del` ops for
+ * keyspaces the new role can't see). `null` is the canonical
+ * fresh-pull form. The handler validates via `parsePullCookie` in
+ * `replicache/keyspaces`.
  */
 export const ReplicachePullRequestSchema = z.object({
     pullVersion: z.literal(1),
     profileID: z.string(),
     clientGroupID: z.string(),
-    cookie: z.union([z.number(), z.null()]),
+    cookie: z.union([z.object({}).loose(), z.null()]),
     schemaVersion: z.string(),
 });
 

@@ -203,7 +203,7 @@ describe('setItemQuantity end-to-end', () => {
         expect(persistedArgs).not.toHaveProperty('accountId');
         expect(persistedArgs).not.toHaveProperty('timestamp_client');
 
-        // 5. Pull with cookie=1; the item row (version=2) should land
+        // 5. Pull from v=1; the item row (version=2) should land
         // in the patch.
         const pullResult = await stub.handlePull({
             authorizedRole: 'ownerless',
@@ -212,13 +212,13 @@ describe('setItemQuantity end-to-end', () => {
                 pullVersion: 1,
                 profileID: 'p_test',
                 clientGroupID,
-                cookie: 1,
+                cookie: { v: 1, r: 'ownerless' },
                 schemaVersion: '1',
             },
         });
         expect(pullResult.error).toBeNull();
         const pullData = pullResult.data!;
-        expect(pullData.cookie).toBe(2);
+        expect(pullData.cookie).toMatchObject({ v: 2 });
 
         const itemPatch = pullData.patch.find(
             entry => entry.op === 'put' && entry.key === itemId

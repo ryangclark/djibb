@@ -215,13 +215,16 @@ describe('createListItem end-to-end', () => {
                 pullVersion: 1,
                 profileID: 'p_test',
                 clientGroupID,
-                cookie: 0,
+                cookie: null,
                 schemaVersion: '1',
             },
         });
         expect(pullResult.error).toBeNull();
         const pullData = pullResult.data!;
-        expect(pullData.cookie).toBe(2);
+        // Cookie shape (ADR 0009): `{v, r}` — entity version + role
+        // at last pull. The `r` powers the keyspaces pull-filter
+        // demotion path.
+        expect(pullData.cookie).toMatchObject({ v: 2 });
 
         const itemPatch = pullData.patch.find(
             entry => entry.op === 'put' && entry.key === item.id
@@ -323,7 +326,7 @@ describe('createListItem end-to-end', () => {
                 pullVersion: 1,
                 profileID: 'p_test',
                 clientGroupID,
-                cookie: 0,
+                cookie: null,
                 schemaVersion: '1',
             },
         });
@@ -432,14 +435,14 @@ describe('full browser journey: create + toggle multiple items', () => {
                 pullVersion: 1,
                 profileID: 'p_test',
                 clientGroupID,
-                cookie: 0,
+                cookie: null,
                 schemaVersion: '1',
             },
         });
         expect(pullResult.error).toBeNull();
         const pullData = pullResult.data!;
-        // init(1) + create(2) + create(3) + toggle(4) + toggle(5) = cookie 5
-        expect(pullData.cookie).toBe(5);
+        // init(1) + create(2) + create(3) + toggle(4) + toggle(5) = v=5
+        expect(pullData.cookie).toMatchObject({ v: 5 });
 
         const byKey = new Map(
             pullData.patch

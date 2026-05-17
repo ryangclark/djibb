@@ -5,9 +5,8 @@ import { AccountRoleEnum } from '../../auth/rules';
 import { ListSchema } from '..';
 import {
     InvitationIdentityKindEnum,
-    deletePendingInvite,
-    getPendingInvite,
     normalizeIdentityValue,
+    tombstonePendingInvite,
 } from '../invitations';
 import { setListVersion } from '../sql';
 import { OWNER_ROLES, toStoredValue } from './_shared';
@@ -57,19 +56,31 @@ export type RevokePreState = {
 
 export const server: ServerMutator<Args> = (
     { listId, identity_kind, identity_value },
-    { sql, nextVersion }
+    { sql, nextVersion, timestamp_client }
 ) => {
     const normalizedValue = normalizeIdentityValue(
         identity_kind,
         identity_value
     );
 
-    const deleted = deletePendingInvite(sql, {
+    const nowSeconds = Math.floor(
+        (timestamp_client ?? new Date()).getTime() / 1000
+    );
+
+    // Soft-delete (tombstone) — the row survives in DO storage with
+    // `time_deleted` set + version bumped, so the pull keyspace
+    // surfaces `op:'del'` to clients that had previously cached the
+    // row (ADR 0009 Slice 2). The post-commit reconciler picks up the
+    // disappearance from `listPendingInvites` and flips the D1 audit
+    // row to status='revoked'.
+    const tombstoned = tombstonePendingInvite(sql, {
         identity_kind,
         identity_value: normalizedValue,
+        nowSeconds,
+        version: nextVersion,
     });
-    if (!deleted) {
-        // No pending invite to revoke — could be already accepted,
+    if (!tombstoned) {
+        // No live invite to revoke — could be already accepted,
         // already revoked, or never existed. All three are idempotent
         // no-ops from the client's perspective; surface as 'gone'.
         return { status: 'gone' };
