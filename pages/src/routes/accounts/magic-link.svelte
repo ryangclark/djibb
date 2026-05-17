@@ -16,7 +16,10 @@
 	 * §"Policy defaults"). This is UX-only; do not depend on it for
 	 * security — the server will own the canonical limit.
 	 */
-	import { requestMagicLink } from '$lib/api/magicLink.js';
+	import {
+		MagicLinkRateLimitError,
+		requestMagicLink
+	} from '$lib/api/magicLink.js';
 
 	/** @typedef {'idle' | 'sending' | 'sent' | 'error'} Phase */
 
@@ -30,6 +33,11 @@
 	/** Seconds remaining on the resend cooldown (0 = ready). */
 	let cooldownRemaining = $state(0);
 
+	/** Client-side default cooldown after a successful send. The
+	 * server enforces the canonical limit; this matches it so the
+	 * resend button doesn't re-enable before the server would
+	 * accept another request. On rate-limit errors we honor the
+	 * server's exact retry-after instead. */
 	const COOLDOWN_SECONDS = 60;
 
 	// Pragmatic shape check — the worker re-validates server-side.
@@ -45,8 +53,9 @@
 	/** @type {ReturnType<typeof setInterval> | null} */
 	let cooldownTimer = null;
 
-	function startCooldown() {
-		cooldownRemaining = COOLDOWN_SECONDS;
+	/** @param {number} seconds */
+	function startCooldown(seconds) {
+		cooldownRemaining = seconds;
 		if (cooldownTimer) clearInterval(cooldownTimer);
 		cooldownTimer = setInterval(() => {
 			cooldownRemaining -= 1;
@@ -60,6 +69,27 @@
 		}, 1000);
 	}
 
+	/**
+	 * Map server-side rate-limit reasons to user-visible messages.
+	 * Keep these honest but kind — the user already knows they
+	 * clicked a few too many times.
+	 * @param {string | null} reason
+	 * @param {number} seconds
+	 */
+	function rateLimitMessage(reason, seconds) {
+		switch (reason) {
+			case 'cooldown':
+				return `Please wait ${seconds}s before requesting another link.`;
+			case 'email_15min':
+			case 'email_24h':
+				return `Too many sign-in attempts for this email. Try again in ${seconds}s.`;
+			case 'ip_hour':
+				return `Too many sign-in attempts from this network. Try again in ${seconds}s.`;
+			default:
+				return `Please wait ${seconds}s and try again.`;
+		}
+	}
+
 	/** @param {Event} e */
 	async function handleSubmit(e) {
 		e.preventDefault();
@@ -71,13 +101,25 @@
 		try {
 			await requestMagicLink({ email: trimmed });
 			phase = 'sent';
-			startCooldown();
+			startCooldown(COOLDOWN_SECONDS);
 		} catch (err) {
-			phase = 'error';
-			errorMessage =
-				err instanceof Error
-					? err.message
-					: 'Could not send sign-in email. Try again.';
+			if (err instanceof MagicLinkRateLimitError) {
+				// Server says we're rate-limited; show the precise wait
+				// and start a cooldown matching the server's value so
+				// the resend button re-enables at the right time.
+				phase = 'error';
+				errorMessage = rateLimitMessage(
+					err.reason,
+					err.retryAfterSeconds
+				);
+				startCooldown(err.retryAfterSeconds);
+			} else {
+				phase = 'error';
+				errorMessage =
+					err instanceof Error
+						? err.message
+						: 'Could not send sign-in email. Try again.';
+			}
 		}
 	}
 

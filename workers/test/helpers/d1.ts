@@ -6,6 +6,7 @@ import migration0002 from '../../migrations/0002_workspaces.sql?raw';
 import migration0003 from '../../migrations/0003_invitations_and_usernames.sql?raw';
 import migration0004 from '../../migrations/0004_workspace_entities.sql?raw';
 import migration0005 from '../../migrations/0005_magic_link_tokens.sql?raw';
+import migration0006 from '../../migrations/0006_magic_link_ip_index.sql?raw';
 
 const ALL_MIGRATIONS = [
     migration0001,
@@ -13,6 +14,7 @@ const ALL_MIGRATIONS = [
     migration0003,
     migration0004,
     migration0005,
+    migration0006,
 ];
 
 function splitStatements(sql: string): string[] {
