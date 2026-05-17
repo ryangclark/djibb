@@ -41,6 +41,12 @@ import {
 import { Account } from '../account';
 import { Result, tryCatch, tryCatchAsync } from '../utils/trycatch';
 import { EmitEntitySnapshotToCatalog, GetEntityVersion } from './entity';
+import {
+    EmitInvitationsSnapshot,
+    ensurePendingInvitesTable,
+    listPendingInvites,
+} from './invitations';
+import { newId } from '../id';
 
 /**
  * Mutator names that change entity-level metadata (the fields projected
@@ -56,6 +62,18 @@ const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
     'setDescription',
     'setListAuthRules',
     'unarchiveList',
+]);
+
+/**
+ * Mutator names that touch the DO's `pending_invites` table. Used by
+ * the push handler to decide whether to reconcile invitations to the
+ * D1 read index post-commit (ADR 0009). The reconciler runs once per
+ * push regardless of how many invitation mutations were in the batch
+ * — it's a full-snapshot diff, not per-row.
+ */
+const INVITATION_MUTATORS: ReadonlySet<string> = new Set([
+    'inviteByIdentity',
+    'revokeInvitation',
 ]);
 
 /**
@@ -109,6 +127,21 @@ export class DjibbList extends DurableObject {
                     // But, I guess you do need to throw here.
                     throw error;
                 }
+            }
+
+            // Forward-migration for ADR 0009: ensure the
+            // `pending_invites` table exists on every constructor pass.
+            // `IF NOT EXISTS` makes this safe for fresh DOs (where
+            // `InitializeTables` just ran) and DOs that came up before
+            // ADR 0009 landed (where the table was never created).
+            try {
+                ensurePendingInvitesTable(this.sql);
+            } catch (error) {
+                console.error(
+                    'Unexpected error ensuring pending_invites table:',
+                    error
+                );
+                throw error;
             }
 
             console.log('END BLOCK_CONCURRENCY_WHILE_INITIALIZE_TABLES');
@@ -414,6 +447,10 @@ export class DjibbList extends DurableObject {
         // entity-mutating mutator is `initList`; renameList / archive /
         // setListAuthRules will join this list as they land.
         let entityMetadataMutated = false;
+        // Tracks whether any mutation in this push touched the DO's
+        // `pending_invites` table. Triggers the post-commit
+        // reconciliation emit to `entity_invitations_index` (ADR 0009).
+        let invitationsMutated = false;
 
         for (let i = 0; i < pushRequest.mutations.length; i++) {
             const mutation = pushRequest.mutations[i];
@@ -483,6 +520,9 @@ export class DjibbList extends DurableObject {
                 if (ENTITY_METADATA_MUTATORS.has(mutation.name)) {
                     entityMetadataMutated = true;
                 }
+                if (INVITATION_MUTATORS.has(mutation.name)) {
+                    invitationsMutated = true;
+                }
             }
             if (ackedMutationId !== null) {
                 replicacheClient.lastMutationId = ackedMutationId;
@@ -511,6 +551,22 @@ export class DjibbList extends DurableObject {
             } catch (error) {
                 console.error(
                     `\`emitEntitySnapshot()\` D1 emit failed for "${listId}":`,
+                    error
+                );
+            }
+        }
+
+        // Reconcile invitation index post-commit (ADR 0009). Full-snapshot
+        // diff: DO rows become D1 'pending', any D1 'pending' rows
+        // absent from the DO become 'revoked'. Same fire-and-pray
+        // posture as the entity-metadata emit — DO is authoritative
+        // and the reconciliation alarm is the eventual repair.
+        if (invitationsMutated) {
+            try {
+                await this.emitInvitationsSnapshot(listId);
+            } catch (error) {
+                console.error(
+                    `\`emitInvitationsSnapshot()\` D1 emit failed for "${listId}":`,
                     error
                 );
             }
@@ -834,6 +890,38 @@ export class DjibbList extends DurableObject {
                     ? Math.floor(entity.time_deleted.getTime() / 1000)
                     : null,
                 version: entity.version,
+            }
+        );
+    }
+
+    /**
+     * Reconcile this DO's pending_invites into D1's
+     * `entity_invitations_index` (ADR 0009). Called post-commit when a
+     * push touched any INVITATION_MUTATORS. Full-snapshot pattern:
+     * DO rows are UPSERTed as 'pending'; D1 'pending' rows that no
+     * longer correspond to a DO row become 'revoked'.
+     *
+     * The entity-not-found branch (DO ran an invitation mutator but
+     * its own list_elements row is missing) is an invariant violation
+     * — logged and skipped, not thrown, mirroring `emitEntitySnapshot`.
+     */
+    private async emitInvitationsSnapshot(entityId: string): Promise<void> {
+        const entity = getElementById(this.sql, entityId);
+        if (!entity || (entity.type !== 'list' && entity.type !== 'template')) {
+            console.warn(
+                `\`emitInvitationsSnapshot()\` no entity row for "${entityId}"`
+            );
+            return;
+        }
+
+        const doInvites = listPendingInvites(this.sql);
+        await EmitInvitationsSnapshot(
+            (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+            {
+                targetId: entityId,
+                targetType: entity.type,
+                doInvites,
+                newIdForRow: () => newId('invitation'),
             }
         );
     }

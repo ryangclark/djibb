@@ -19,7 +19,9 @@ import * as archiveListItems from './archiveListItems';
 import * as initList from './initList';
 import * as createListItem from './createListItem';
 import * as initFromTemplate from './initFromTemplate';
+import * as inviteByIdentity from './inviteByIdentity';
 import * as renameList from './renameList';
+import * as revokeInvitation from './revokeInvitation';
 import * as reorderListGroup from './reorderListGroup';
 import * as reorderListItem from './reorderListItem';
 import * as setDescription from './setDescription';
@@ -71,7 +73,9 @@ export const Mutations = {
     [initList.name]: initList,
     [createListItem.name]: createListItem,
     [initFromTemplate.name]: initFromTemplate,
+    [inviteByIdentity.name]: inviteByIdentity,
     [renameList.name]: renameList,
+    [revokeInvitation.name]: revokeInvitation,
     [reorderListGroup.name]: reorderListGroup,
     [reorderListItem.name]: reorderListItem,
     [setDescription.name]: setDescription,

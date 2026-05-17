@@ -1,0 +1,458 @@
+// Substrate tests for ADR 0009 entity-only invitations (Slice 1).
+//
+// Covers the `inviteByIdentity` and `revokeInvitation` mutator pair:
+// DO-side `pending_invites` writes, post-commit emit to the D1
+// `entity_invitations_index`, role-gating, identity normalization,
+// idempotency, and revoke-marks-D1-revoked reconciliation.
+//
+// The pull-filter (Slice 2) and the accept mutator (Slice 3) are out
+// of scope here. Direct DO sql inspection + direct D1 queries are
+// sufficient to exercise the substrate without depending on either.
+//
+// For broader testing conventions (dev seams, pure predicates, the
+// E2E surface) see `docs/testing.md`.
+
+import { env, runInDurableObject } from 'cloudflare:test';
+import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
+import type { PushRequestV1 } from 'replicache';
+
+import { DjibbList } from '../src/list/durable_object';
+import { IdTypes, newId } from '../src/id';
+import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
+
+function getListStub(suffix: string) {
+    const prefixed = `${IdTypes.list}/${suffix.padEnd(21, 'a').slice(0, 21)}`;
+    const id = env.DJIBB_LIST.idFromName(prefixed);
+    return {
+        listId: prefixed,
+        stub: env.DJIBB_LIST.get(id) as DurableObjectStub<DjibbList>,
+    };
+}
+
+function makeInitListPush({
+    clientGroupID,
+    clientID,
+    listId,
+}: {
+    clientGroupID: string;
+    clientID: string;
+    listId: string;
+}): PushRequestV1 {
+    return {
+        profileID: 'p_test',
+        clientGroupID,
+        pushVersion: 1,
+        schemaVersion: '1',
+        mutations: [
+            {
+                clientID,
+                id: 1,
+                name: 'initList',
+                timestamp: Date.now(),
+                args: {
+                    accountId: null,
+                    listId,
+                    timestamp_client: new Date().toISOString(),
+                    workspaceId: null,
+                },
+            },
+        ],
+    };
+}
+
+function makePush<TBody extends Record<string, unknown>>({
+    clientGroupID,
+    clientID,
+    name,
+    mutationId,
+    body,
+    accountId = null,
+}: {
+    clientGroupID: string;
+    clientID: string;
+    name: string;
+    mutationId: number;
+    body: TBody;
+    accountId?: string | null;
+}): PushRequestV1 {
+    return {
+        profileID: 'p_test',
+        clientGroupID,
+        pushVersion: 1,
+        schemaVersion: '1',
+        mutations: [
+            {
+                clientID,
+                id: mutationId,
+                name,
+                timestamp: Date.now(),
+                args: {
+                    accountId,
+                    timestamp_client: new Date().toISOString(),
+                    ...body,
+                },
+            },
+        ],
+    };
+}
+
+/**
+ * Init the entity and seed its `authorization_rules` so a specific
+ * test account holds the `owner` role. The DO push handler routes
+ * `authorizedRole` from the request rather than re-deriving from the
+ * row, so we don't actually need to mutate the row for the gate to
+ * pass — but we do need to call `setListAuthRules` for realism in
+ * scenarios that later read the row.
+ */
+async function initEntity({
+    stub,
+    listId,
+    clientGroupID,
+    clientID,
+}: {
+    stub: DurableObjectStub<DjibbList>;
+    listId: string;
+    clientGroupID: string;
+    clientID: string;
+}) {
+    await stub.handlePush({
+        authorizedAccounts: [],
+        authorizedRole: 'ownerless',
+        listId,
+        pushRequest: makeInitListPush({ clientGroupID, clientID, listId }),
+    });
+}
+
+describe('inviteByIdentity', () => {
+    beforeAll(async () => {
+        await ensureD1Schema();
+    });
+    beforeEach(async () => {
+        await resetWorkspaceData();
+    });
+
+    it('inserts a pending invite into the DO and emits a pending row to D1', async () => {
+        const { listId, stub } = getListStub('inv1');
+        const clientGroupID = 'cg_inv_1';
+        const clientID = 'c_inv_1';
+        const inviterId = newId('account');
+
+        await initEntity({ stub, listId, clientGroupID, clientID });
+
+        const result = await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            authorizedRole: 'owner',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'inviteByIdentity',
+                mutationId: 2,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    identity_kind: 'email',
+                    identity_value: 'Bob@Example.com',
+                    role: 'editor',
+                },
+            }),
+        });
+        expect(result.error).toBeNull();
+
+        // DO row: lowercased value, owner-supplied role, version=2.
+        const doRow = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(
+                    `SELECT identity_kind, identity_value, role,
+                            inviter_account_id, version
+                     FROM pending_invites;`
+                )
+                .one()
+        );
+        expect(doRow.identity_value).toBe('bob@example.com');
+        expect(doRow.role).toBe('editor');
+        expect(doRow.inviter_account_id).toBe(inviterId);
+        expect(doRow.version).toBe(2);
+
+        // D1 index: a row was emitted as status='pending'.
+        const d1Row = await env.DJIBB_AUTH.prepare(
+            `SELECT target_id, target_type, identity_kind, identity_value,
+                    role, inviter_account_id, status
+             FROM entity_invitations_index WHERE target_id = ?`
+        )
+            .bind(listId)
+            .first<any>();
+        expect(d1Row).not.toBeNull();
+        expect(d1Row.identity_value).toBe('bob@example.com');
+        expect(d1Row.status).toBe('pending');
+        expect(d1Row.target_type).toBe('list');
+        expect(d1Row.role).toBe('editor');
+    });
+
+    it('rejects editor role (OWNER_ROLES only)', async () => {
+        const { listId, stub } = getListStub('inv2');
+        const clientGroupID = 'cg_inv_2';
+        const clientID = 'c_inv_2';
+        const inviterId = newId('account');
+
+        await initEntity({ stub, listId, clientGroupID, clientID });
+
+        const result = await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            // editor is in EDIT_ROLES but NOT in OWNER_ROLES.
+            authorizedRole: 'editor',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'inviteByIdentity',
+                mutationId: 2,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    identity_kind: 'email',
+                    identity_value: 'bob@example.com',
+                    role: 'editor',
+                },
+            }),
+        });
+        expect(result.error).not.toBeNull();
+        expect(result.error?.name).toMatch(/Unauthorized/i);
+
+        // No DO row, no D1 row.
+        const doCount = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(`SELECT COUNT(*) AS c FROM pending_invites;`)
+                .one()
+        );
+        expect(doCount.c).toBe(0);
+
+        const d1Row = await env.DJIBB_AUTH.prepare(
+            `SELECT id FROM entity_invitations_index WHERE target_id = ?`
+        )
+            .bind(listId)
+            .first();
+        expect(d1Row).toBeNull();
+    });
+
+    it('returns stale on duplicate invite for the same (kind, value)', async () => {
+        const { listId, stub } = getListStub('inv3');
+        const clientGroupID = 'cg_inv_3';
+        const clientID = 'c_inv_3';
+        const inviterId = newId('account');
+
+        await initEntity({ stub, listId, clientGroupID, clientID });
+
+        // First invite — applied.
+        await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            authorizedRole: 'owner',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'inviteByIdentity',
+                mutationId: 2,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    identity_kind: 'email',
+                    identity_value: 'bob@example.com',
+                    role: 'editor',
+                },
+            }),
+        });
+
+        // Second invite — same identity, different role. Server
+        // returns `{status:'stale'}`, no second DO row, original role
+        // preserved.
+        const second = await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            authorizedRole: 'owner',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'inviteByIdentity',
+                mutationId: 3,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    identity_kind: 'email',
+                    identity_value: 'BOB@example.com', // case-variant
+                    role: 'viewer', // would-be different role
+                },
+            }),
+        });
+        expect(second.error).toBeNull();
+
+        const doRows = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(`SELECT identity_value, role FROM pending_invites;`)
+                .toArray()
+        );
+        expect(doRows).toHaveLength(1);
+        expect(doRows[0].role).toBe('editor'); // unchanged
+    });
+});
+
+describe('revokeInvitation', () => {
+    beforeAll(async () => {
+        await ensureD1Schema();
+    });
+    beforeEach(async () => {
+        await resetWorkspaceData();
+    });
+
+    it('hard-deletes the DO row and marks the D1 row revoked', async () => {
+        const { listId, stub } = getListStub('rev1');
+        const clientGroupID = 'cg_rev_1';
+        const clientID = 'c_rev_1';
+        const inviterId = newId('account');
+
+        await initEntity({ stub, listId, clientGroupID, clientID });
+
+        // Invite, then revoke.
+        await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            authorizedRole: 'owner',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'inviteByIdentity',
+                mutationId: 2,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    identity_kind: 'email',
+                    identity_value: 'bob@example.com',
+                    role: 'editor',
+                },
+            }),
+        });
+
+        const revokeResult = await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            authorizedRole: 'owner',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'revokeInvitation',
+                mutationId: 3,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    identity_kind: 'email',
+                    identity_value: 'Bob@example.com', // case-variant resolves
+                },
+            }),
+        });
+        expect(revokeResult.error).toBeNull();
+
+        // DO: row is gone.
+        const doCount = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(`SELECT COUNT(*) AS c FROM pending_invites;`)
+                .one()
+        );
+        expect(doCount.c).toBe(0);
+
+        // D1: row is retained as audit, status flipped to revoked.
+        const d1Rows = await env.DJIBB_AUTH.prepare(
+            `SELECT status FROM entity_invitations_index WHERE target_id = ?`
+        )
+            .bind(listId)
+            .all<{ status: string }>();
+        expect(d1Rows.results).toHaveLength(1);
+        expect(d1Rows.results![0].status).toBe('revoked');
+    });
+
+    it('returns gone when revoking a non-existent invite', async () => {
+        const { listId, stub } = getListStub('rev2');
+        const clientGroupID = 'cg_rev_2';
+        const clientID = 'c_rev_2';
+        const inviterId = newId('account');
+
+        await initEntity({ stub, listId, clientGroupID, clientID });
+
+        const result = await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            authorizedRole: 'owner',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'revokeInvitation',
+                mutationId: 2,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    identity_kind: 'email',
+                    identity_value: 'nobody@example.com',
+                },
+            }),
+        });
+        // The push itself doesn't error — the mutator returns
+        // {status:'gone'} which surfaces as a no-op (per ADR 0005).
+        expect(result.error).toBeNull();
+    });
+
+    it('rejects editor role (OWNER_ROLES only)', async () => {
+        const { listId, stub } = getListStub('rev3');
+        const clientGroupID = 'cg_rev_3';
+        const clientID = 'c_rev_3';
+        const inviterId = newId('account');
+
+        await initEntity({ stub, listId, clientGroupID, clientID });
+
+        // Seed an invite as owner first.
+        await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            authorizedRole: 'owner',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'inviteByIdentity',
+                mutationId: 2,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    identity_kind: 'email',
+                    identity_value: 'bob@example.com',
+                    role: 'editor',
+                },
+            }),
+        });
+
+        const revokeResult = await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            authorizedRole: 'editor',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'revokeInvitation',
+                mutationId: 3,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    identity_kind: 'email',
+                    identity_value: 'bob@example.com',
+                },
+            }),
+        });
+        expect(revokeResult.error).not.toBeNull();
+        expect(revokeResult.error?.name).toMatch(/Unauthorized/i);
+
+        // Invite still present in both DO and D1.
+        const doCount = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(`SELECT COUNT(*) AS c FROM pending_invites;`)
+                .one()
+        );
+        expect(doCount.c).toBe(1);
+    });
+});

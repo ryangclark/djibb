@@ -7,6 +7,7 @@ import migration0003 from '../../migrations/0003_invitations_and_usernames.sql?r
 import migration0004 from '../../migrations/0004_workspace_entities.sql?raw';
 import migration0005 from '../../migrations/0005_magic_link_tokens.sql?raw';
 import migration0006 from '../../migrations/0006_magic_link_ip_index.sql?raw';
+import migration0007 from '../../migrations/0007_entity_invitations_index.sql?raw';
 
 const ALL_MIGRATIONS = [
     migration0001,
@@ -15,6 +16,7 @@ const ALL_MIGRATIONS = [
     migration0004,
     migration0005,
     migration0006,
+    migration0007,
 ];
 
 function splitStatements(sql: string): string[] {
@@ -76,6 +78,7 @@ export async function resetWorkspaceData(): Promise<void> {
         env.DJIBB_AUTH.prepare('DELETE FROM sessions'),
         env.DJIBB_AUTH.prepare('DELETE FROM AccountList'),
         env.DJIBB_AUTH.prepare('DELETE FROM magic_link_tokens'),
+        env.DJIBB_AUTH.prepare('DELETE FROM entity_invitations_index'),
         env.DJIBB_AUTH.prepare('DELETE FROM accounts'),
     ]);
 }

@@ -9,6 +9,7 @@ export const ID_LENGTH = 21;
 export const IdTypes = {
     account: 'a',
     group: 'g',
+    invitation: 'inv',
     item: 'i',
     list: 'l',
     mutation: 'm',
