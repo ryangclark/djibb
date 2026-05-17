@@ -72,6 +72,45 @@ export async function GetAccountById(d1: D1Database, id: string) {
         .then(shape_AccountRow);
 }
 
+/**
+ * Look up an Account by its canonical email (case-insensitive).
+ *
+ * Used by both the magic-link consume path and the OAuth callback's
+ * email-match-first resolution (ADR 0010 option C). The Account's
+ * `email` column is the matching key; provider tag and Account ID
+ * are not consulted here.
+ *
+ * NOTE: assumes one email per Account at v1 (see CONTEXT.md, the
+ * "One verified email per Account at v1" note). When that lifts via
+ * a future `account_emails` sibling table, this function moves to
+ * joining through that table — and that's the only place that needs
+ * to change.
+ */
+export async function GetAccountByEmail(
+    d1: D1Database,
+    email: string
+): Promise<Account | null> {
+    if (!email) {
+        throw new Error('`GetAccountByEmail()` error: empty email!');
+    }
+
+    return d1
+        .prepare(
+            `SELECT *
+            FROM accounts
+            WHERE LOWER(email) = LOWER(?)
+                AND time_deleted IS NULL
+            LIMIT 1;`
+        )
+        .bind(email)
+        .first()
+        .catch(err => {
+            console.error('`GetAccountByEmail()` query error:', err);
+            throw err;
+        })
+        .then(shape_AccountRow);
+}
+
 export async function GetAccountByGoogleId(
     d1: D1Database,
     providerClientId: string

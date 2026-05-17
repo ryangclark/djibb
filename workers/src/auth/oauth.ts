@@ -6,7 +6,11 @@ import { CookieOptions } from 'hono/utils/cookie';
 import { z } from 'zod';
 
 import { NotFoundError, UnexpectedError, ValidationError } from '../errors';
-import { CreateAccount, GetAccountByGoogleId } from '../account/service';
+import {
+    CreateAccount,
+    GetAccountByEmail,
+    GetAccountByGoogleId,
+} from '../account/service';
 import { CreateSession } from './session';
 import {
     BaseSessionCookieAttributes,
@@ -214,10 +218,26 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
         throw new UnexpectedError();
     }
 
-    let account = await GetAccountByGoogleId(
-        c.env.DJIBB_AUTH,
-        googleUserClaims.sub
-    );
+    // Account resolution (ADR 0010 option C): email-match first, then
+    // provider-sub fallback, then create.
+    //
+    // - Email-first catches the cross-method case: a user who first
+    //   signed in via magic-link (`provider_name='djibb'`) and is now
+    //   adding Google as a sign-in method. We route them to the same
+    //   Account rather than minting a duplicate.
+    // - Sub-fallback catches the Google-side email-change case: a
+    //   Google-home Account whose primary email changed at Google
+    //   still resolves to the same djibb Account because `sub` is
+    //   provider-stable.
+    // - Only when neither matches do we create a new Account.
+    //
+    // Google's `email_verified` is trusted unconditionally for the
+    // `profile email` scopes (see existing comment in the create path
+    // below). When additional providers land, gate the email-first
+    // lookup on a provider-specific verification check.
+    let account =
+        (await GetAccountByEmail(c.env.DJIBB_AUTH, googleUserClaims.email)) ??
+        (await GetAccountByGoogleId(c.env.DJIBB_AUTH, googleUserClaims.sub));
 
     if (!account) {
         const newAccount = {

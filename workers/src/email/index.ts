@@ -34,6 +34,53 @@ export async function sendInvitationEmail(
     });
 }
 
+export interface MagicLinkEmailParams {
+    to: string;
+    landingUrl: string;
+    ttlMinutes: number;
+}
+
+/**
+ * Sign-in email containing a one-time magic link (ADR 0010).
+ *
+ * The `landingUrl` points to the worker's interstitial page, not
+ * directly to /consume — this defeats mail-scanner GET prefetch
+ * (the interstitial requires a user click to POST).
+ *
+ * No personalization: we don't know the recipient's Account state at
+ * send time. The body is intentionally generic ("Sign in to djibb")
+ * rather than "Welcome back, $name" — the request handler returns
+ * 200 unconditionally to avoid disclosing whether an Account exists,
+ * and the email body must not undo that.
+ */
+export async function sendMagicLinkEmail(
+    env: Bindings,
+    params: MagicLinkEmailParams
+): Promise<void> {
+    const from = env.EMAIL_FROM || 'no-reply@djibb.app';
+    const subject = 'Sign in to djibb';
+
+    const text =
+        `Sign in to djibb by opening this link:\n\n` +
+        `${params.landingUrl}\n\n` +
+        `This link expires in ${params.ttlMinutes} minutes and can be used once.\n\n` +
+        `If you didn't request this, you can safely ignore this email.\n`;
+
+    const html =
+        `<p>Sign in to djibb by clicking the link below:</p>` +
+        `<p><a href="${escapeAttr(params.landingUrl)}">Sign in to djibb</a></p>` +
+        `<p style="color:#666;font-size:13px">This link expires in ${params.ttlMinutes} minutes and can be used once.</p>` +
+        `<p style="color:#888;font-size:12px">If you didn't request this, you can safely ignore this email.</p>`;
+
+    await env.EMAIL.send({
+        from: {email: from, name: 'djibb sign-in'},
+        to: params.to,
+        subject,
+        html,
+        text,
+    });
+}
+
 function sanitizeHeader(s: string): string {
     return s.replace(/[\r\n]+/g, ' ').trim();
 }

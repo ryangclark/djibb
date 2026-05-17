@@ -180,6 +180,52 @@ later linking their Google account is one Account with one OAuth linkage;
 a user who signed up via Google and later sets up a passkey is one
 Account with one credential row.
 
+### Provider tag semantics: djibb is its own IdP
+
+The `accounts` table already carries `provider_name` and `provider_client_id`
+columns. Their semantics under this ADR are deliberately specific:
+
+- **`provider_name` is the Account's *home identity provider*** — the
+  IdP that holds the proof of identity for this Account. Not the most
+  recent sign-in method, not a session-level concern. Possible values:
+  - `google` → Google holds the identity. We trust their `sub`.
+  - `djibb` → **djibb itself** holds the identity. We hold the proof of
+    email-control (today via magic-link; tomorrow via passkey, etc.).
+  - Future: `apple`, `github`, … one row each.
+- **`provider_client_id` is the stable handle within that IdP.**
+  - For Google: the `sub` claim.
+  - For djibb-as-IdP: the canonical lowercased email at Account creation
+    time. (When email-change ships, this column updates with the email
+    column.)
+- **The sign-in *method* used on a given turn** (magic-link, OAuth
+  callback, future passkey) is **session-level metadata**, carried in
+  `sessions.flags` as JSON (`{auth_method:'magic_link'}` etc.). It is
+  not an Account property.
+
+This framing is forward-looking. djibb is positioned to act as an OAuth-
+style identity provider for a future constellation of djibb-built client
+apps (djibb.com Pages today; sibling apps later). "Sign in with djibb"
+on a sibling app will be exactly the shape "Sign in with Google" is on
+djibb today: djibb mints a session, the client gets identity. Magic-link
+is the v1 mechanism by which djibb-as-IdP authenticates a user before
+handing back identity — directly analogous to Google authenticating with
+password / passkey / SMS before yielding a `sub`.
+
+**Schema implication.** A `UNIQUE(provider_name, provider_client_id)
+WHERE provider_name='djibb'` partial index prevents two djibb-native
+Accounts ever existing for the same email. (Google-home Accounts are
+already disambiguated by Google's `sub`, which is unique by construction.)
+
+**Reconciliation with the "Account resolution" section above.** That
+section sketches an eventual `oauth_linkages(provider, sub, account_id)`
+sibling table — the right shape once an Account accumulates *multiple*
+linked providers. v1 keeps everything on the Account row itself:
+`provider_name` and `provider_client_id` record the *home* IdP, full
+stop. The transition to a sibling table is deferred until the first
+Account legitimately needs multiple linked IdPs (e.g., user wants to
+add a Google linkage to their previously-djibb-native Account); that
+migration is localized to the auth substrate.
+
 ### Email-change flow (designed, not built)
 
 Not in v1, but the design supports it cleanly:

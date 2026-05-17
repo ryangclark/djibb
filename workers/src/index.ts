@@ -112,6 +112,18 @@ app.use(
             return;
         }
 
+        // Magic-link consume is exempt from the AUTHORIZED_DOMAINS
+        // origin check (ADR 0010). The interstitial click-through
+        // page is served from API_ORIGIN and POSTs same-origin, so
+        // the inbound Origin will be API_ORIGIN — which isn't (and
+        // shouldn't be) in AUTHORIZED_DOMAINS. CSRF defense for this
+        // route is the bearer secret in the request body: only the
+        // email recipient has it. See workers/src/auth/magic.ts.
+        if (c.req.path === '/auth/magic/consume') {
+            await next();
+            return;
+        }
+
         const originHeader = c.req.header('Origin');
 
         const hostHeader = c.req.header('Host');

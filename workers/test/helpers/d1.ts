@@ -5,12 +5,14 @@ import migration0001 from '../../migrations/0001_create_user_and_session_tables.
 import migration0002 from '../../migrations/0002_workspaces.sql?raw';
 import migration0003 from '../../migrations/0003_invitations_and_usernames.sql?raw';
 import migration0004 from '../../migrations/0004_workspace_entities.sql?raw';
+import migration0005 from '../../migrations/0005_magic_link_tokens.sql?raw';
 
 const ALL_MIGRATIONS = [
     migration0001,
     migration0002,
     migration0003,
     migration0004,
+    migration0005,
 ];
 
 function splitStatements(sql: string): string[] {
@@ -71,6 +73,7 @@ export async function resetWorkspaceData(): Promise<void> {
         env.DJIBB_AUTH.prepare('DELETE FROM AccountSession'),
         env.DJIBB_AUTH.prepare('DELETE FROM sessions'),
         env.DJIBB_AUTH.prepare('DELETE FROM AccountList'),
+        env.DJIBB_AUTH.prepare('DELETE FROM magic_link_tokens'),
         env.DJIBB_AUTH.prepare('DELETE FROM accounts'),
     ]);
 }

@@ -15,6 +15,11 @@ import {
     handleInitOAuthGoogle,
     handleVerifyOAuthGoogle,
 } from './oauth';
+import {
+    handleMagicConsume,
+    handleMagicLand,
+    handleMagicRequest,
+} from './magic';
 import { CreateSession, DeleteSession } from './session';
 
 export const Auth_App = new Hono<HonoEnv>();
@@ -25,6 +30,12 @@ Auth_App.get('/djibb', handleGetMockSession);
 
 Auth_App.get('/google', handleInitOAuthGoogle);
 Auth_App.get(OAUTH_REDIRECT_URI.google, handleVerifyOAuthGoogle);
+
+// Magic-link auth (ADR 0010). /request mints + emails, /land renders
+// the interstitial click-through page, /consume validates and signs in.
+Auth_App.post('/magic/request', handleMagicRequest);
+Auth_App.get('/magic/land', handleMagicLand);
+Auth_App.post('/magic/consume', handleMagicConsume);
 
 Auth_App.delete('/session/accounts', async c => {
     let session = c.get('session');
