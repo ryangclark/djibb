@@ -136,6 +136,16 @@ The visual representation of a Workspace's Lists for an authed visitor — a hex
 
 Three canonical use cases (`docs/use-cases.md`): recipe, camping pack checklist, secret santa. Diverse on purpose — proves a single List primitive can power very different frontends.
 
+## Engineering process docs
+
+Conventions and how-to guides for working in this codebase live in `docs/` — read the relevant one before writing new code in the matching area:
+
+- `docs/testing.md` — test surface choices (vitest vs E2E), dev-seam pattern, pure-predicate pattern, agent-browser conventions, operational gotchas.
+- `docs/adding-a-mutator.md` — checklist for new Replicache mutations (paired forward/inverse, ADR 0005).
+- `docs/workspaces.md` — workspace membership model.
+- `docs/keymaps/` — keyboard interaction conventions.
+- `docs/adr/` — architectural decision records.
+
 ## Deferred / out of scope for v1
 
 - **Multi-Template composition** ("car camping" + "Lewis" + "Moab April" merged into one List): v2. v1 is single-source instantiation; users build composed Templates by forking instead.

@@ -146,7 +146,9 @@ exports:
      change.
 
    See `workers/test/entityMetadata.test.ts` for a compact example
-   covering three mutators in one file.
+   covering three mutators in one file. For broader testing
+   conventions (dev seams, pure predicates, the E2E surface),
+   see `docs/testing.md`.
 
 ## Decisions you have to make
 

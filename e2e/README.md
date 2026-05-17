@@ -7,6 +7,13 @@ between the worker, the SvelteKit pages, and the browser surface — pieces
 that the in-process vitest suite can't reach (Host headers, real cookies,
 real redirects, JavaScript actually executing on a real DOM).
 
+**Before writing a new test (here or in `workers/test/`), read
+[`/docs/testing.md`](../docs/testing.md).** It captures the conventions
+for both surfaces, the dev-seam pattern that lets E2E scripts inspect
+otherwise-invisible server state, and the gotchas (cross-origin redirect
+waits, idempotent state reset, semantic locators) that took iteration
+to discover.
+
 This directory is exploratory infrastructure. The first script
 (`magic-link.sh`) is the proof of pattern; if it earns its keep, more
 scripts will land alongside it for the share/invite, OAuth, and

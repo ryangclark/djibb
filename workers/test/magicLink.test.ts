@@ -1,6 +1,11 @@
 /**
  * Magic-link auth tests (ADR 0010).
  *
+ * Before adding tests here (or anywhere in the codebase), skim
+ * `docs/testing.md` for conventions — service-level vs E2E, the
+ * dev-seam pattern, the pure-predicate pattern, and the worker.fetch
+ * Host-header caveat are all covered there.
+ *
  * Covers the load-bearing pieces of the substrate at D1/service level:
  *
  *   1. hashToken — SHA-256 stability + format
