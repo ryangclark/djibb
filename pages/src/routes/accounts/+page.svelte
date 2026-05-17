@@ -3,6 +3,7 @@
 
 	import AccountRow from '$lib/components/AccountRow.svelte';
 	import GoogleOAuth from './google.svelte';
+	import MagicLink from './magic-link.svelte';
 
 	const sessionState = getSessionState();
 </script>
@@ -22,8 +23,32 @@
 
 	<p>Needing another account? Sign into it here</p>
 
+	<div class="my-8"><MagicLink /></div>
+
+	<div class="divider"><span>or</span></div>
+
 	<div class="my-8"><GoogleOAuth></GoogleOAuth></div>
 </section>
+
+<style>
+	.divider {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		margin: 1.5rem 0;
+		max-width: 400px;
+		color: #888;
+		font-size: 0.85rem;
+	}
+
+	.divider::before,
+	.divider::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		background: #ddd;
+	}
+</style>
 
 <!-- IDEA: it might be neat to have a section of the user's 
  lists if the user isn't authenticated and, thus, those are
