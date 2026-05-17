@@ -14,6 +14,7 @@ import {
 import {
     BadRequestError,
     DjibbError,
+    FailedPreconditionError,
     NotFoundError,
     ParseError,
     UnexpectedError,
@@ -27,6 +28,14 @@ import { GetMembership } from '../workspace/service';
 import { resolveRole } from '../auth/resolver';
 import { GetEntity } from './entity';
 import { initListArgsSchema } from './mutators/client';
+import {
+    CountInvitesByInviterSince,
+    CountOutstandingInvitesByInviter,
+    InvitationIdentityKindEnum,
+    preflightInviteByIdentity,
+    type InvitePreflightFailureReason,
+} from './invitations';
+import { GetAccountByEmail } from '../account/service';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
 
@@ -320,6 +329,94 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
 
         const listId = c.get('list').name ?? c.get('entity_id');
         if (!listId) throw new UnexpectedError('invalid listId');
+
+        // ADR 0009 Slice 2.5: invitation preflight. Cross-target gates
+        // (rate limit, outstanding cap) and identity-resolution checks
+        // (`email -> account`, "already a member", self-invite) live at
+        // this boundary because the single-entity DO has no synchronous
+        // D1 access during a push. Each preflight failure short-circuits
+        // the entire push with a structured 412 / 401 — `inviteByIdentity`
+        // is friction-tier owner-only, so partial application of mixed
+        // pushes is not a meaningful loss.
+        const inviteMutations = pushRequest.mutations.filter(
+            m => m.name === 'inviteByIdentity',
+        );
+        if (inviteMutations.length > 0) {
+            const entity = c.get('entity');
+            const sessionAccountIds = (c.get('session')?.accounts ?? []).map(
+                a => a.id,
+            );
+            const d1 = c.env.DJIBB_AUTH;
+            const deps = {
+                countInvitesByInviterSince: (
+                    inviterAccountId: string,
+                    sinceSeconds: number,
+                ) =>
+                    CountInvitesByInviterSince(
+                        d1,
+                        inviterAccountId,
+                        sinceSeconds,
+                    ),
+                countOutstandingInvitesByInviter: (inviterAccountId: string) =>
+                    CountOutstandingInvitesByInviter(d1, inviterAccountId),
+                getAccountIdByEmail: async (normalizedEmail: string) => {
+                    if (!normalizedEmail) return null;
+                    const account = await GetAccountByEmail(d1, normalizedEmail);
+                    return account?.id ?? null;
+                },
+            };
+
+            for (const mutation of inviteMutations) {
+                const args = (mutation.args ?? {}) as Record<string, unknown>;
+                const identityKindParsed = InvitationIdentityKindEnum.safeParse(
+                    args.identity_kind,
+                );
+                if (!identityKindParsed.success) {
+                    // Surface as validation error — body is malformed.
+                    throw new ValidationError(
+                        'inviteByIdentity: invalid identity_kind',
+                    );
+                }
+                const identity_value =
+                    typeof args.identity_value === 'string'
+                        ? args.identity_value
+                        : '';
+                const inviter_account_id =
+                    typeof args.accountId === 'string'
+                        ? args.accountId
+                        : null;
+
+                const result = await preflightInviteByIdentity(deps, {
+                    inviter_account_id,
+                    identity_kind: identityKindParsed.data,
+                    identity_value,
+                    authorization_rules: entity?.authorization_rules ?? null,
+                    sessionAccountIds,
+                    nowSeconds: Math.floor(Date.now() / 1000),
+                });
+                if (!result.ok) {
+                    const reasonToError: Record<
+                        InvitePreflightFailureReason,
+                        () => DjibbError
+                    > = {
+                        unauthenticated_inviter: () =>
+                            new UnauthorizedError(result.message),
+                        session_mismatch: () =>
+                            new UnauthorizedError(result.message),
+                        entity_missing: () => new NotFoundError(result.message),
+                        rate_limit_hour: () =>
+                            new FailedPreconditionError(result.message),
+                        outstanding_cap: () =>
+                            new FailedPreconditionError(result.message),
+                        already_member: () =>
+                            new FailedPreconditionError(result.message),
+                        self_invite: () =>
+                            new FailedPreconditionError(result.message),
+                    };
+                    throw reasonToError[result.reason]();
+                }
+            }
+        }
 
         const { error } = await c.get('list').handlePush({
             authorizedAccounts: c.get('session')?.accounts || [],

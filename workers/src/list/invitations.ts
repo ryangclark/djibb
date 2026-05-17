@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import { AccountRoleEnum, type AccountRole } from '../auth/rules';
+import {
+    AccountRoleEnum,
+    type AccountRole,
+    type AuthorizationRules,
+} from '../auth/rules';
 import { UnexpectedError } from '../errors';
 
 /**
@@ -491,6 +495,171 @@ export async function CountOutstandingInvitesByInviter(
  * Wired in a follow-up slice; exported now so the substrate is
  * complete.
  */
+/**
+ * Per-inviter outstanding-invite cap across all entities. The cap is
+ * enforced at the HTTP `/push` preflight (Slice 2.5); the DO doesn't
+ * see request volume across targets, so this gate must live above it.
+ * Value mirrors `MAX_OUTSTANDING_PER_INVITER` in the workspace-invite
+ * module — ADR 0009 §"Other policy defaults."
+ */
+export const INVITE_MAX_OUTSTANDING_PER_INVITER = 25;
+
+/**
+ * Per-inviter rate cap over the last hour. Enforced at the HTTP
+ * `/push` preflight against `entity_invitations_index.time_created`
+ * (status-agnostic — abuse vector is "how many sends fired", not "how
+ * many are still open").
+ */
+export const INVITE_MAX_PER_INVITER_PER_HOUR = 10;
+
+/**
+ * Deps for `preflightInviteByIdentity`. Injected as functions rather
+ * than passing a raw D1 binding so this stays pure-ish: tests can stub
+ * each query, and the `/push` route binds them once against
+ * `c.env.DJIBB_AUTH`.
+ */
+export type InvitePreflightDeps = {
+    countInvitesByInviterSince: (
+        inviterAccountId: string,
+        sinceSeconds: number
+    ) => Promise<number>;
+    countOutstandingInvitesByInviter: (
+        inviterAccountId: string
+    ) => Promise<number>;
+    /**
+     * Resolve a (lower-cased) email to an existing Account. Used for the
+     * "already a member" pre-check. Return `null` when no account
+     * matches — that's the common case (inviting a non-djibb user), and
+     * we still let the invite through.
+     */
+    getAccountIdByEmail: (
+        normalizedEmail: string
+    ) => Promise<string | null>;
+};
+
+export type InvitePreflightInput = {
+    /** From `mutation.args.accountId`. Null/empty rejects. */
+    inviter_account_id: string | null | undefined;
+    identity_kind: InvitationIdentityKind;
+    identity_value: string;
+    /**
+     * The entity's current authorization_rules. `null` only when the
+     * entity row is missing (pre-init); in that case we reject — invites
+     * presuppose an existing target.
+     */
+    authorization_rules: AuthorizationRules | null;
+    /** Account ids on the caller's session. Inviter must be one. */
+    sessionAccountIds: readonly string[];
+    /** Unix seconds. Injected so tests can pin time. */
+    nowSeconds: number;
+};
+
+export type InvitePreflightFailureReason =
+    | 'unauthenticated_inviter'
+    | 'session_mismatch'
+    | 'entity_missing'
+    | 'rate_limit_hour'
+    | 'outstanding_cap'
+    | 'already_member'
+    | 'self_invite';
+
+export type InvitePreflightResult =
+    | { ok: true }
+    | { ok: false; reason: InvitePreflightFailureReason; message: string };
+
+/**
+ * Validate an `inviteByIdentity` request before it reaches the DO.
+ * Cross-target concerns (rate limit, outstanding cap) and identity
+ * resolution (`email -> account`, "already a member") live at this
+ * boundary because the DO is single-entity and has no synchronous
+ * D1 access during a push.
+ *
+ * Returns a structured result rather than throwing — the caller maps
+ * each reason to the appropriate HTTP status (401 / 412 / 404).
+ */
+export async function preflightInviteByIdentity(
+    deps: InvitePreflightDeps,
+    input: InvitePreflightInput
+): Promise<InvitePreflightResult> {
+    const inviter = input.inviter_account_id;
+    if (!inviter) {
+        return {
+            ok: false,
+            reason: 'unauthenticated_inviter',
+            message: 'Sign in to send invitations.',
+        };
+    }
+    if (!input.sessionAccountIds.includes(inviter)) {
+        return {
+            ok: false,
+            reason: 'session_mismatch',
+            message: 'Inviter account is not in the current session.',
+        };
+    }
+    if (input.authorization_rules == null) {
+        return {
+            ok: false,
+            reason: 'entity_missing',
+            message: 'Cannot invite to an entity that has not been initialized.',
+        };
+    }
+
+    // Rate limit (per inviter, last hour). Status-agnostic.
+    const recent = await deps.countInvitesByInviterSince(
+        inviter,
+        input.nowSeconds - 60 * 60
+    );
+    if (recent >= INVITE_MAX_PER_INVITER_PER_HOUR) {
+        return {
+            ok: false,
+            reason: 'rate_limit_hour',
+            message: `Rate limit: max ${INVITE_MAX_PER_INVITER_PER_HOUR} invitations per hour.`,
+        };
+    }
+
+    // Outstanding cap (per inviter, all targets).
+    const outstanding = await deps.countOutstandingInvitesByInviter(inviter);
+    if (outstanding >= INVITE_MAX_OUTSTANDING_PER_INVITER) {
+        return {
+            ok: false,
+            reason: 'outstanding_cap',
+            message: `Outstanding-invite cap reached (${INVITE_MAX_OUTSTANDING_PER_INVITER}). Revoke some pending invitations first.`,
+        };
+    }
+
+    // Identity-resolution checks. v1 = email only.
+    if (input.identity_kind === 'email') {
+        const normalized = normalizeIdentityValue('email', input.identity_value);
+        const targetAccountId = await deps.getAccountIdByEmail(normalized);
+        if (targetAccountId) {
+            if (targetAccountId === inviter) {
+                return {
+                    ok: false,
+                    reason: 'self_invite',
+                    message: 'You cannot invite yourself.',
+                };
+            }
+            // v1 conservatively checks the entity's explicit grants
+            // only. Workspace-inherited access is *not* "already a
+            // member" for invite purposes — those users still need an
+            // explicit per-entity grant to collaborate beyond the
+            // workspace default role.
+            const existing =
+                input.authorization_rules.authorized_accounts[targetAccountId];
+            if (existing) {
+                return {
+                    ok: false,
+                    reason: 'already_member',
+                    message:
+                        'That account already has access to this entity.',
+                };
+            }
+        }
+    }
+
+    return { ok: true };
+}
+
 export async function DeleteInvitationsForTarget(
     d1: D1Database,
     targetId: string
