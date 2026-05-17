@@ -2,6 +2,11 @@
 
 Living glossary of djibb's domain language. Terms here are the canonical names — code, docs, and UI should match. Update inline as decisions are made.
 
+## Design principles
+
+### djibb uses itself
+Wherever it's reasonable, internal mechanisms are built out of djibb's own primitives rather than parallel infrastructure. The Seed Pool is a real djibb List, not a SQL table. A Workspace is a DjibbList-shaped DO, not a foreign aggregate. Pending invitations live inside the resource's own DO (filtered out of non-owner pulls) rather than in a separate invitations table. This constraint occasionally bends the design — when it does, the resulting bend is usually generative (it forces unification of concepts that would otherwise sprawl), but it's not absolute. When self-hosting an internal mechanism would meaningfully degrade UX or correctness, fall back to a dedicated mechanism. Default to self-host; deviate consciously.
+
 ## Core concepts
 
 ### List
@@ -45,12 +50,48 @@ Create-List flow: `initList` mutation, then `initFromTemplate` to copy the Templ
 ### Workspace
 Owns Lists and Templates. Every List and every Template belongs to exactly one Workspace. See `docs/workspaces.md`. ID prefix: `w/`. URL: `/w/<slug>`.
 
+**A Workspace is itself a djibb entity.** Same DO-backed substrate as List and Template — `DjibbList` is the base class, `DjibbWorkspace` extends it with workspace-specific bits (`is_personal` flag, Island hex coords, the cascade dispatcher from ADR 0008). The top-level `type` discriminator (`list | template | workspace`) names the variant. Workspace membership is, in the long run, an entry in the workspace's own `authorization_rules.authorized_accounts` — the same shape Lists already use — resolving the `@UPGRADE` note in `auth/rules.ts`. `AccountWorkspace` membership rows are a transitional artifact of the prior workspaces-as-D1-rows model. (See "djibb uses itself" under Design principles.)
+
 **Personal vs team.** Every Account has exactly one Workspace flagged `is_personal: true` — the implicit "my stuff" container Lists go into when no team Workspace is involved. Team Workspaces are everything else. The flag is enforced by invariant (exactly one personal per Account), not by URL or routing.
 
 **Deletion (ADR 0008).** Team Workspaces have a "Delete Workspace" verb (modal-confirm, no Cmd+Z); deletion cascade-archives every List and Template the workspace owns through a per-DO alarm dispatcher, each child carrying `cascade_source: w/<id>` and running its own 30-day soft-delete clock before hard-delete. Restore within the window walks the same `cascade_source` predicate to fan out inverses. Personal Workspaces are *not* deletable in the same sense — they expose a **"Start Fresh"** verb instead, which cascade-archives the current personal Workspace and atomically spawns a new one (preserving the "every Account has a personal Workspace" invariant). A personal Workspace restored from Trash while a fresher personal Workspace already exists comes back as a *regular* (non-personal) Workspace, not as a competing personal.
 
 ### Account
-An OAuth identity. A user can have multiple Accounts in one session. ID prefix: `a/`. URL: `/a/<suffix>`.
+A verified-email identity with a stable internal ID. A user can have **multiple Accounts in one session** and switch between them in-app (including across browser tabs). ID prefix: `a/`. URL: `/a/<suffix>`.
+
+**Account-ID is the contract boundary; email is the matching key.** Entity DOs key `authorized_accounts` and "shared with me" indexes by Account ID — never by email. Email appears only at *matching* surfaces (sign-in lookup, pending-invite resolution by `(target_id, identity_value)`). Once accepted, a membership refers to the Account ID, which is stable across any future change to the email schema. This discipline is what allows email-attached attributes (number per Account, primary/secondary, change-email flow) to evolve as localized migrations without touching authorization, invitations, or the cascade model. See **ADR 0010**.
+
+**One verified email per Account at v1** — sufficient for the bijection that makes sign-in lookup and invite-target resolution one-row operations. *Not* a permanent commitment: a future `account_emails(email, account_id, is_primary)` sibling table is anticipated for the multi-email-per-human case, and is reachable from v1's schema by adding the table and updating only the auth-substrate lookup paths. Multi-Account-per-session remains the surface for *deliberately separate identities* (alt accounts, personal vs. role-segregated), not for "I have multiple email addresses." See **ADR 0010**.
+
+**Authentication methods (ADR 0010).** Magic-link is the auth floor — passwordless, one-time email-bound tokens minted via the existing `workers/src/email` path. OAuth (Google today; others vetted case-by-case for `email_verified` trustworthiness) routes to the same Account when the verified email matches; the provider becomes session metadata, not Account identity. Passkey is opt-in 2FA layered onto an existing Account, sequenced after magic-link ships. Password is explicitly excluded — it adds operational surface without raising the security ceiling beyond email control.
+
+### Invitation
+An outstanding grant-of-access waiting to be claimed. Issued by an authorized member of a djibb entity (List, Template, or Workspace) to invite another party — identified by email — to that entity. Carries a target role, an expiry, and the invitee's email. When the recipient is signed in to djibb under that verified email, they can claim the invitation, which adds them to the entity's `authorization_rules.authorized_accounts` at the invited role.
+
+**Tokenless: two independent steps, not a bearer flow.** An email invitation does *not* carry a single-use accept token. A token would only be needed to identify the recipient — and we already know them. Instead the flow factors into:
+
+1. **Authentication** (djibb's general auth layer). Recipient signs in with a verified-email path (OAuth today; magic-link in future). Output: a session whose Account is bound to verified email `E`. This step is identical to any other sign-in.
+2. **Authorization** (the invitation system). When the signed-in user visits the target entity or their invitations inbox, the system checks "is there a pending invite for any of this account's verified emails on this entity?" If yes, surface an Accept affordance.
+
+The invite-notification email contains only a next-URL (link to the entity, or to `/invitations`); it is **not** an authentication token and **cannot** be claimed by a forwarder. Forwarding is harmless — the forwardee can't sign in as `E` unless they actually control `E`.
+
+**Bearer-token share links are a different primitive.** "Anyone with this URL can join as viewer" *is* an invite-someone-we-don't-know flow, where a bearer token is doing real work. That's a separate concept (provisionally **Share Link**) — different table, different UI affordance, different mental model. Not folded into email invitations.
+
+**DO-resident, authoritative.** The pending invitation lives inside the target entity's own DO, in a `pending_invites/<lowercased_email>` namespace, *not* in a parallel D1 table. Self-host follows "djibb uses itself" — and because the invite, once accepted, mutates the same DO's `authorized_accounts`, accept is one atomic DO mutation rather than a two-phase D1+DO commit.
+
+**PII gated by pull filter.** Invite records carry the invitee's email. The DO's Replicache pull handler strips `pending_invites/*` keys for any subscriber whose role is not in `OWNER_ROLES`. The pull cookie must encode role-version so promotion/demotion triggers fresh patches; demotion emits `op: 'del'` for the previously-visible keys. The D1 read-index emit does not include invite emails.
+
+**D1 derived index.** A thin `entity_invitations_index(target_id, target_email, target_type, role, inviter_account_id, time_created, time_expires)` table, derived (ADR 0003) from DO state, exists to answer (a) "what invitations are pending for verified email `E`?" without scanning every DO, and (b) cross-DO per-inviter rate limits. No tokens; the email is the join key. Cascade-delete of a target DO deletes its index rows in the same batch.
+
+**Same machinery, three target types.** A workspace invite and a list/template invite are the same primitive pointed at different `type` of DO. The existing `workspace_invitations` table predates this model; it remains as a transitional surface until the unified DO-resident path lands, then retires.
+
+**Entity and Workspace are independent grant axes.** Accepting an entity invite grants access to *that entity only* — no implicit Workspace membership, no special case for personal-Workspace-owned entities. Bob accepting an invite to "Weekend BBQ" in Alice's personal Workspace does not become a member of Alice's personal Workspace. Workspace membership and entity membership are union-composed at auth time (entity-direct grant ∪ workspace-member implicit grant per the `@UPGRADE` direction in `auth/rules.ts`).
+
+**Revoke vs Remove are different verbs on different records.** *Revoke* operates on a pending Invitation — invalidates a token-less, not-yet-acted-on grant. Low friction (re-invite is cheap), no Cmd+Z. *Remove access* operates on an accepted Membership — an entry in `authorized_accounts`. Goes through the existing `setListAuthRules` mutator pipeline (inverse-backed, Cmd+Z works). Once an Invitation transitions to `accepted`, it is no longer an Invitation — the membership is the live object, and the invitation row is retained only as audit (`time_accepted` populated). The Share UI exposes both verbs on different surfaces: Revoke on the "Pending invitations" section, Remove on the "People with access" roster.
+
+**"Shared with me" is a D1 derived index at v1.** A small `account_authorizations(account_id, target_id, target_type, role, time_granted)` table, emitted from entity DOs (ADR 0003 style) on grant/revoke, powers the user's view of entities they've been granted on across all DOs. This is a deliberate v1 simplification: the end-state is for `Account` to itself be a `DjibbList`-shaped DO whose items carry `references_entity_id` to shared entities — making "shared with me" a real djibb list per the "uses itself" principle. That refactor is sequenced *after* Workspace-as-DjibbList lands and is a swap-the-source migration that does not disturb the auth model. The v1 D1 index's columns mirror what the future account-list items will carry, so nothing paints into a corner.
+
+See **ADR 0009** for the full design (target-binding decomposition, alternatives considered, sequencing dependencies on Workspace-as-DO and magic-link auth).
 
 ## Homepage (djibb.com client)
 
