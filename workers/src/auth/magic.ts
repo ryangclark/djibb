@@ -114,12 +114,49 @@ const ConsumeBodySchema = z.object({
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-/** SHA-256(raw token) → hex. Stored at rest; raw token never persisted. */
-async function hashToken(raw: string): Promise<string> {
+/**
+ * SHA-256(raw token) → hex. Stored at rest; raw token never persisted.
+ *
+ * Exported for test access; the function is deterministic and pure,
+ * so tests can assert hash stability without spinning up D1.
+ */
+export async function hashToken(raw: string): Promise<string> {
     const bytes = new TextEncoder().encode(raw);
     const digest = await crypto.subtle.digest('SHA-256', bytes);
     const arr = Array.from(new Uint8Array(digest));
     return arr.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Atomically claim a magic-link token by its SHA-256 hash.
+ *
+ * Single UPDATE...RETURNING: if zero rows match, the token is
+ * either unknown, already consumed, or expired — the caller treats
+ * all three as the same "invalid token" failure (distinguishing
+ * them would help attackers triangulate token state).
+ *
+ * Exported for unit tests that exercise the single-use and
+ * expiry contracts directly against D1.
+ *
+ * @returns the row's `target_email` and `purpose` on success, or
+ *          `null` if no eligible row was found.
+ */
+export async function consumeMagicTokenRow(
+    d1: D1Database,
+    tokenHash: string,
+    now: number
+): Promise<{ target_email: string; purpose: string } | null> {
+    return d1
+        .prepare(
+            `UPDATE magic_link_tokens
+                SET time_consumed = ?
+                WHERE token_hash = ?
+                    AND time_consumed IS NULL
+                    AND time_expires > ?
+                RETURNING target_email, purpose;`
+        )
+        .bind(now, tokenHash, now)
+        .first<{ target_email: string; purpose: string }>();
 }
 
 /**
@@ -173,7 +210,7 @@ function buildLandingUrl(c: Context<HonoEnv>, rawToken: string, next: string): s
  * specific limit relaxes — `Math.ceil((oldest_in_window + window)
  * - now)` — so the UI can show an accurate countdown.
  */
-async function checkRateLimits(
+export async function checkRateLimits(
     d1: D1Database,
     args: { email: string; ip: string | null; now: number }
 ): Promise<RateLimitResult> {
@@ -446,21 +483,11 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
     const tokenHash = await hashToken(rawToken);
     const now = Math.floor(Date.now() / 1000);
 
-    // Atomically mark the token consumed. If zero rows are affected,
-    // the token is either unknown, already consumed, or expired —
-    // we return a single ValidationError without distinguishing the
-    // three. Distinguishing would help legitimate users but also help
-    // attackers triangulate token state.
-    const updateResult = await c.env.DJIBB_AUTH.prepare(
-        `UPDATE magic_link_tokens
-            SET time_consumed = ?
-            WHERE token_hash = ?
-              AND time_consumed IS NULL
-              AND time_expires > ?
-            RETURNING target_email, purpose;`
-    )
-        .bind(now, tokenHash, now)
-        .first<{ target_email: string; purpose: string }>();
+    const updateResult = await consumeMagicTokenRow(
+        c.env.DJIBB_AUTH,
+        tokenHash,
+        now
+    );
 
     if (!updateResult) {
         throw new ValidationError('sign-in link is invalid or expired');
