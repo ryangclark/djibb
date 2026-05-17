@@ -5,6 +5,7 @@ import {
     type AccountRole,
     type AuthorizationRules,
 } from '../auth/rules';
+import type { Account } from '../account';
 import { UnexpectedError } from '../errors';
 
 /**
@@ -668,4 +669,239 @@ export async function DeleteInvitationsForTarget(
         .prepare(`DELETE FROM entity_invitations_index WHERE target_id = ?`)
         .bind(targetId)
         .run();
+}
+
+// ---------- Accept-side helpers ----------
+
+export type PendingIndexRow = {
+    id: string;
+    target_id: string;
+    target_type: 'list' | 'template';
+    identity_kind: InvitationIdentityKind;
+    identity_value: string;
+    role: AccountRole;
+    inviter_account_id: string;
+    status: InvitationStatus;
+    time_created: number;
+    time_expires: number;
+};
+
+/**
+ * Look up a single invitation row from the D1 index by
+ * (target_id, identity_kind, identity_value). Used by the
+ * `acceptInvitation` HTTP preflight so a revoked or never-existed link
+ * surfaces as 404 without round-tripping the DO.
+ *
+ * Returns the row regardless of status — callers decide whether
+ * accepted / revoked rows are interesting. v1 only matches against the
+ * normalized identity value (callers normalize first).
+ */
+export async function GetInvitationFromIndex(
+    d1: D1Database,
+    {
+        targetId,
+        identity_kind,
+        identity_value,
+    }: {
+        targetId: string;
+        identity_kind: InvitationIdentityKind;
+        identity_value: string;
+    }
+): Promise<PendingIndexRow | null> {
+    const row = await d1
+        .prepare(
+            `SELECT id, target_id, target_type, identity_kind, identity_value,
+                    role, inviter_account_id, status, time_created, time_expires
+             FROM entity_invitations_index
+             WHERE target_id = ?
+               AND identity_kind = ?
+               AND identity_value = ?
+             LIMIT 1`
+        )
+        .bind(targetId, identity_kind, identity_value)
+        .first<PendingIndexRow>();
+    return row ?? null;
+}
+
+/**
+ * Flip the matching D1 index row from `status='pending'` to
+ * `status='accepted'`. Called from the DO push handler's post-commit
+ * tail BEFORE `EmitInvitationsSnapshot` runs — otherwise the
+ * reconciler's "missing in DO ⇒ revoked" rule would clobber the
+ * accept (the DO row was tombstoned by the mutator). No-op if the row
+ * isn't currently pending (idempotent under retry).
+ */
+export async function MarkInvitationsAccepted(
+    d1: D1Database,
+    targetId: string,
+    accepted: ReadonlyArray<{
+        identity_kind: InvitationIdentityKind;
+        identity_value: string;
+    }>
+): Promise<void> {
+    if (accepted.length === 0) return;
+    const stmts = accepted.map(a =>
+        d1
+            .prepare(
+                `UPDATE entity_invitations_index
+                 SET status = 'accepted'
+                 WHERE target_id = ?
+                   AND identity_kind = ?
+                   AND identity_value = ?
+                   AND status = 'pending'`
+            )
+            .bind(targetId, a.identity_kind, a.identity_value)
+    );
+    await d1.batch(stmts);
+}
+
+// ---------- Accept preflight ----------
+
+export type AcceptPreflightDeps = {
+    /**
+     * Look up the D1 index row matching the entity + identity. Null
+     * when no row matches (link revoked, never created, or wrong
+     * entity). Caller is expected to normalize `identity_value` first.
+     */
+    getInvitationFromIndex: (
+        targetId: string,
+        identity_kind: InvitationIdentityKind,
+        identity_value: string
+    ) => Promise<PendingIndexRow | null>;
+};
+
+export type AcceptPreflightInput = {
+    /** From `mutation.args.accountId`. Null/empty rejects. */
+    acceptor_account_id: string | null | undefined;
+    target_id: string;
+    identity_kind: InvitationIdentityKind;
+    identity_value: string;
+    /** All accounts on the caller's session. Acceptor must be one. */
+    sessionAccounts: ReadonlyArray<Pick<Account, 'id' | 'email' | 'email_verified'>>;
+    /** Unix seconds. Injected so tests can pin time. */
+    nowSeconds: number;
+};
+
+export type AcceptPreflightFailureReason =
+    | 'unauthenticated_acceptor'
+    | 'session_mismatch'
+    | 'identity_unverified'
+    | 'invitation_not_found'
+    | 'invitation_expired'
+    | 'invitation_not_pending';
+
+export type AcceptPreflightResult =
+    | {
+          ok: true;
+          /** Normalized identity (lower-cased for email) so the DO mutator
+           *  uses the same key the index resolved against. */
+          normalized_identity_value: string;
+          /** D1 row that resolved — caller can carry the role / inviter
+           *  forward into the mutator if a future variant wants them. */
+          index_row: PendingIndexRow;
+      }
+    | {
+          ok: false;
+          reason: AcceptPreflightFailureReason;
+          message: string;
+      };
+
+/**
+ * Validate an `acceptInvitation` request before it reaches the DO.
+ *
+ * The DO mutator role-gates on the entity's authorization_rules, which
+ * for a fresh invitee resolves to `restricted` — that gate would reject
+ * the push outright if `acceptInvitation` were treated like any other
+ * mutator. So the HTTP `/push` handler exempts accept-only pushes from
+ * the `restricted` block and instead enforces identity ownership here:
+ *
+ *   1. acceptor is signed in (envelope `accountId` present)
+ *   2. acceptor is among the session's accounts
+ *   3. acceptor's verified identity matches the invitation's identity
+ *      (email kind: lower-case match + email_verified = true)
+ *   4. a matching D1 index row exists, is `pending`, and hasn't expired
+ *
+ * The D1 row read is best-effort: if the D1 projection has lagged behind
+ * the DO (unusual; post-commit emit is synchronous), an acceptor whose
+ * invite is genuinely live could see a transient 404. The mutator's
+ * `gone` outcome covers the inverse race (D1 still pending, DO already
+ * revoked).
+ */
+export async function preflightAcceptInvitation(
+    deps: AcceptPreflightDeps,
+    input: AcceptPreflightInput
+): Promise<AcceptPreflightResult> {
+    const acceptor = input.acceptor_account_id;
+    if (!acceptor) {
+        return {
+            ok: false,
+            reason: 'unauthenticated_acceptor',
+            message: 'Sign in to accept invitations.',
+        };
+    }
+    const sessionMatch = input.sessionAccounts.find(a => a.id === acceptor);
+    if (!sessionMatch) {
+        return {
+            ok: false,
+            reason: 'session_mismatch',
+            message: 'Acceptor account is not in the current session.',
+        };
+    }
+
+    const normalized = normalizeIdentityValue(
+        input.identity_kind,
+        input.identity_value
+    );
+
+    // Identity ownership. v1 = email only. The acceptor's session
+    // account must have a verified email matching the invitation's
+    // (normalized) identity value — otherwise anyone with a session
+    // could accept anyone else's invite link.
+    if (input.identity_kind === 'email') {
+        const verified =
+            sessionMatch.email_verified === true &&
+            typeof sessionMatch.email === 'string' &&
+            sessionMatch.email.trim().toLowerCase() === normalized;
+        if (!verified) {
+            return {
+                ok: false,
+                reason: 'identity_unverified',
+                message:
+                    'This invitation is for a different email than the one you have verified on this account.',
+            };
+        }
+    }
+
+    const indexRow = await deps.getInvitationFromIndex(
+        input.target_id,
+        input.identity_kind,
+        normalized
+    );
+    if (!indexRow) {
+        return {
+            ok: false,
+            reason: 'invitation_not_found',
+            message: 'No invitation found for this link.',
+        };
+    }
+    if (indexRow.status !== 'pending') {
+        return {
+            ok: false,
+            reason: 'invitation_not_pending',
+            message: `This invitation is already ${indexRow.status}.`,
+        };
+    }
+    if (indexRow.time_expires < input.nowSeconds) {
+        return {
+            ok: false,
+            reason: 'invitation_expired',
+            message: 'This invitation has expired. Ask the sender to send a new one.',
+        };
+    }
+
+    return {
+        ok: true,
+        normalized_identity_value: normalized,
+        index_row: indexRow,
+    };
 }

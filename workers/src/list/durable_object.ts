@@ -43,8 +43,12 @@ import { Result, tryCatch, tryCatchAsync } from '../utils/trycatch';
 import { EmitEntitySnapshotToCatalog, GetEntityVersion } from './entity';
 import {
     EmitInvitationsSnapshot,
+    InvitationIdentityKindEnum,
+    MarkInvitationsAccepted,
     ensurePendingInvitesTable,
     listPendingInvites,
+    normalizeIdentityValue,
+    type InvitationIdentityKind,
 } from './invitations';
 import { LIST_PULL_KEYSPACES } from './pull';
 import {
@@ -61,6 +65,7 @@ import { newId } from '../id';
  * mutators land (renameList, setListAuthRules, archiveList, ...).
  */
 const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
+    'acceptInvitation',
     'archiveList',
     'initFromTemplate',
     'initList',
@@ -78,6 +83,7 @@ const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
  * — it's a full-snapshot diff, not per-row.
  */
 const INVITATION_MUTATORS: ReadonlySet<string> = new Set([
+    'acceptInvitation',
     'inviteByIdentity',
     'revokeInvitation',
 ]);
@@ -496,6 +502,15 @@ export class DjibbList extends DurableObject {
         // `pending_invites` table. Triggers the post-commit
         // reconciliation emit to `entity_invitations_index` (ADR 0009).
         let invitationsMutated = false;
+        // Tracks (identity_kind, identity_value) pairs whose
+        // pending_invite row was accepted in this push. Each gets a
+        // direct UPDATE to D1 (`status='accepted'`) BEFORE the
+        // reconciler runs, so the "missing in DO ⇒ revoked" diff
+        // doesn't downgrade the row.
+        const acceptedInvites: Array<{
+            identity_kind: InvitationIdentityKind;
+            identity_value: string;
+        }> = [];
 
         for (let i = 0; i < pushRequest.mutations.length; i++) {
             const mutation = pushRequest.mutations[i];
@@ -568,6 +583,30 @@ export class DjibbList extends DurableObject {
                 if (INVITATION_MUTATORS.has(mutation.name)) {
                     invitationsMutated = true;
                 }
+                if (mutation.name === 'acceptInvitation') {
+                    // Pull the (kind, value) directly off the wire
+                    // args. The mutator already parsed + role-gated
+                    // above, so we trust the args' shape here; a
+                    // belt-and-suspenders zod parse keeps the cast
+                    // honest.
+                    const rawArgs = (mutation.args ?? {}) as Record<
+                        string,
+                        unknown
+                    >;
+                    const kindParse = InvitationIdentityKindEnum.safeParse(
+                        rawArgs.identity_kind
+                    );
+                    const valueRaw = rawArgs.identity_value;
+                    if (kindParse.success && typeof valueRaw === 'string') {
+                        acceptedInvites.push({
+                            identity_kind: kindParse.data,
+                            identity_value: normalizeIdentityValue(
+                                kindParse.data,
+                                valueRaw
+                            ),
+                        });
+                    }
+                }
             }
             if (ackedMutationId !== null) {
                 replicacheClient.lastMutationId = ackedMutationId;
@@ -596,6 +635,28 @@ export class DjibbList extends DurableObject {
             } catch (error) {
                 console.error(
                     `\`emitEntitySnapshot()\` D1 emit failed for "${listId}":`,
+                    error
+                );
+            }
+        }
+
+        // Flip D1 index rows to `status='accepted'` for each accepted
+        // invite BEFORE the reconciler's snapshot diff runs (ADR 0009
+        // Slice 3). Order matters: the reconciler converts D1 'pending'
+        // rows that have no DO counterpart to 'revoked'; the accepted
+        // rows have been tombstoned in the DO, so without this update
+        // they'd be misclassified as revoked. Fire-and-pray on D1
+        // failure — same posture as the snapshot below.
+        if (acceptedInvites.length > 0) {
+            try {
+                await MarkInvitationsAccepted(
+                    (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+                    listId,
+                    acceptedInvites
+                );
+            } catch (error) {
+                console.error(
+                    `\`MarkInvitationsAccepted()\` D1 emit failed for "${listId}":`,
                     error
                 );
             }

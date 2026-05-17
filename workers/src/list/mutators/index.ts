@@ -11,6 +11,7 @@ import type {
     ServerMutatorCtx,
 } from './_shared';
 
+import * as acceptInvitation from './acceptInvitation';
 import * as archiveList from './archiveList';
 import * as archiveListGroup from './archiveListGroup';
 import * as archiveListGroups from './archiveListGroups';
@@ -65,6 +66,7 @@ export const DEFAULT_LIST_TITLE = '';
  * is no separate ServerMutators / ClientMutators registry to drift.
  */
 export const Mutations = {
+    [acceptInvitation.name]: acceptInvitation,
     [archiveList.name]: archiveList,
     [archiveListGroup.name]: archiveListGroup,
     [archiveListGroups.name]: archiveListGroups,

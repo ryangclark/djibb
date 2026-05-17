@@ -31,8 +31,11 @@ import { initListArgsSchema } from './mutators/client';
 import {
     CountInvitesByInviterSince,
     CountOutstandingInvitesByInviter,
+    GetInvitationFromIndex,
     InvitationIdentityKindEnum,
+    preflightAcceptInvitation,
     preflightInviteByIdentity,
+    type AcceptPreflightFailureReason,
     type InvitePreflightFailureReason,
 } from './invitations';
 import { GetAccountByEmail } from '../account/service';
@@ -322,7 +325,21 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
             AuthorizationRoleEnum.enum.ownerless,
         ]);
 
-        if (!authorizedRoles.safeParse(requestRole).success) {
+        // ADR 0009 Slice 3: `acceptInvitation` is a deliberate
+        // exception to the `restricted`-blocks-push rule. A fresh
+        // invitee resolves to `restricted` until acceptance commits, so
+        // demanding a higher role here would make accept unreachable.
+        // The exemption is narrow — applies only when EVERY mutation
+        // in the push is `acceptInvitation`. The identity-match
+        // preflight below is the real security gate; a `restricted`
+        // caller cannot ride this exemption to run any other mutator.
+        const acceptMutations = pushRequest.mutations.filter(
+            m => m.name === 'acceptInvitation',
+        );
+        const acceptOnly =
+            acceptMutations.length > 0 &&
+            acceptMutations.length === pushRequest.mutations.length;
+        if (!acceptOnly && !authorizedRoles.safeParse(requestRole).success) {
             console.log('/push throw unauth!');
             throw new UnauthorizedError();
         }
@@ -411,6 +428,86 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
                         already_member: () =>
                             new FailedPreconditionError(result.message),
                         self_invite: () =>
+                            new FailedPreconditionError(result.message),
+                    };
+                    throw reasonToError[result.reason]();
+                }
+            }
+        }
+
+        // ADR 0009 Slice 3: acceptInvitation preflight. Identity-match
+        // verification — the acceptor's session account must have a
+        // verified identity matching the invitation's (identity_kind,
+        // identity_value). Without this, anyone with a session could
+        // accept anyone else's invite. The D1 index lookup additionally
+        // surfaces stale/revoked links as 404 without round-tripping
+        // the DO.
+        if (acceptMutations.length > 0) {
+            const sessionAccounts = c.get('session')?.accounts ?? [];
+            const d1 = c.env.DJIBB_AUTH;
+            const acceptDeps = {
+                getInvitationFromIndex: (
+                    targetId: string,
+                    identity_kind: 'email',
+                    identity_value: string,
+                ) =>
+                    GetInvitationFromIndex(d1, {
+                        targetId,
+                        identity_kind,
+                        identity_value,
+                    }),
+            };
+
+            for (const mutation of acceptMutations) {
+                const args = (mutation.args ?? {}) as Record<string, unknown>;
+                const kindParsed = InvitationIdentityKindEnum.safeParse(
+                    args.identity_kind,
+                );
+                if (!kindParsed.success) {
+                    throw new ValidationError(
+                        'acceptInvitation: invalid identity_kind',
+                    );
+                }
+                const identity_value =
+                    typeof args.identity_value === 'string'
+                        ? args.identity_value
+                        : '';
+                const target_id =
+                    typeof args.listId === 'string' ? args.listId : '';
+                if (target_id !== listId) {
+                    throw new ValidationError(
+                        'acceptInvitation: args.listId does not match request entity',
+                    );
+                }
+                const acceptor_account_id =
+                    typeof args.accountId === 'string'
+                        ? args.accountId
+                        : null;
+
+                const result = await preflightAcceptInvitation(acceptDeps, {
+                    acceptor_account_id,
+                    target_id,
+                    identity_kind: kindParsed.data,
+                    identity_value,
+                    sessionAccounts,
+                    nowSeconds: Math.floor(Date.now() / 1000),
+                });
+                if (!result.ok) {
+                    const reasonToError: Record<
+                        AcceptPreflightFailureReason,
+                        () => DjibbError
+                    > = {
+                        unauthenticated_acceptor: () =>
+                            new UnauthorizedError(result.message),
+                        session_mismatch: () =>
+                            new UnauthorizedError(result.message),
+                        identity_unverified: () =>
+                            new UnauthorizedError(result.message),
+                        invitation_not_found: () =>
+                            new NotFoundError(result.message),
+                        invitation_not_pending: () =>
+                            new FailedPreconditionError(result.message),
+                        invitation_expired: () =>
                             new FailedPreconditionError(result.message),
                     };
                     throw reasonToError[result.reason]();
