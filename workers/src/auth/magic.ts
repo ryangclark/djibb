@@ -105,6 +105,16 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const RequestBodySchema = z.object({
     email: z.string().trim().min(3).max(254),
     next: z.string().optional(), // post-signin destination path
+    /**
+     * Dev-mode test seam: when set, AND `c.env.ENV === 'dev'`, the
+     * response includes the raw landing URL so an E2E test driver
+     * can drive the click-through interstitial without having to
+     * intercept the outbound email. Honored exclusively in dev — see
+     * the env check in `handleMagicRequest` below. The schema accepts
+     * the flag in any environment so prod requests don't 400; the
+     * env check is what makes prod ignore it.
+     */
+    _dev: z.boolean().optional(),
 });
 
 const ConsumeBodySchema = z.object({
@@ -125,6 +135,35 @@ export async function hashToken(raw: string): Promise<string> {
     const digest = await crypto.subtle.digest('SHA-256', bytes);
     const arr = Array.from(new Uint8Array(digest));
     return arr.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * The dev-seam gate.
+ *
+ * Returns true only when *both*:
+ *  - the deployment is a dev environment (ENV value, case-insensitive,
+ *    equals "dev"). Note: real prod must never set ENV to "dev" or
+ *    "DEV". The check is case-insensitive purely to tolerate the
+ *    existing convention mismatch (.dev.vars uses "DEV"; oauth.ts
+ *    historically checks for lowercase "dev").
+ *  - the caller has opted in by sending `_dev: true` in the request
+ *    body. Ordinary dev traffic from the sign-in UI does NOT set
+ *    this flag, so a developer signing in normally still gets the
+ *    soft-200 with no body — preserving the existence-disclosure
+ *    invariant on routine traffic.
+ *
+ * Extracted as a named, pure predicate so the production-safety
+ * claim has a place to be unit-tested directly: every (envValue,
+ * devFlag) combination can be exercised without the surrounding
+ * HTTP machinery.
+ */
+export function shouldExposeDevSeam(
+    envValue: string | undefined | null,
+    devFlag: boolean | undefined
+): boolean {
+    if (devFlag !== true) return false;
+    if (envValue == null) return false;
+    return String(envValue).toLowerCase() === 'dev';
 }
 
 /**
@@ -424,6 +463,20 @@ export async function handleMagicRequest(c: Context<HonoEnv>) {
     } catch (err) {
         console.error('`handleMagicRequest()` email send error:', err);
         // Still 200 — see disclosure-avoidance comment above.
+    }
+
+    // Dev seam (ADR 0010 supplement): see `shouldExposeDevSeam` for
+    // the gate. When both conditions hold, surface the raw landing
+    // URL so E2E drivers can advance past the interstitial without
+    // intercepting the outbound email. The seam is loud (logs) so
+    // an accidental prod deploy that flips ENV to 'dev' is visible.
+    if (shouldExposeDevSeam(c.env.ENV, parsed.data._dev)) {
+        console.log(
+            '`handleMagicRequest()` dev seam: returning landing_url ' +
+                'for email=%s. This must not happen in production.',
+            email
+        );
+        return c.json({ landing_url: landingUrl }, 200);
     }
 
     return c.body(null, 200);

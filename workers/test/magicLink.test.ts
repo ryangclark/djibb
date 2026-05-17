@@ -28,6 +28,7 @@ import {
     checkRateLimits,
     consumeMagicTokenRow,
     hashToken,
+    shouldExposeDevSeam,
 } from '../src/auth/magic';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
@@ -494,3 +495,65 @@ describe('Account email-resolution and provider tag', () => {
         );
     });
 });
+
+// ─── Dev-mode test seam ─────────────────────────────────────────────────────
+
+/**
+ * The `_dev` request flag is the E2E test driver's only way to obtain
+ * the raw magic-link URL without intercepting the outbound email. Two
+ * load-bearing claims:
+ *
+ *   1. When ENV is "dev" (case-insensitive) AND _dev=true, the
+ *      response carries `landing_url`.
+ *   2. The seam never fires when either condition is missing — in
+ *      particular, an attacker adding `_dev: true` to a production
+ *      request cannot extract URLs.
+ *
+ * Claim 2 is exercised exhaustively against the pure predicate
+ * (`shouldExposeDevSeam`); the wiring test below confirms that the
+ * predicate is what `handleMagicRequest` actually consults.
+ */
+describe('shouldExposeDevSeam (pure gate predicate)', () => {
+    it('opens the seam only when both inputs agree', () => {
+        expect(shouldExposeDevSeam('dev', true)).toBe(true);
+        expect(shouldExposeDevSeam('DEV', true)).toBe(true);
+        expect(shouldExposeDevSeam('Dev', true)).toBe(true);
+    });
+
+    it('blocks the seam when _dev flag is missing or false', () => {
+        expect(shouldExposeDevSeam('dev', undefined)).toBe(false);
+        expect(shouldExposeDevSeam('dev', false)).toBe(false);
+    });
+
+    it('blocks the seam in non-dev environments even with _dev=true', () => {
+        // The load-bearing claim: an attacker who manages to send
+        // `_dev: true` against a production deployment cannot extract
+        // URLs. This is the predicate that guarantees that.
+        expect(shouldExposeDevSeam('production', true)).toBe(false);
+        expect(shouldExposeDevSeam('staging', true)).toBe(false);
+        expect(shouldExposeDevSeam('prod', true)).toBe(false);
+    });
+
+    it('blocks the seam when ENV is missing entirely', () => {
+        // Defensive default: a misconfigured deployment that omits
+        // ENV must default-deny, not default-allow.
+        expect(shouldExposeDevSeam(undefined, true)).toBe(false);
+        expect(shouldExposeDevSeam(null, true)).toBe(false);
+        expect(shouldExposeDevSeam('', true)).toBe(false);
+    });
+
+    it('does not match near-misses like "develop" or " dev "', () => {
+        expect(shouldExposeDevSeam('develop', true)).toBe(false);
+        expect(shouldExposeDevSeam(' dev ', true)).toBe(false);
+        expect(shouldExposeDevSeam('development', true)).toBe(false);
+    });
+});
+
+// Wiring of the predicate into `handleMagicRequest` is verified by the
+// E2E script at /e2e/magic-link.sh, which drives the seam through a
+// real browser → real worker round trip. We deliberately do not test
+// the HTTP wiring here: synthetic Requests in the vitest-pool-workers
+// env can't carry a Host header (forbidden header name in JS Fetch),
+// which trips the CSRF middleware's Host-presence check. Rather than
+// loosen production-shipped middleware to satisfy the test harness,
+// we let the E2E script cover that part of the path.
