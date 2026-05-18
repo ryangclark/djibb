@@ -16,10 +16,18 @@
 	 * §"Policy defaults"). This is UX-only; do not depend on it for
 	 * security — the server will own the canonical limit.
 	 */
+	import { page } from '$app/state';
 	import {
 		MagicLinkRateLimitError,
 		requestMagicLink
 	} from '$lib/api/magicLink.js';
+
+	// Honor `?next=<path>` so deep links (e.g. an entity-invite banner
+	// at `/l/<id>?from_invite=1` that bounced the user here to sign in)
+	// land the user back where they started after `/auth/magic/consume`.
+	// The worker sanitizes the value (local-path-only), so we pass it
+	// through verbatim — no need to re-validate here.
+	let nextParam = $derived(page.url.searchParams.get('next') ?? undefined);
 
 	/** @typedef {'idle' | 'sending' | 'sent' | 'error'} Phase */
 
@@ -99,7 +107,7 @@
 		errorMessage = '';
 
 		try {
-			await requestMagicLink({ email: trimmed });
+			await requestMagicLink({ email: trimmed, next: nextParam });
 			phase = 'sent';
 			startCooldown(COOLDOWN_SECONDS);
 		} catch (err) {

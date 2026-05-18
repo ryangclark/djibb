@@ -9,6 +9,7 @@
 	import { decodeWSMessage } from '$djibb/websocket/constants';
 
 	import ConfirmToast from '$lib/components/ConfirmToast.svelte';
+	import InviteBanner from '$lib/components/InviteBanner.svelte';
 	import List from '$lib/components/List.svelte';
 	import UndoToast from '$lib/components/UndoToast.svelte';
 	import { getSessionState } from '$lib/session.svelte.js';
@@ -117,6 +118,19 @@
 		};
 	});
 </script>
+
+{#if page.url.searchParams.get('from_invite') === '1'}
+	<InviteBanner
+		entityId={data.list_id}
+		entityType="list"
+		entityName={list?.name ?? null}
+		authorizationRules={list?.authorization_rules}
+		{mutators}
+		sessionAccounts={sessionState.accounts}
+		currentAccountId={sessionState.currentAccountId}
+		pathname={page.url.pathname}
+	/>
+{/if}
 
 <svelte:boundary {failed}>
 	{#if list && mutators && mutateWithUndo && undoRuntime}
