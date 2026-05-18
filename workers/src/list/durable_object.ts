@@ -58,6 +58,7 @@ import {
     type InvitePreflightFailureReason,
 } from './invitations';
 import { GetAccountByEmail } from '../account/service';
+import { sendEntityInvitationEmail } from '../email';
 import { LIST_PULL_KEYSPACES } from './pull';
 import {
     appendKeyspacePatches,
@@ -714,6 +715,17 @@ export class DjibbList extends DurableObject {
             identity_kind: InvitationIdentityKind;
             identity_value: string;
         }> = [];
+        // Tracks (identity_kind, identity_value, inviter_account_id)
+        // for every `inviteByIdentity` mutation that successfully
+        // committed in this push. Drained post-commit to fire
+        // notification emails per ADR 0009 §"Email send". Stored
+        // separately from the reconciler input so we never fire on a
+        // mutation that was skipped/rolled back.
+        const sentInvites: Array<{
+            identity_kind: InvitationIdentityKind;
+            identity_value: string;
+            inviter_account_id: string;
+        }> = [];
 
         for (let i = 0; i < pushRequest.mutations.length; i++) {
             const mutation = pushRequest.mutations[i];
@@ -841,6 +853,36 @@ export class DjibbList extends DurableObject {
                 if (INVITATION_MUTATORS.has(mutation.name)) {
                     invitationsMutated = true;
                 }
+                if (mutation.name === 'inviteByIdentity') {
+                    // Capture sent invites so the post-commit tail can
+                    // fire notification emails. Pull (kind, value,
+                    // inviter) directly off the wire args — the mutator
+                    // already parsed + role-gated, and the preflight
+                    // verified the inviter is in-session.
+                    const rawArgs = (mutation.args ?? {}) as Record<
+                        string,
+                        unknown
+                    >;
+                    const kindParse = InvitationIdentityKindEnum.safeParse(
+                        rawArgs.identity_kind
+                    );
+                    const valueRaw = rawArgs.identity_value;
+                    const inviterRaw = rawArgs.accountId;
+                    if (
+                        kindParse.success &&
+                        typeof valueRaw === 'string' &&
+                        typeof inviterRaw === 'string'
+                    ) {
+                        sentInvites.push({
+                            identity_kind: kindParse.data,
+                            identity_value: normalizeIdentityValue(
+                                kindParse.data,
+                                valueRaw
+                            ),
+                            inviter_account_id: inviterRaw,
+                        });
+                    }
+                }
                 if (mutation.name === 'acceptInvitation') {
                     // Pull the (kind, value) directly off the wire
                     // args. The mutator already parsed + role-gated
@@ -934,6 +976,22 @@ export class DjibbList extends DurableObject {
                     error
                 );
             }
+        }
+
+        // Fire invitation notification emails for any inviteByIdentity
+        // mutations that committed in this push (ADR 0009 §"Email
+        // send"). Best-effort: a delivery failure is logged but doesn't
+        // affect the push response — the invite still exists in the DO
+        // + D1 index and the invitee can be re-notified by another
+        // surface (resend button, future inbox). Email lookup is keyed
+        // by the entity row + the inviter's display_name on the session
+        // we already have in scope, so no extra D1 reads.
+        if (sentInvites.length > 0) {
+            await this.fireInvitationEmails(
+                listId,
+                sentInvites,
+                authorizedAccounts
+            );
         }
 
         // Bootstrap the reconciliation alarm per ADR 0007. Idempotent;
@@ -1269,6 +1327,95 @@ export class DjibbList extends DurableObject {
      * its own list_elements row is missing) is an invariant violation
      * — logged and skipped, not thrown, mirroring `emitEntitySnapshot`.
      */
+    /**
+     * Send notification emails for invitations that committed in this
+     * push (ADR 0009 §"Email send"). One email per recipient. The
+     * `acceptUrl` points directly to the entity page with
+     * `?from_invite=1`; the entity route handles its own redirect-to-
+     * login for unauthenticated invitees and a future banner picks up
+     * the flag to surface an explicit "accept" affordance.
+     *
+     * Best-effort: failures are logged, never thrown. Concurrent sends
+     * are awaited via `Promise.allSettled` so one slow recipient
+     * doesn't serialize the rest, and the push response isn't blocked
+     * on aggregate latency beyond the slowest send. The DO's input
+     * gate keeps the object alive while these promises resolve, so we
+     * don't need `executionCtx.waitUntil` here (which isn't available
+     * inside the DO anyway).
+     */
+    private async fireInvitationEmails(
+        entityId: string,
+        invites: ReadonlyArray<{
+            identity_kind: InvitationIdentityKind;
+            identity_value: string;
+            inviter_account_id: string;
+        }>,
+        authorizedAccounts: Readonly<Account[]>
+    ): Promise<void> {
+        const entity = getElementById(this.sql, entityId);
+        if (
+            !entity ||
+            (entity.type !== 'list' && entity.type !== 'template')
+        ) {
+            console.warn(
+                `\`fireInvitationEmails()\` no entity row for "${entityId}"`
+            );
+            return;
+        }
+        const entityName = (entity as { name?: string }).name ?? '';
+        const entityTypeLabel = entity.type;
+
+        const env = this.env as Bindings;
+        if (!env.EMAIL) {
+            console.warn(
+                '`fireInvitationEmails()` no EMAIL binding; skipping send.'
+            );
+            return;
+        }
+
+        // First domain in the semicolon-separated list is treated as
+        // canonical for outbound links (matches the workspace-invite
+        // pattern in `workspace/fetch.ts`).
+        const origin = (env.AUTHORIZED_DOMAINS ?? '').split(';')[0] ?? '';
+        if (!origin) {
+            console.warn(
+                '`fireInvitationEmails()` no AUTHORIZED_DOMAINS; using relative URL.'
+            );
+        }
+        const pathPrefix = entityTypeLabel === 'list' ? '/l/' : '/t/';
+        // ID prefix lives in the entity id (`l/<suffix>` / `t/<suffix>`)
+        // but the URL form strips the prefix segment (see user memory:
+        // URLs mirror ID type prefixes — `/l/<suffix>` not `/l/l/<suffix>`).
+        const idSuffix = entityId.includes('/')
+            ? entityId.split('/')[1]
+            : entityId;
+        const acceptUrl = `${origin}${pathPrefix}${idSuffix}?from_invite=1`;
+
+        const sends = invites.map(async invite => {
+            // v1 only supports email-kind identities.
+            if (invite.identity_kind !== 'email') return;
+            const inviter = authorizedAccounts.find(
+                a => a.id === invite.inviter_account_id
+            );
+            const inviterName = inviter?.display_name ?? '';
+            try {
+                await sendEntityInvitationEmail(env, {
+                    to: invite.identity_value,
+                    entityTypeLabel,
+                    entityName,
+                    inviterName,
+                    acceptUrl,
+                });
+            } catch (error) {
+                console.error(
+                    `\`sendEntityInvitationEmail()\` failed for "${entityId}" -> "${invite.identity_value}":`,
+                    error
+                );
+            }
+        });
+        await Promise.allSettled(sends);
+    }
+
     private async emitInvitationsSnapshot(entityId: string): Promise<void> {
         const entity = getElementById(this.sql, entityId);
         if (!entity || (entity.type !== 'list' && entity.type !== 'template')) {

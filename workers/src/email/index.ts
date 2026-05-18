@@ -34,6 +34,58 @@ export async function sendInvitationEmail(
     });
 }
 
+export interface EntityInvitationEmailParams {
+    to: string;
+    /** "list" or "template" — drives subject phrasing. */
+    entityTypeLabel: 'list' | 'template';
+    /** Display name of the entity. May be empty; falls back to a
+     *  generic phrase. */
+    entityName: string;
+    /** Display name of the inviter. May be empty; falls back to
+     *  "Someone." */
+    inviterName: string;
+    /** Direct URL to the entity — accept fires from there. v1 points to
+     *  `/{l|t}/<id>?from_invite=1`. */
+    acceptUrl: string;
+}
+
+/**
+ * Invitation email for ADR 0009 entity invites (List / Template).
+ * Tokenless — the URL is just the entity page, which the invitee
+ * loads, signs in if needed, and accepts from. Sibling of
+ * `sendInvitationEmail` (workspace token flow); kept separate so the
+ * upcoming Accounts-as-DjibbList refactor can evolve the entity path
+ * without touching the workspace branch.
+ */
+export async function sendEntityInvitationEmail(
+    env: Bindings,
+    params: EntityInvitationEmailParams
+): Promise<void> {
+    const from = env.EMAIL_FROM || 'no-reply@djibb.app';
+    const inviter = params.inviterName?.trim() || 'Someone';
+    const entityName = params.entityName?.trim() || `a ${params.entityTypeLabel}`;
+    const subject = `${sanitizeHeader(inviter)} shared ${sanitizeHeader(entityName)} with you on djibb`;
+
+    const text =
+        `${inviter} invited you to "${entityName}" on djibb.\n\n` +
+        `Open the ${params.entityTypeLabel}:\n${params.acceptUrl}\n\n` +
+        `If you weren't expecting this, you can ignore this email.\n`;
+
+    const html =
+        `<p><strong>${escapeHtml(inviter)}</strong> invited you to ` +
+        `<strong>${escapeHtml(entityName)}</strong> on djibb.</p>` +
+        `<p><a href="${escapeAttr(params.acceptUrl)}">Open the ${escapeHtml(params.entityTypeLabel)}</a></p>` +
+        `<p style="color:#888;font-size:12px">If you weren't expecting this, you can ignore this email.</p>`;
+
+    await env.EMAIL.send({
+        from: { email: from, name: 'djibb invites' },
+        to: params.to,
+        subject,
+        html,
+        text,
+    });
+}
+
 export interface MagicLinkEmailParams {
     to: string;
     landingUrl: string;

@@ -429,6 +429,171 @@ describe('inviteByIdentity', () => {
         );
         expect(afterCount.c).toBe(1); // stranger@ landed; already-member skipped
     });
+
+    // ------------------------------------------------------------------
+    // ADR 0009 §"Email send": a successful inviteByIdentity fires a
+    // notification email to the invitee. Best-effort; failures don't
+    // affect the push response.
+    // ------------------------------------------------------------------
+
+    it('fires a notification email after a successful inviteByIdentity', async () => {
+        const { listId, stub } = getListStub('invemail');
+        const clientGroupID = 'cg_inv_email';
+        const clientID = 'c_inv_email';
+        const inviterId = newId('account');
+
+        await initEntity({ stub, listId, clientGroupID, clientID });
+
+        // Stub env.EMAIL.send with a spy. Restore on the way out so a
+        // later test doesn't see lingering captures (vitest isolates
+        // modules per-file but `env` is per-test-file singleton).
+        const sends: Array<Record<string, unknown>> = [];
+        const originalEmail = (env as { EMAIL?: unknown }).EMAIL;
+        (env as { EMAIL: unknown }).EMAIL = {
+            send: async (msg: Record<string, unknown>) => {
+                sends.push(msg);
+            },
+        };
+
+        try {
+            const result = await stub.handlePush({
+                authorizedAccounts: [
+                    {
+                        id: inviterId,
+                        display_name: 'Alice Inviter',
+                    } as any,
+                ],
+                authorizedRole: 'owner',
+                listId,
+                pushRequest: makePush({
+                    clientGroupID,
+                    clientID,
+                    name: 'inviteByIdentity',
+                    mutationId: 2,
+                    accountId: inviterId,
+                    body: {
+                        listId,
+                        identity_kind: 'email',
+                        identity_value: 'Recipient@Example.com',
+                        role: 'editor',
+                    },
+                }),
+            });
+            expect(result.error).toBeNull();
+
+            // One send, addressed to the normalized (lower-cased) email
+            // the DO stored — matches the D1 index row.
+            expect(sends).toHaveLength(1);
+            const sent = sends[0]!;
+            expect(sent.to).toBe('recipient@example.com');
+            // Subject mentions the inviter's display_name (taken from
+            // authorizedAccounts) and the inviting verb. Entity has no
+            // name yet (init didn't set one) so the subject phrasing
+            // falls back to "a list".
+            expect(String(sent.subject)).toContain('Alice Inviter');
+            expect(String(sent.subject)).toMatch(/djibb/i);
+            // Body links to the entity URL with the from_invite hint —
+            // the deferred banner picks this up.
+            const html = String(sent.html);
+            expect(html).toContain('from_invite=1');
+            // Suffix from `l/<suffix>` rather than the whole id (URL
+            // form strips the type-prefix segment).
+            const idSuffix = listId.split('/')[1];
+            expect(html).toContain(`/l/${idSuffix}`);
+        } finally {
+            (env as { EMAIL: unknown }).EMAIL = originalEmail;
+        }
+    });
+
+    it('skips email send for preflight-failed invites (already_member)', async () => {
+        const { listId, stub } = getListStub('invemail2');
+        const clientGroupID = 'cg_inv_email2';
+        const clientID = 'c_inv_email2';
+        const inviterId = newId('account');
+        const targetId = newId('account');
+        const targetEmail = 'member@example.com';
+
+        await initEntity({ stub, listId, clientGroupID, clientID });
+
+        // Seed target as already a member via setListAuthRules so the
+        // preflight rejects the invite. (Mirrors the existing already_
+        // member preflight test above.)
+        await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            authorizedRole: 'owner',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'setListAuthRules',
+                mutationId: 2,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    authorization_rules: {
+                        authorized_accounts: {
+                            [inviterId]: { role: 'owner' },
+                            [targetId]: { role: 'editor' },
+                        },
+                        default_role: 'restricted',
+                        set_by: 'user',
+                    },
+                },
+            }),
+        });
+        await env.DJIBB_AUTH.prepare(
+            `INSERT INTO accounts (
+                id, display_name, email, email_verified, provider_name,
+                provider_client_id, time_created, time_updated
+             ) VALUES (?, 'Member', ?, 1, 'djibb', ?, ?, ?)`
+        )
+            .bind(
+                targetId,
+                targetEmail,
+                `client_${targetId}`,
+                Math.floor(Date.now() / 1000),
+                Math.floor(Date.now() / 1000)
+            )
+            .run();
+
+        const sends: Array<unknown> = [];
+        const originalEmail = (env as { EMAIL?: unknown }).EMAIL;
+        (env as { EMAIL: unknown }).EMAIL = {
+            send: async (msg: unknown) => {
+                sends.push(msg);
+            },
+        };
+
+        try {
+            const result = await stub.handlePush({
+                authorizedAccounts: [
+                    { id: inviterId, display_name: 'Alice' } as any,
+                ],
+                authorizedRole: 'owner',
+                listId,
+                pushRequest: makePush({
+                    clientGroupID,
+                    clientID,
+                    name: 'inviteByIdentity',
+                    mutationId: 3,
+                    accountId: inviterId,
+                    body: {
+                        listId,
+                        identity_kind: 'email',
+                        identity_value: targetEmail,
+                        role: 'editor',
+                    },
+                }),
+            });
+            expect(result.error).toBeNull();
+            // Preflight blocked the mutation; no email should have
+            // fired. (Counted alongside the existing test that asserts
+            // no DO/D1 row was created.)
+            expect(sends).toHaveLength(0);
+        } finally {
+            (env as { EMAIL: unknown }).EMAIL = originalEmail;
+        }
+    });
 });
 
 describe('revokeInvitation', () => {
