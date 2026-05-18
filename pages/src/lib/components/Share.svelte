@@ -245,6 +245,58 @@
 		pendingDemotion = null;
 	}
 
+	// ADR 0009 Slice 3 — invite-by-email form. Fires the
+	// `inviteByIdentity` mutator through Replicache normally. The
+	// preflight (rate limit, outstanding cap, already-a-member, self-
+	// invite) runs inside the DO push handler; failures don't reach
+	// here as a thrown error, they surface over the WS outcome channel
+	// and get routed to the global toast (UndoToast with `message`).
+	// Local "Invitation sent" feedback is optimistic — the matching
+	// pending_invite row appears under the section above on the next
+	// pull (driven by the post-commit poke, <1s).
+	let inviteEmail = $state('');
+	let inviteRole = $state(
+		/** @type {import('$djibb/auth/rules').AccountRole} */ ('editor')
+	);
+	let inviteSubmitting = $state(false);
+	let inviteSentAt = $state(/** @type {number | null} */ (null));
+	let inviteLocalError = $state(/** @type {string | null} */ (null));
+
+	async function sendInvite() {
+		inviteLocalError = null;
+		inviteSentAt = null;
+		const email = inviteEmail.trim();
+		if (!email) {
+			inviteLocalError = 'Enter an email address.';
+			return;
+		}
+		if (!currentAccountId) {
+			inviteLocalError = 'Sign in to send invitations.';
+			return;
+		}
+		inviteSubmitting = true;
+		const result = await tryCatchAsync(
+			mutators.inviteByIdentity({
+				listId: entityId,
+				identity_kind: 'email',
+				identity_value: email,
+				role: inviteRole
+			})
+		);
+		inviteSubmitting = false;
+
+		if (result.error) {
+			// Client-side mutator threw — this is a NotFoundError on
+			// `tx.get(listId)` or similar; rare. Server-side preflight
+			// failures (already_member / rate_limit / ...) flow through
+			// the WS outcome channel and the global toast.
+			inviteLocalError = `Failed to send: ${result.error.message ?? result.error}`;
+			return;
+		}
+		inviteEmail = '';
+		inviteSentAt = Date.now();
+	}
+
 	// Pending-invitation revoke flow. The mutator goes through the
 	// standard Replicache push — no HTTP preflight gate (unlike
 	// `inviteByIdentity` / `acceptInvitation`), so failures flow back
@@ -399,11 +451,56 @@
 				{/each}
 			</ul>
 		{/if}
-		<p class="hint small">
-			Adding people by email is on the roadmap. Today,
-			accounts that already appear here can have their role
-			changed or be removed.
-		</p>
+		{#if canManage}
+			<form
+				class="invite-form"
+				onsubmit={(e) => {
+					e.preventDefault();
+					void sendInvite();
+				}}
+			>
+				<label class="invite-label" for="invite-email-input">
+					Invite by email
+				</label>
+				<div class="invite-row">
+					<input
+						id="invite-email-input"
+						type="email"
+						placeholder="name@example.com"
+						bind:value={inviteEmail}
+						disabled={inviteSubmitting}
+						autocomplete="email"
+					/>
+					<select
+						bind:value={inviteRole}
+						disabled={inviteSubmitting}
+						aria-label="Role"
+					>
+						{#each ASSIGNABLE_ACCOUNT_ROLES as r (r)}
+							<option value={r}>{ROLE_LABELS[r]}</option>
+						{/each}
+					</select>
+					<button
+						type="submit"
+						class="primary"
+						disabled={inviteSubmitting || !inviteEmail.trim()}
+					>
+						{inviteSubmitting ? 'Sending…' : 'Send invite'}
+					</button>
+				</div>
+				{#if inviteLocalError}
+					<p class="error" role="alert">{inviteLocalError}</p>
+				{/if}
+				{#if inviteSentAt}
+					<p class="saved" role="status">
+						Invitation sent. It'll appear under "Pending
+						invitations" shortly. Server-side rejections
+						(rate limit, already a member, …) surface as
+						toasts.
+					</p>
+				{/if}
+			</form>
+		{/if}
 	</section>
 
 	{#if canManage}
@@ -554,10 +651,6 @@
 		font-size: 0.9rem;
 		opacity: 0.7;
 	}
-	.hint.small {
-		margin-top: 0.75rem;
-		font-size: 0.8rem;
-	}
 	.role-options {
 		display: flex;
 		flex-direction: column;
@@ -641,6 +734,33 @@
 	}
 	.placeholder-cell {
 		display: inline-block;
+	}
+	.invite-form {
+		margin-top: 1rem;
+		padding-top: 1rem;
+		border-top: 1px solid rgba(0, 0, 0, 0.08);
+	}
+	.invite-label {
+		display: block;
+		font-size: 0.9rem;
+		margin-bottom: 0.4rem;
+		font-weight: 500;
+	}
+	.invite-row {
+		display: grid;
+		grid-template-columns: 1fr auto auto;
+		gap: 0.5rem;
+		align-items: center;
+	}
+	.invite-row input[type='email'] {
+		padding: 0.4rem 0.6rem;
+		border: 1px solid rgba(0, 0, 0, 0.18);
+		border-radius: 0.25rem;
+		font-size: 0.95rem;
+	}
+	.invite-row select {
+		padding: 0.4rem;
+		border-radius: 0.25rem;
 	}
 	.remove {
 		background: transparent;

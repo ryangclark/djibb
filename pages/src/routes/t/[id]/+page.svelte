@@ -78,7 +78,9 @@
 			} else if (msg.type === 'mutation_outcome') {
 				replicacheList.undoRuntime.handleOutcome({
 					status: msg.status,
-					mutationID: msg.mutationID
+					mutationID: msg.mutationID,
+					reason: msg.reason,
+					message: msg.message
 				});
 			}
 		});

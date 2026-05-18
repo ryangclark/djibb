@@ -349,8 +349,17 @@ describe('acceptInvitation (DO mutator)', () => {
 
         // Accept — from a session whose accountId differs (the invitee
         // is `restricted` against the entity's rules until commit).
+        // The acceptor's session account must carry a verified email
+        // matching the invite (the in-DO preflight checks identity
+        // ownership, ADR 0009 Slice 3 redo).
         const result = await stub.handlePush({
-            authorizedAccounts: [{ id: accepterId } as any],
+            authorizedAccounts: [
+                {
+                    id: accepterId,
+                    email,
+                    email_verified: true,
+                } as any,
+            ],
             authorizedRole: 'restricted',
             listId,
             pushRequest: makePush({
@@ -404,6 +413,104 @@ describe('acceptInvitation (DO mutator)', () => {
             .bind(listId)
             .first<{ status: string }>();
         expect(d1Row?.status).toBe('accepted');
+    });
+
+    it('preflight skip-and-acks when the acceptor email does not match the invite', async () => {
+        // ADR 0009 Slice 3 redo — the in-DO preflight runs identity-
+        // ownership verification. A session whose verified email
+        // doesn't match the invitation's identity must NOT promote
+        // itself by pushing acceptInvitation. The push completes
+        // (no error escapes the DO; lastMutationID advances), but
+        // no rules update or invite tombstone happens.
+        const { listId, stub } = getListStub('acc3');
+        const clientGroupID = 'cg_acc_3';
+        const clientID = 'c_acc_3';
+        const inviterId = newId('account');
+        const wrongAcceptorId = newId('account');
+        const inviteEmail = 'real-invitee@example.com';
+
+        await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'ownerless',
+            listId,
+            pushRequest: makeInitListPush({ clientGroupID, clientID, listId }),
+        });
+        await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            authorizedRole: 'owner',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'inviteByIdentity',
+                mutationId: 2,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    identity_kind: 'email',
+                    identity_value: inviteEmail,
+                    role: 'editor',
+                },
+            }),
+        });
+
+        const result = await stub.handlePush({
+            authorizedAccounts: [
+                {
+                    id: wrongAcceptorId,
+                    email: 'different@example.com',
+                    email_verified: true,
+                } as any,
+            ],
+            authorizedRole: 'restricted',
+            listId,
+            pushRequest: makePush({
+                clientGroupID: 'cg_wrong_acceptor',
+                clientID: 'c_wrong_acceptor',
+                name: 'acceptInvitation',
+                mutationId: 1,
+                accountId: wrongAcceptorId,
+                body: {
+                    listId,
+                    identity_kind: 'email',
+                    identity_value: inviteEmail,
+                },
+            }),
+        });
+        expect(result.error).toBeNull();
+
+        // Rules unchanged — wrong acceptor was NOT added.
+        const listRow = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(
+                    `SELECT authorization_rules FROM list_elements
+                     WHERE id = ?;`,
+                    listId
+                )
+                .one()
+        );
+        const rules = JSON.parse(listRow.authorization_rules as string);
+        expect(rules.authorized_accounts[wrongAcceptorId]).toBeUndefined();
+
+        // Pending invite is still live (not tombstoned by the failed
+        // accept).
+        const liveInvite = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(
+                    `SELECT identity_value, time_deleted FROM pending_invites
+                     WHERE time_deleted IS NULL;`
+                )
+                .one()
+        );
+        expect(liveInvite.identity_value).toBe(inviteEmail);
+
+        // D1 row still pending (not flipped to accepted).
+        const d1Row = await env.DJIBB_AUTH.prepare(
+            `SELECT status FROM entity_invitations_index WHERE target_id = ?`
+        )
+            .bind(listId)
+            .first<{ status: string }>();
+        expect(d1Row?.status).toBe('pending');
     });
 
     it('returns `gone` when no pending invite exists', async () => {

@@ -42,14 +42,22 @@ import { Account } from '../account';
 import { Result, tryCatch, tryCatchAsync } from '../utils/trycatch';
 import { EmitEntitySnapshotToCatalog, GetEntityVersion } from './entity';
 import {
+    CountInvitesByInviterSince,
+    CountOutstandingInvitesByInviter,
     EmitInvitationsSnapshot,
+    GetInvitationFromIndex,
     InvitationIdentityKindEnum,
     MarkInvitationsAccepted,
     ensurePendingInvitesTable,
     listPendingInvites,
     normalizeIdentityValue,
+    preflightAcceptInvitation,
+    preflightInviteByIdentity,
+    type AcceptPreflightFailureReason,
     type InvitationIdentityKind,
+    type InvitePreflightFailureReason,
 } from './invitations';
+import { GetAccountByEmail } from '../account/service';
 import { LIST_PULL_KEYSPACES } from './pull';
 import {
     appendKeyspacePatches,
@@ -87,6 +95,58 @@ const INVITATION_MUTATORS: ReadonlySet<string> = new Set([
     'inviteByIdentity',
     'revokeInvitation',
 ]);
+
+/**
+ * Mutators whose push-time semantics depend on cross-target / cross-
+ * entity state and need an async preflight before `handleMutation`
+ * (ADR 0009 Slice 3). The preflight has D1 access; the synchronous
+ * mutator does not. Failures from this preflight become structured
+ * skip-and-ack outcomes rather than throws (see `_handlePush`).
+ */
+const PREFLIGHTED_MUTATORS: ReadonlySet<string> = new Set([
+    'acceptInvitation',
+    'inviteByIdentity',
+]);
+
+/**
+ * Map an `inviteByIdentity` preflight failure code to the wire-level
+ * `MutationOutcomeStatus`. The reason string still flows verbatim
+ * (alongside `message`) so the client can branch on the specific
+ * cause; this mapping is purely the category bucket for clients that
+ * only know the legacy outcome enum.
+ */
+function inviteReasonToOutcomeStatus(
+    reason: InvitePreflightFailureReason
+): MutationOutcomeStatus {
+    switch (reason) {
+        case 'unauthenticated_inviter':
+        case 'session_mismatch':
+            return 'auth';
+        case 'entity_missing':
+            return 'gone';
+        case 'rate_limit_hour':
+        case 'outstanding_cap':
+        case 'already_member':
+        case 'self_invite':
+            return 'precondition';
+    }
+}
+
+function acceptReasonToOutcomeStatus(
+    reason: AcceptPreflightFailureReason
+): MutationOutcomeStatus {
+    switch (reason) {
+        case 'unauthenticated_acceptor':
+        case 'session_mismatch':
+        case 'identity_unverified':
+            return 'auth';
+        case 'invitation_not_found':
+            return 'gone';
+        case 'invitation_not_pending':
+        case 'invitation_expired':
+            return 'precondition';
+    }
+}
 
 /**
  * TODO:
@@ -384,6 +444,149 @@ export class DjibbList extends DurableObject {
     }
 
     /**
+     * Async preflight for invitation-family mutators (ADR 0009).
+     *
+     * The single-entity DO has no synchronous SQL access to D1, but
+     * `_handlePush` is async — so cross-target gates (per-inviter
+     * rate limit, outstanding-cap) and identity resolution
+     * (email → account, "already a member", self-invite, identity
+     * ownership for accept) live HERE, inside the DO, just before
+     * the synchronous mutator runs. Previously the preflight lived
+     * at the HTTP `/push` boundary and rejected the whole push with
+     * a structured 4xx; that wedged Replicache's retry loop on
+     * permanent failures (no client-side API drops a pending
+     * mutation). Moving preflight into the DO lets us skip-and-ack
+     * the failed mutation — the lastMutationID advances, the push
+     * succeeds at the HTTP layer, and the failure surfaces over the
+     * outcome channel as a typed `{status, reason, message}` payload.
+     *
+     * Returns:
+     *   - `{ ok: true }` to let `handleMutation` run normally.
+     *   - `{ ok: false, ... }` so the caller can skip-and-ack and
+     *     emit a structured outcome. The status maps onto the
+     *     existing `MutationOutcomeStatus` taxonomy (`auth` for
+     *     identity / session failures, `gone` for target-missing,
+     *     `precondition` for everything else).
+     */
+    private async runInvitationPreflight(
+        mutation: MutationV1,
+        authorizedAccounts: Readonly<Account[]>
+    ): Promise<
+        | { ok: true }
+        | {
+              ok: false;
+              status: MutationOutcomeStatus;
+              reason: string;
+              message: string;
+          }
+    > {
+        const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
+        const sessionAccountIds = authorizedAccounts.map(a => a.id);
+        const args = (mutation.args ?? {}) as Record<string, unknown>;
+
+        if (mutation.name === 'inviteByIdentity') {
+            const kindParsed = InvitationIdentityKindEnum.safeParse(
+                args.identity_kind
+            );
+            if (!kindParsed.success) return { ok: true }; // mutator's argsSchema rejects
+            const identity_value =
+                typeof args.identity_value === 'string'
+                    ? args.identity_value
+                    : '';
+            const inviter_account_id =
+                typeof args.accountId === 'string' ? args.accountId : null;
+
+            // Read the entity's current rules straight from the DO sql.
+            // No D1 round-trip for this lookup; the DO is authoritative.
+            const entityId = getEntityId(this.sql);
+            const entity = entityId
+                ? getElementById(this.sql, entityId)
+                : null;
+            const rules =
+                entity &&
+                (entity.type === 'list' || entity.type === 'template')
+                    ? entity.authorization_rules
+                    : null;
+
+            const result = await preflightInviteByIdentity(
+                {
+                    countInvitesByInviterSince: (a, since) =>
+                        CountInvitesByInviterSince(d1, a, since),
+                    countOutstandingInvitesByInviter: a =>
+                        CountOutstandingInvitesByInviter(d1, a),
+                    getAccountIdByEmail: async email => {
+                        if (!email) return null;
+                        const account = await GetAccountByEmail(d1, email);
+                        return account?.id ?? null;
+                    },
+                },
+                {
+                    inviter_account_id,
+                    identity_kind: kindParsed.data,
+                    identity_value,
+                    authorization_rules: rules,
+                    sessionAccountIds,
+                    nowSeconds: Math.floor(Date.now() / 1000),
+                }
+            );
+            if (result.ok) return { ok: true };
+            return {
+                ok: false,
+                status: inviteReasonToOutcomeStatus(result.reason),
+                reason: result.reason,
+                message: result.message,
+            };
+        }
+
+        if (mutation.name === 'acceptInvitation') {
+            const kindParsed = InvitationIdentityKindEnum.safeParse(
+                args.identity_kind
+            );
+            if (!kindParsed.success) return { ok: true };
+            const identity_value =
+                typeof args.identity_value === 'string'
+                    ? args.identity_value
+                    : '';
+            const acceptor_account_id =
+                typeof args.accountId === 'string' ? args.accountId : null;
+            const target_id =
+                typeof args.listId === 'string' ? args.listId : '';
+
+            const result = await preflightAcceptInvitation(
+                {
+                    getInvitationFromIndex: (targetId, kind, value) =>
+                        GetInvitationFromIndex(d1, {
+                            targetId,
+                            identity_kind: kind,
+                            identity_value: value,
+                        }),
+                },
+                {
+                    acceptor_account_id,
+                    target_id,
+                    identity_kind: kindParsed.data,
+                    identity_value,
+                    sessionAccounts: authorizedAccounts.map(a => ({
+                        id: a.id,
+                        email: a.email,
+                        email_verified: a.email_verified,
+                    })),
+                    nowSeconds: Math.floor(Date.now() / 1000),
+                }
+            );
+            if (result.ok) return { ok: true };
+            return {
+                ok: false,
+                status: acceptReasonToOutcomeStatus(result.reason),
+                reason: result.reason,
+                message: result.message,
+            };
+        }
+
+        return { ok: true };
+    }
+
+    /**
      * Handles a Push request from Replicache by evaluating each of
      * the request's mutations.
      */
@@ -566,6 +769,61 @@ export class DjibbList extends DurableObject {
             // will produce if it succeeds. It's independent of the
             // per-client mutation ID.
             const nextVersion = listVersion + 1;
+
+            // Async preflight for invitation-family mutators
+            // (ADR 0009 Slice 3). On failure: skip-and-ack the
+            // mutation, emit a structured outcome with the reason
+            // string + human-readable message, persist a 'skipped'
+            // log row, and continue. The lastMutationID advances so
+            // Replicache stops retrying; the failure surfaces over
+            // the outcome channel rather than as a wedged push.
+            if (
+                expectedMutationId === mutation.id &&
+                PREFLIGHTED_MUTATORS.has(mutation.name)
+            ) {
+                const preflight = await this.runInvitationPreflight(
+                    mutation,
+                    authorizedAccounts
+                );
+                if (!preflight.ok) {
+                    this.emitMutationOutcome(
+                        mutation.clientID,
+                        mutation.id,
+                        preflight.status,
+                        {
+                            reason: preflight.reason,
+                            message: preflight.message,
+                        }
+                    );
+                    // Persist a skipped envelope so the mutation log
+                    // captures the rejection (same posture as
+                    // `handleMutation`'s skipped path). Best-effort.
+                    const envelopeResult = parseMutationEnvelope(mutation);
+                    if (envelopeResult.ok) {
+                        const { envelope, rawBody } = envelopeResult.mutation;
+                        try {
+                            setMutation(this.sql, envelope, rawBody, 'skipped');
+                        } catch (error) {
+                            console.log(
+                                '`_handlePush()` preflight skip setMutation log error:',
+                                error?.toString()
+                            );
+                        }
+                    }
+                    // Advance lastMutationID just like `handleMutation`
+                    // does for skipped/unauthorized envelopes — without
+                    // this, Replicache would retry the push forever.
+                    replicacheClient.lastMutationId = mutation.id;
+                    replicacheClient.lastModifiedVersion = listVersion;
+                    console.log({
+                        ackedMutationId: mutation.id,
+                        didMutate: false,
+                        listVersion,
+                        preflightReason: preflight.reason,
+                    });
+                    continue;
+                }
+            }
 
             const { ackedMutationId, didMutate } = this.handleMutation(
                 authorizedAccounts,
@@ -1176,11 +1434,17 @@ export class DjibbList extends DurableObject {
      * (ADR 0006). Silent-drop if the client connected without a tag —
      * supports graceful deploy across the wire-format migration. Only
      * called for failure outcomes; success is implicit per ADR 0005.
+     *
+     * `reason` / `message` are optional structured + human-readable
+     * extras attached by preflight-driven failures (ADR 0009 Slice 3
+     * redo). The legacy outcome callers (CAS-stale / target-gone /
+     * role-gate inside the mutator) omit them.
      */
     private emitMutationOutcome(
         clientID: string,
         mutationID: number,
-        status: MutationOutcomeStatus
+        status: MutationOutcomeStatus,
+        extras?: { reason?: string; message?: string }
     ): void {
         const targets = this.ctx.getWebSockets(clientID);
         if (targets.length === 0) return;
@@ -1189,6 +1453,8 @@ export class DjibbList extends DurableObject {
             type: 'mutation_outcome',
             mutationID,
             status,
+            ...(extras?.reason !== undefined && { reason: extras.reason }),
+            ...(extras?.message !== undefined && { message: extras.message }),
         };
         const encoded = encodeWSMessage(payload);
         for (const ws of targets) {

@@ -59,15 +59,26 @@ import {
  *
  *   'action' — a user mutation just landed on the stack; show "Undid
  *              X — Cmd+Z to undo" with an Undo CTA.
- *   'auth' | 'stale' | 'gone' — the server rejected the mutation;
- *              show the failure reason. Per-mutation outcome from
- *              ADR 0006. No Undo CTA — the mutation didn't apply.
+ *   'auth' | 'stale' | 'gone' | 'precondition' — the server rejected
+ *              the mutation; show the failure reason. Per-mutation
+ *              outcome from ADR 0006 (extended by ADR 0009 Slice 3).
+ *              Optional `reason` is the structured per-mutator failure
+ *              code (e.g. `rate_limit_hour`); optional `message` is
+ *              the human-readable phrasing the server attached. The
+ *              UI prefers `message` when present and falls back to
+ *              its own generic copy otherwise. No Undo CTA — the
+ *              mutation didn't apply.
  *
  * Most-recent-wins collapse is the UI's job; the runtime fires
  * regardless of pacing.
  *
  * @typedef {{kind: 'action'} & {entry: Entry}} ActionToastEvent
- * @typedef {{kind: 'auth' | 'stale' | 'gone', mutationID: number}} OutcomeToastEvent
+ * @typedef {{
+ *   kind: 'auth' | 'stale' | 'gone' | 'precondition',
+ *   mutationID: number,
+ *   reason?: string,
+ *   message?: string
+ * }} OutcomeToastEvent
  * @typedef {ActionToastEvent | OutcomeToastEvent} ToastEvent
  *
  * @typedef {object} CreateInput
@@ -277,7 +288,12 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
      * inversing would clobber unrelated state. Drop it from
      * whichever stack it lives on before emitting the toast.
      *
-     * @param {{status: 'auth' | 'stale' | 'gone', mutationID: number}} event
+     * @param {{
+     *   status: 'auth' | 'stale' | 'gone' | 'precondition',
+     *   mutationID: number,
+     *   reason?: string,
+     *   message?: string,
+     * }} event
      */
     function handleOutcome(event) {
         const [prunedStack, undoRemoved] = pruneByMutationID(stack, event.mutationID);
@@ -289,6 +305,8 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
         onToast?.({
             kind: event.status,
             mutationID: event.mutationID,
+            ...(event.reason !== undefined && { reason: event.reason }),
+            ...(event.message !== undefined && { message: event.message }),
         });
     }
 

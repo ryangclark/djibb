@@ -294,6 +294,141 @@ describe('inviteByIdentity', () => {
         expect(doRows).toHaveLength(1);
         expect(doRows[0].role).toBe('editor'); // unchanged
     });
+
+    // ------------------------------------------------------------------
+    // ADR 0009 Slice 3 redo: in-DO preflight. Verifies the preflight
+    // runs inside `_handlePush` before the synchronous mutator, and
+    // that failures skip-and-ack rather than throwing — the push
+    // completes successfully at the HTTP layer, the mutation log
+    // records the skip, and the per-mutation outcome flows over the
+    // WS channel (not exercised here; WS roundtrip tests live in
+    // outcomeChannel.test.ts).
+    // ------------------------------------------------------------------
+
+    it('preflight skip-and-acks when the target is already a member', async () => {
+        const { listId, stub } = getListStub('inv5');
+        const clientGroupID = 'cg_inv_5';
+        const clientID = 'c_inv_5';
+        const inviterId = newId('account');
+        const targetId = newId('account');
+        const targetEmail = 'already@example.com';
+
+        await initEntity({ stub, listId, clientGroupID, clientID });
+
+        // Seed the target as already a member of the entity. We do
+        // this by directly inserting into the DO's list_elements (via
+        // a setListAuthRules mutation) so the preflight's
+        // `authorization_rules.authorized_accounts` lookup hits.
+        await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            authorizedRole: 'owner',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'setListAuthRules',
+                mutationId: 2,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    authorization_rules: {
+                        authorized_accounts: {
+                            [inviterId]: { role: 'owner' },
+                            [targetId]: { role: 'editor' },
+                        },
+                        default_role: 'restricted',
+                        set_by: 'user',
+                    },
+                },
+            }),
+        });
+
+        // Seed an `accounts` row so the preflight's email→account
+        // resolver returns `targetId`.
+        await env.DJIBB_AUTH.prepare(
+            `INSERT INTO accounts (
+                id, display_name, email, email_verified, provider_name,
+                provider_client_id, time_created, time_updated
+             ) VALUES (?, 'Target', ?, 1, 'djibb', ?, ?, ?)`
+        )
+            .bind(
+                targetId,
+                targetEmail,
+                `client_${targetId}`,
+                Math.floor(Date.now() / 1000),
+                Math.floor(Date.now() / 1000)
+            )
+            .run();
+
+        // Invite the already-member. The preflight should skip-and-ack;
+        // the push completes (no error) but no pending_invite row is
+        // created.
+        const inviteResult = await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            authorizedRole: 'owner',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'inviteByIdentity',
+                mutationId: 3,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    identity_kind: 'email',
+                    identity_value: targetEmail,
+                    role: 'editor',
+                },
+            }),
+        });
+        expect(inviteResult.error).toBeNull();
+
+        // No DO pending_invite row exists.
+        const doCount = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(`SELECT COUNT(*) AS c FROM pending_invites;`)
+                .one()
+        );
+        expect(doCount.c).toBe(0);
+
+        // No D1 row either — the index reconciler never ran because
+        // didMutate stayed false.
+        const d1Row = await env.DJIBB_AUTH.prepare(
+            `SELECT id FROM entity_invitations_index WHERE target_id = ?`
+        )
+            .bind(listId)
+            .first();
+        expect(d1Row).toBeNull();
+
+        // A subsequent push from the same client with mutation.id=4
+        // is processed as expected — confirms the skipped mutation was
+        // ACKed (lastMutationID advanced past 3).
+        const followUp = await stub.handlePush({
+            authorizedAccounts: [{ id: inviterId } as any],
+            authorizedRole: 'owner',
+            listId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'inviteByIdentity',
+                mutationId: 4,
+                accountId: inviterId,
+                body: {
+                    listId,
+                    identity_kind: 'email',
+                    identity_value: 'stranger@example.com',
+                    role: 'editor',
+                },
+            }),
+        });
+        expect(followUp.error).toBeNull();
+        const afterCount = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(`SELECT COUNT(*) AS c FROM pending_invites;`)
+                .one()
+        );
+        expect(afterCount.c).toBe(1); // stranger@ landed; already-member skipped
+    });
 });
 
 describe('revokeInvitation', () => {

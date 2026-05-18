@@ -8,27 +8,44 @@ export const WS_STATE = {
 
 /**
  * Per-mutation failure status surfaced over the outcome channel
- * (ADR 0005 / 0006).
+ * (ADR 0005 / 0006, extended by ADR 0009 Slice 3).
  *
- *   - `auth`  — the mutation was rejected at the role gate (the
- *               role lost permission between the optimistic write
- *               and the server roundtrip).
- *   - `stale` — set-family CAS pre-check failed; another client
- *               moved the field between the snapshot and apply.
- *   - `gone`  — the target row was missing (soft-deleted / never
- *               existed).
+ *   - `auth`         — rejected at the role gate (the role lost
+ *                      permission between optimistic write and server
+ *                      roundtrip), OR an identity-ownership preflight
+ *                      check failed (e.g. accept by a session whose
+ *                      verified email doesn't match the invite).
+ *   - `stale`        — set-family CAS pre-check failed; another client
+ *                      moved the field between the snapshot and apply.
+ *   - `gone`         — the target row was missing (soft-deleted /
+ *                      never existed).
+ *   - `precondition` — the operation is well-formed and authorized,
+ *                      but the system isn't in a state that permits
+ *                      it (rate limit, outstanding-cap, already a
+ *                      member, expired invite, ...). 412-shaped.
  *
  * Success is implicit — only failures flow over the channel. The
  * client treats the absence of an outcome as success after pull
  * arrives. ADR 0005 §"Outcome channel."
  */
-export type MutationOutcomeStatus = 'auth' | 'stale' | 'gone';
+export type MutationOutcomeStatus =
+    | 'auth'
+    | 'stale'
+    | 'gone'
+    | 'precondition';
 
 /**
  * Typed wire format. Replaces the plain-string `'pull pls'` poke per
  * ADR 0006. Both directions: server → client only today; if/when
  * client → server messages are added, this discriminated union
  * extends to cover them.
+ *
+ * `reason` is the structured per-mutator failure code (e.g.
+ * `rate_limit_hour`, `already_member`, `identity_unverified`).
+ * `message` is the human-readable phrasing the server attached. Both
+ * are optional — the legacy DO outcome paths (CAS-stale / target-gone
+ * / role-gate) populate neither; the client falls back to its own
+ * generic copy.
  */
 export type WSMessage =
     | { type: 'poke' }
@@ -36,6 +53,8 @@ export type WSMessage =
           type: 'mutation_outcome';
           mutationID: number;
           status: MutationOutcomeStatus;
+          reason?: string;
+          message?: string;
       };
 
 /**

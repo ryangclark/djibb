@@ -102,6 +102,14 @@
 
 	/** @param {ToastEvent} e */
 	function outcomeLabel(e) {
+		// Server-attached `message` wins when present (ADR 0009 Slice 3):
+		// preflight-driven failures ship specific copy like "That account
+		// already has access" or "Rate limit: max 10 invitations per
+		// hour." Fall back to the generic per-kind copy for legacy
+		// outcome paths (CAS-stale / role-gate / target-gone) that
+		// don't attach a message.
+		if (e.kind === 'action') return '';
+		if (e.message) return e.message;
 		switch (e.kind) {
 			case 'auth':
 				return 'Action blocked — your role changed';
@@ -109,6 +117,8 @@
 				return 'Action overridden by another change';
 			case 'gone':
 				return 'Action target no longer exists';
+			case 'precondition':
+				return 'Action blocked — not in a valid state';
 			default:
 				return '';
 		}
