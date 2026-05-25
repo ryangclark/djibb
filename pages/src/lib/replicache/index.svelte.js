@@ -32,8 +32,24 @@ function entityPath(entityId) {
  *   for outcome-channel failures. ADR 0005.
  * @param {(name: string) => Promise<boolean>} [input.onConfirm]
  *   Friction-tier prompt; C.2 wires this to the confirm toast.
+ * @param {boolean} [input.skipClientInit]
+ *   Skip the local-empty-fires-initList shortcut. Pass when the
+ *   caller KNOWS the entity already exists server-side and the
+ *   local IDB is empty only because this is a fresh client (e.g.
+ *   an invitee opening `/l/<id>?from_invite=1`). Without this,
+ *   the optimistic initList writes the local user as owner,
+ *   makes `authorized_accounts[me]` non-null in local state, and
+ *   confuses any UI that derives "am I authorized?" from local
+ *   data — most notably hiding the InviteBanner before pull
+ *   reconciliation lands.
  */
-export function initList({ accountId, listId, onToast, onConfirm }) {
+export function initList({
+	accountId,
+	listId,
+	onToast,
+	onConfirm,
+	skipClientInit = false,
+}) {
 	/** @type {Object.<string, import('replicache').ReadonlyJSONValue>} */
 	const listData = $state({});
 
@@ -85,16 +101,18 @@ export function initList({ accountId, listId, onToast, onConfirm }) {
 		initialValuesInFirstDiff: true
 	});
 
-	replicacheClient
-		.query((tx) => tx.isEmpty())
-		.then((isEmpty) => {
-			if (isEmpty) {
-				mutate.initList({
-					listId,
-					workspaceId: null // TODO: implement workspace
-				});
-			}
-		});
+	if (!skipClientInit) {
+		replicacheClient
+			.query((tx) => tx.isEmpty())
+			.then((isEmpty) => {
+				if (isEmpty) {
+					mutate.initList({
+						listId,
+						workspaceId: null // TODO: implement workspace
+					});
+				}
+			});
+	}
 
 	// Return the Svelte stuff we'll use to interact with
 	// the Replicache client.

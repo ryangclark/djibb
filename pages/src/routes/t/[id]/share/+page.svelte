@@ -38,6 +38,11 @@
 	const sessionState = getSessionState();
 
 	$effect(() => {
+		// Don't fire initList until the session has resolved at least
+		// once. On direct nav the layout's onMount races this effect;
+		// see /l/[id]/share/+page.svelte for the long-form comment.
+		if (!sessionState.hasLoaded) return;
+
 		const replicacheList = initList({
 			accountId: sessionState.currentAccountId,
 			listId: data.list_id,

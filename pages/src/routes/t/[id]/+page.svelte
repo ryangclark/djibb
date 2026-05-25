@@ -49,8 +49,16 @@
 	const sessionState = getSessionState();
 
 	$effect(() => {
+		// See /l/[id]/+page.svelte for the long-form comment on why
+		// this gate is necessary. tl;dr: direct nav races session load.
+		if (!sessionState.hasLoaded) return;
+
 		const replicacheList = initList({
 			accountId: sessionState.currentAccountId,
+			// See /l/[id]/+page.svelte: skip the optimistic local
+			// initList when arriving via invitation link.
+			skipClientInit:
+				page.url.searchParams.get('from_invite') === '1',
 			listId: data.list_id,
 			onToast: (event) => {
 				toastEvent = event;
@@ -102,7 +110,10 @@
 	});
 </script>
 
-{#if page.url.searchParams.get('from_invite') === '1'}
+{#if page.url.searchParams.get('from_invite') === '1' && sessionState.hasLoaded}
+	<!-- See /l/[id]/+page.svelte for the long-form comment. tl;dr:
+	     avoid flashing the wrong banner variant during the brief
+	     pre-session-load window. -->
 	<InviteBanner
 		entityId={data.list_id}
 		entityType="template"

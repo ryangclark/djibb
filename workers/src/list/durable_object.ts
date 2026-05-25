@@ -263,11 +263,21 @@ export class DjibbList extends DurableObject {
         listId: string;
         pullRequest: ReplicachePullRequest;
     }): PullResponseOKV1 {
-        // @TODO: this is a very basic authorization check.
-        // Please flesh out into legit checks, as needed.
-        if (authorizedRole === 'restricted') {
-            throw new UnauthorizedError();
-        }
+        // Allow restricted-role pulls. ADR 0009 invitees arrive at
+        // `/l/<id>?from_invite=1` with `restricted` role (until they
+        // click Accept and the server promotes them). Blocking pull
+        // here means their Replicache client retry-storms 403s while
+        // the InviteBanner is on screen, hogging network events and
+        // confusing the page lifecycle. Reads are cheap; per-mutator
+        // `requiredRole` gates remain the authoritative write gate.
+        // The role-gated keyspaces (`pending_invites/*`, etc.) below
+        // still filter what restricted users see.
+        //
+        // @TODO: tighten read access if/when ADR 0009 grows a
+        //   "preview the invite without granting full read" tier —
+        //   for now invitees can only get here via a tokenless URL
+        //   built into their invitation email, so any entity they
+        //   reach this code path with is one they were invited to.
 
         // Cookie shape is `{v, r}` (entity version + the role this
         // client last pulled as). `null` is the canonical fresh-pull

@@ -55,8 +55,22 @@
 
 	// Effects only run in the browser, not during server-side rendering.
 	$effect(() => {
+		// Don't fire initList until the session has resolved at least
+		// once. On direct nav (reload, bookmark, deep link) the
+		// layout's onMount races this effect; without the gate we'd
+		// push initList with accountId=null, creating an ownerless
+		// entity, before the real account is known.
+		if (!sessionState.hasLoaded) return;
+
 		const replicacheList = initList({
 			accountId: sessionState.currentAccountId,
+			// Don't fire the client-side initList shortcut when the
+			// invitee is arriving from a `?from_invite=1` link: we
+			// know the entity exists server-side, and the optimistic
+			// local init would write the invitee as owner, hiding
+			// the InviteBanner before pull reconciliation lands.
+			skipClientInit:
+				page.url.searchParams.get('from_invite') === '1',
 			// user_id: data.user?.username || 'my-test-user'
 			listId: data.list_id,
 			onToast: (event) => {
@@ -119,7 +133,12 @@
 	});
 </script>
 
-{#if page.url.searchParams.get('from_invite') === '1'}
+{#if page.url.searchParams.get('from_invite') === '1' && sessionState.hasLoaded}
+	<!-- Gate on hasLoaded so we don't flash the "Sign in to accept"
+	     variant of the banner during the brief window between page
+	     mount and the layout's session fetch resolving. Without the
+	     gate, a magic-link-redirected invitee sees the wrong banner
+	     for ~200ms before it flips to "Accept as <email>". -->
 	<InviteBanner
 		entityId={data.list_id}
 		entityType="list"

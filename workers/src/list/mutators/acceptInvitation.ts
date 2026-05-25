@@ -183,7 +183,15 @@ export const client: ClientMutator<Args> = async (
     if (!accountId) return;
     const raw = await tx.get(listId);
     if (!raw) {
-        throw new NotFoundError(`entity "${listId}" not found`);
+        // No local entity to optimistically update. This is the common
+        // case for an invitee arriving via `/l/<id>?from_invite=1`: the
+        // server has the entity but the invitee's pull is blocked by
+        // their `restricted` role, so the local Replicache store is
+        // empty. The server mutator does the real work; once it commits
+        // and the invitee's role is promoted, the next pull populates
+        // local state. Skip the optimistic update — there's nothing
+        // useful to write — and let the push proceed.
+        return;
     }
     const entity = raw as Record<string, unknown> & {
         version?: number;

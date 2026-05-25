@@ -2,23 +2,11 @@
 # entity-invite.sh — Two-session end-to-end for ADR 0009 entity
 # invitations.
 #
-# ─── STATUS: UNBLOCKED, INCOMPLETE ────────────────────────────────
-#
-# The original blocker (share page wedged on "Loading list…")
-# was a missing `+page.js` under `/l/[id]/share/` — SvelteKit
-# doesn't propagate parent `+page.js` data to child routes, so
-# `data.list_id` was undefined and `initList()` threw silently
-# inside the mount $effect. Fixed by adding the share-route
-# load files (commit on main, 2026-05-25). Manual repro now
-# renders the share UI cleanly.
-#
-# This script is no longer blocked, but is NOT yet passing
-# end-to-end. The fix unwedges the share page; the remaining
-# steps (form submit, cross-session pull/poke, accept-banner
-# flip) still need to be driven through and any test-side
-# flakes ironed out. Iterate from here.
-#
-# ──────────────────────────────────────────────────────────────────
+# Greens as of 2026-05-25 against the local dev stack. Drove out a
+# pile of intermediate-state bugs along the way; see
+# `docs/handoffs/2026-05-25-invitation-flow-corners-cut.md` for the
+# catalog (some real-bug fixes, some corners cut, all with cleanup
+# paths).
 #
 # Drives a real browser through the full happy path:
 #
@@ -57,15 +45,19 @@ STAMP="$(date +%s)-$$"
 INVITER_EMAIL="inviter-${STAMP}@example.com"
 INVITEE_EMAIL="invitee-${STAMP}@example.com"
 
-# 22 chars of lowercase hex. Avoids the classic `tr … | head -c 22`
-# SIGPIPE-under-pipefail trap (head closes the pipe early, tr
-# exits 141, `set -o pipefail` propagates). `openssl rand -hex 11`
-# produces exactly 22 characters in one shot. The DO ID is just
-# a stable string; the validator accepts anything matching the
-# prefix + suffix shape — hex is a narrower alphabet than nanoid
-# but plenty wide enough for per-run uniqueness.
+# 21 chars of lowercase hex. The validator (workers/src/id/index.ts
+# `ID_SUFFIX_RE`) requires exactly `ID_LENGTH = 21` characters drawn
+# from nanoid's `urlAlphabet` (A-Za-z0-9_-); hex is a strict subset
+# of that alphabet, so 21 hex chars is a valid suffix.
+#
+# `openssl rand -hex 11` emits 22 chars; bash slicing trims to 21
+# without a pipe — avoids the classic `tr … | head -c N`
+# SIGPIPE-under-pipefail trap (head closes pipe early, tr exits 141,
+# `set -o pipefail` propagates).
 list_suffix() {
-    openssl rand -hex 11
+    local hex
+    hex="$(openssl rand -hex 11)"
+    printf '%s' "${hex:0:21}"
 }
 LIST_SUFFIX="$(list_suffix)"
 LIST_ID="l/${LIST_SUFFIX}"
@@ -80,28 +72,10 @@ ab_invitee() {
     agent-browser --session "$INVITEE_SESSION" "$@"
 }
 
-# Retry wrapper for transient daemon errors during cross-origin
-# navigations. Five attempts with 2s spacing — this script does
-# more cross-origin work than magic-link.sh / rate-limit.sh (two
-# sign-ins, each crossing worker → pages), and a tighter retry
-# budget surfaced false-fail daemon-busy errors in step 2 during
-# initial development.
-retry() {
-    local attempt
-    for attempt in 1 2 3 4 5; do
-        if "$@"; then return 0; fi
-        if (( attempt < 5 )); then sleep 2; fi
-    done
-    return 1
-}
-
 # Close + reopen an agent-browser session. Session cookies persist
 # (they're keyed by `--session <name>`), but the daemon process
-# restarts — which clears the "daemon busy" state that recurs
-# right after a cross-origin redirect (the magic-link consume's
-# worker→pages 302 is one such case). Use between phases that
-# would otherwise reuse the same daemon across a cross-origin
-# boundary. Matches the pattern in magic-link.sh.
+# restarts. Used once after sign-in to clear cross-origin redirect
+# state, mirroring magic-link.sh's one close+reopen between phases.
 reset_inviter() {
     ab_inviter close > /dev/null 2>&1 || true
 }
@@ -161,6 +135,23 @@ curl -sf -o /dev/null "${API_BASE}/" \
     || fail "worker not reachable at ${API_BASE} — run \`cd workers && npm run dev\`"
 ok "worker reachable at ${API_BASE}"
 
+# Apply any pending D1 migrations to the local DB. ADR 0009 introduced
+# `entity_invitations_index` (0007); without this the invitee's
+# `acceptInvitation` push 500s on `no such table`. `wrangler dev`
+# doesn't auto-apply migrations and the vitest suite manages its own
+# schema, so this is on us. The CLI is idempotent — applying already-
+# applied migrations is a no-op — so this is safe to run on every
+# invocation.
+log "preflight: applying any pending D1 migrations"
+if ! (
+    cd "$(dirname "$0")/../workers" && \
+    npx wrangler d1 migrations apply DJIBB_AUTH --local \
+        > /dev/null 2>&1
+); then
+    fail "failed to apply D1 migrations. Run \`cd workers && npx wrangler d1 migrations apply DJIBB_AUTH --local\` manually to see the error."
+fi
+ok "D1 migrations applied"
+
 # Reset magic_link_tokens so per-email/per-IP rate-limit buckets
 # from a recent run don't bite when minting two landing URLs in
 # quick succession. Same posture as rate-limit.sh.
@@ -184,25 +175,21 @@ log "  list:    ${LIST_ID}"
 
 log "step 1: inviter signs in via magic-link"
 
-inviter_landing="$(mint_landing_url "$INVITER_EMAIL" "/workspaces")"
+# Land on /accounts (not /workspaces) post-sign-in. /workspaces
+# mounts a workspace-list Replicache client + websocket; the open
+# CDP channel races those subscriptions and the very next `open`
+# call returns "Resource temporarily unavailable (os error 35)".
+# /accounts is a static signed-in destination — proven quiet by
+# magic-link.sh — and we only need *a* signed-in session here,
+# not a particular landing page.
+inviter_landing="$(mint_landing_url "$INVITER_EMAIL" "/accounts")"
 ok "minted inviter landing URL"
 
-retry ab_inviter open "$inviter_landing" > /dev/null
-retry ab_inviter wait --text "Sign in to djibb" > /dev/null
-retry ab_inviter find role button click --name "Sign me in" > /dev/null
-# Land on /workspaces (the configured `next` target). "Workspaces"
-# is the page's h1 — content-wait is more reliable than url-glob
-# across the cross-origin redirect (per docs/testing.md).
-retry ab_inviter wait --text "Workspaces" > /dev/null
-ok "inviter signed in, landed on /workspaces"
-
-# Close the inviter daemon between phases. The just-completed
-# magic-link consume crossed worker → pages, which surfaces
-# "daemon busy" errors on the very next navigation if reused.
-# Cookies survive (keyed on --session name); only the daemon
-# process restarts.
-reset_inviter
-ok "inviter session reset (post-redirect cleanup)"
+ab_inviter open "$inviter_landing" > /dev/null
+ab_inviter wait --text "Sign in to djibb" > /dev/null
+ab_inviter find role button click --name "Sign me in" > /dev/null
+ab_inviter wait --text "Signed-in accounts" > /dev/null
+ok "inviter signed in, landed on /accounts"
 
 # ─── Step 2: Inviter creates a fresh list via direct navigation ───────────
 
@@ -212,28 +199,28 @@ log "step 2: inviter navigates to /l/${LIST_SUFFIX}/share (fires initList)"
 # /l/[id]/+page.svelte does. Visiting a fresh ID triggers the init
 # mutation; the route renders the Share component once the entity
 # loads.
-retry ab_inviter open "${PAGES_BASE}/l/${LIST_SUFFIX}/share" > /dev/null
-retry ab_inviter wait --text "Share list" > /dev/null
+ab_inviter open "${PAGES_BASE}/l/${LIST_SUFFIX}/share" > /dev/null
+ab_inviter wait --text "Share list" > /dev/null
 ok "share page rendered (list initialized)"
 
 # ─── Step 3: Inviter sends the invitation ─────────────────────────────────
 
 log "step 3: inviter fills the invite form for ${INVITEE_EMAIL}"
 
-retry ab_inviter find label "Invite by email" fill "$INVITEE_EMAIL" > /dev/null
-retry ab_inviter find role button click --name "Send invite" > /dev/null
+ab_inviter find label "Invite by email" fill "$INVITEE_EMAIL" > /dev/null
+ab_inviter find role button click --name "Send invite" > /dev/null
 
 # The form shows "Invitation sent." after success (Share.svelte
 # `inviteSentAt` state). Then the pending-invite row should appear
 # in the "Pending invitations" section once Replicache pulls back.
-retry ab_inviter wait --text "Invitation sent" > /dev/null
+ab_inviter wait --text "Invitation sent" > /dev/null
 ok "submit form returned success state"
 
 # The pending invite renders with the invitee email in a <code>
 # element under "Pending invitations". Wait on the email text
 # directly — its presence in the DOM means the realtime
 # pull/poke round-trip completed.
-retry ab_inviter wait --text "$INVITEE_EMAIL" > /dev/null
+ab_inviter wait --text "$INVITEE_EMAIL" > /dev/null
 ok "pending invite visible on inviter's share page"
 
 # ─── Step 4: Invitee signs in ──────────────────────────────────────────────
@@ -247,13 +234,13 @@ log "step 4: invitee signs in via magic-link, redirected to accept URL"
 invitee_landing="$(mint_landing_url "$INVITEE_EMAIL" "/l/${LIST_SUFFIX}?from_invite=1")"
 ok "minted invitee landing URL"
 
-retry ab_invitee open "$invitee_landing" > /dev/null
-retry ab_invitee wait --text "Sign in to djibb" > /dev/null
-retry ab_invitee find role button click --name "Sign me in" > /dev/null
+ab_invitee open "$invitee_landing" > /dev/null
+ab_invitee wait --text "Sign in to djibb" > /dev/null
+ab_invitee find role button click --name "Sign me in" > /dev/null
 
 # After consume → redirect to /l/<suffix>?from_invite=1 → page
 # loads → InviteBanner renders. Wait on the banner's headline text.
-retry ab_invitee wait --text "You've been invited" > /dev/null
+ab_invitee wait --text "You've been invited" > /dev/null
 ok "invitee landed on entity page, accept banner visible"
 
 # ─── Step 5: Invitee accepts ──────────────────────────────────────────────
@@ -263,13 +250,13 @@ log "step 5: invitee clicks Accept"
 # The banner's accept button label is exactly
 # "Accept as <email>" (see InviteBanner.svelte). Match by name to
 # avoid relying on ref numbers.
-retry ab_invitee find role button click --name "Accept as ${INVITEE_EMAIL}" > /dev/null
+ab_invitee find role button click --name "Accept as ${INVITEE_EMAIL}" > /dev/null
 
 # Post-accept: banner dismisses (alreadyAuthorized derives true
 # from the new authorized_accounts entry), List component renders.
 # Fresh list with no name shows "Untitled List" — that's our
 # "role gate flipped + list rendered" signal.
-retry ab_invitee wait --text "Untitled List" > /dev/null
+ab_invitee wait --text "Untitled List" > /dev/null
 ok "invitee can read the list (role gate promoted)"
 
 # ─── Step 6: Inviter sees the pending invite drain in realtime ────────────
@@ -281,7 +268,7 @@ log "step 6: inviter's share page reflects acceptance (no reload)"
 # websocket gets a poke, Replicache pulls, the pending invite
 # tombstone propagates, and the "Pending invitations" section
 # flips to its empty-state copy.
-retry ab_inviter wait --text "No invitations are currently pending" > /dev/null
+ab_inviter wait --text "No invitations are currently pending" > /dev/null
 ok "pending invite drained on inviter side (live)"
 
 # Sanity: the invitee email should NO LONGER appear in a pending

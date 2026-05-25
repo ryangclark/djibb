@@ -47,6 +47,13 @@
 	const sessionState = getSessionState();
 
 	$effect(() => {
+		// Don't fire initList until the session has resolved at least
+		// once. On direct nav (page reload, bookmark, deep link) the
+		// layout's onMount races this effect; without the gate we'd
+		// push initList with accountId=null, creating an ownerless
+		// entity, before the real account is known.
+		if (!sessionState.hasLoaded) return;
+
 		const replicacheList = initList({
 			accountId: sessionState.currentAccountId,
 			listId: data.list_id,

@@ -111,11 +111,22 @@ export function parsePullCookie(cookie: unknown): PullCookie {
     return { v: 0, r: null };
 }
 
-export function encodePullCookie(cookie: PullCookie): PullCookie {
-    // Currently the in-memory shape is also the wire shape, so this
-    // is the identity function. Wrapped to give a future codec change
-    // a single seam (e.g., compact-string encoding).
-    return cookie;
+export function encodePullCookie(cookie: PullCookie): PullCookie & {
+    order: number;
+} {
+    // Replicache V1 protocol validates object cookies by requiring an
+    // `order` field of type string|number — see the puller validator
+    // `en()` in `replicache/out/chunk-*.js`. Without it, every pull
+    // response is rejected with "Invalid puller result" and the client
+    // never advances past the initial v0 fresh-pull (the first one is
+    // accepted because `cookie === null` IS valid). Use the entity
+    // version `v` as `order`: it's monotonically increasing per pull,
+    // which is exactly what Replicache wants for cookie ordering.
+    //
+    // The in-memory parser ignores extra fields, so adding `order`
+    // here is wire-only and doesn't perturb anything that reads the
+    // cookie back.
+    return { ...cookie, order: cookie.v };
 }
 
 // ---------- Orchestration ----------

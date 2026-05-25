@@ -31,6 +31,17 @@ class SessionState {
 	workspaces = $state([]);
 	error = $state();
 	status = $state(STATUSES.idle);
+	/**
+	 * Flips true after the first fetchSession completes (success OR
+	 * unauthenticated). Page-level effects that depend on
+	 * `currentAccountId` should gate on this — otherwise they fire
+	 * with `currentAccountId === null` during the brief window
+	 * between mount and session-resolve. For entity routes
+	 * (/l/[id], /t/[id], and their /share children) firing too early
+	 * means `initList()` pushes an ownerless entity with
+	 * `accountId: null` before the real account is known.
+	 */
+	hasLoaded = $state(false);
 
 	async fetchSession() {
 		if (this.status !== STATUSES.idle) {
@@ -53,6 +64,7 @@ class SessionState {
 				this.workspaces = [];
 				this.error = undefined;
 				this.status = STATUSES.idle;
+				this.hasLoaded = true;
 				return;
 			}
 
@@ -67,6 +79,7 @@ class SessionState {
 		}
 
 		this.status = STATUSES.idle;
+		this.hasLoaded = true;
 	}
 
 	async refreshWorkspaces() {

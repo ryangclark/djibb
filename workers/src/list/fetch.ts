@@ -350,15 +350,22 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
     });
 
     app.get('/websocket', async c => {
-        if (!c.get('entity')) throw new NotFoundError();
-
-        const requestRole = c.get('authorized_role');
-        const authorizedRoles = AuthorizationRoleEnum.exclude([
-            AuthorizationRoleEnum.enum.restricted,
-        ]);
-        if (!authorizedRoles.safeParse(requestRole).success) {
-            throw new UnauthorizedError();
-        }
+        // Pre-init: the page-side share/list routes mount Replicache and
+        // open the websocket in the same effect. On a fresh ID the WS
+        // upgrade races the initList push that creates the D1 row, so
+        // `entity` is briefly null. Mirror /push's pre-init posture
+        // (line ~263): allow the upgrade and forward to the DO. The DO
+        // is the source of truth for connection state; mutations still
+        // go through /push which has its own auth. Once initList lands,
+        // pokes flow normally over the existing connection.
+        //
+        // No role gate here. Aligns with `_handlePull`'s permissive
+        // posture (see durable_object.ts) — restricted-role invitees
+        // need the connection to receive the post-accept poke that
+        // triggers their next pull. Pokes themselves are non-sensitive
+        // (they just say "something changed"); per-mutation outcome
+        // messages are unicast to the originating clientID, so a
+        // restricted user can't observe other clients' outcomes.
 
         // Use `fetch` for WebSocket because we're returning a Response
         // that isn't serializable.
