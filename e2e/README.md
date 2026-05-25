@@ -73,7 +73,7 @@ AGENT_BROWSER_HEADED=1 bash e2e/magic-link.sh
 |---                    |---                                              |
 | `magic-link.sh`       | Sign in to a fresh email via magic link, land on /workspaces, confirm Account row appears on /accounts |
 | `rate-limit.sh`       | Magic-link rate-limit guard: server returns 429+`reason` on rapid resend; client form shows "Resend in Ns" countdown |
-| `entity-invite.sh`    | **BLOCKED** — two-session ADR 0009 invitation flow. Wedges on /l/<id>/share showing "Loading list…" indefinitely. See `docs/handoffs/2026-05-18-share-page-loading-wedge.md` for diagnosis and the fix-then-rerun plan. |
+| `entity-invite.sh`    | **Unblocked, incomplete** — two-session ADR 0009 invitation flow. The original share-page wedge is fixed (missing `+page.js` under `/l/[id]/share/`); script still needs to be driven the rest of the way through and any test-side flakes ironed out. See its top-of-file comment for current state. |
 
 ## Knowingly out of scope
 

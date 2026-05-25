@@ -2,22 +2,21 @@
 # entity-invite.sh — Two-session end-to-end for ADR 0009 entity
 # invitations.
 #
-# ─── STATUS: BLOCKED ──────────────────────────────────────────────
+# ─── STATUS: UNBLOCKED, INCOMPLETE ────────────────────────────────
 #
-# This script is parked, NOT currently passing. Initial runs
-# (2026-05-18, agent-browser 0.27.0) wedged on Step 2: the
-# /l/<id>/share page persists "Loading list…" indefinitely after
-# a fresh List has been initialized. Same wedge via direct URL nav
-# AND via in-app SPA flow (`+ New list` → Meta+Shift+S). Full
-# diagnosis, code paths, hypotheses, and suggested debugging
-# approach live in:
+# The original blocker (share page wedged on "Loading list…")
+# was a missing `+page.js` under `/l/[id]/share/` — SvelteKit
+# doesn't propagate parent `+page.js` data to child routes, so
+# `data.list_id` was undefined and `initList()` threw silently
+# inside the mount $effect. Fixed by adding the share-route
+# load files (commit on main, 2026-05-25). Manual repro now
+# renders the share UI cleanly.
 #
-#   docs/handoffs/2026-05-18-share-page-loading-wedge.md
-#
-# Re-enabling: once that bug is fixed and the manual repro at the
-# top of the handoff doc reliably succeeds, re-run this script.
-# Iterate on any remaining test-side flakes — the script body
-# below is intended to pass as-is post-fix.
+# This script is no longer blocked, but is NOT yet passing
+# end-to-end. The fix unwedges the share page; the remaining
+# steps (form submit, cross-session pull/poke, accept-banner
+# flip) still need to be driven through and any test-side
+# flakes ironed out. Iterate from here.
 #
 # ──────────────────────────────────────────────────────────────────
 #
