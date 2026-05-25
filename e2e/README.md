@@ -72,6 +72,8 @@ AGENT_BROWSER_HEADED=1 bash e2e/magic-link.sh
 | Script                | Flow                                            |
 |---                    |---                                              |
 | `magic-link.sh`       | Sign in to a fresh email via magic link, land on /workspaces, confirm Account row appears on /accounts |
+| `rate-limit.sh`       | Magic-link rate-limit guard: server returns 429+`reason` on rapid resend; client form shows "Resend in Ns" countdown |
+| `entity-invite.sh`    | **BLOCKED** — two-session ADR 0009 invitation flow. Wedges on /l/<id>/share showing "Loading list…" indefinitely. See `docs/handoffs/2026-05-18-share-page-loading-wedge.md` for diagnosis and the fix-then-rerun plan. |
 
 ## Knowingly out of scope
 
@@ -83,7 +85,9 @@ AGENT_BROWSER_HEADED=1 bash e2e/magic-link.sh
   going through the inbox. A staging-environment E2E using Cloudflare
   Email Workers + `postal-mime` to parse real incoming mail is the
   natural follow-up if/when that environment exists.
-- **Cross-account / multi-session flows.** `agent-browser --session a`
-  and `--session b` isolate cookies and can drive two-browser flows;
-  no script does this yet, but it's the path for testing share/invite
-  real-time sync once ADR 0009 lands.
+Note: the "knowingly out of scope: cross-account / multi-session" entry
+that used to live here landed with `entity-invite.sh` — two
+`--session` flags (inviter + invitee) isolate cookies and Replicache
+state. The same pattern applies to future cross-account scripts; see
+that script for the helper shape (`ab_inviter` / `ab_invitee`
+wrappers).
