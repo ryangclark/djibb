@@ -10,6 +10,7 @@ import migration0006 from '../../migrations/0006_magic_link_ip_index.sql?raw';
 import migration0007 from '../../migrations/0007_entity_invitations_index.sql?raw';
 import migration0008 from '../../migrations/0008_entity_slot.sql?raw';
 import migration0009 from '../../migrations/0009_workspace_roles_to_authorization_roles.sql?raw';
+import migration0010 from '../../migrations/0010_workspace_entity_meta.sql?raw';
 
 const ALL_MIGRATIONS = [
     migration0001,
@@ -21,6 +22,7 @@ const ALL_MIGRATIONS = [
     migration0007,
     migration0008,
     migration0009,
+    migration0010,
 ];
 
 function splitStatements(sql: string): string[] {
@@ -73,6 +75,9 @@ export async function withMissingEntitiesTable<T>(
             await env.DJIBB_AUTH.exec(stmt.replace(/\n/g, ' '));
         }
         for (const stmt of splitStatements(migration0008)) {
+            await env.DJIBB_AUTH.exec(stmt.replace(/\n/g, ' '));
+        }
+        for (const stmt of splitStatements(migration0010)) {
             await env.DJIBB_AUTH.exec(stmt.replace(/\n/g, ' '));
         }
     }

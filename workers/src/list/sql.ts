@@ -65,6 +65,7 @@ export function createElement(sql: SqlStorage, element: ListElement) {
             child_element_refs,
             description,
             forked_from_id,
+            meta,
             name,
             slot,
             time_created,
@@ -72,12 +73,13 @@ export function createElement(sql: SqlStorage, element: ListElement) {
             type,
             version,
             workspace_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
         element.id,
         JSON.stringify(element.authorization_rules),
         JSON.stringify(element.child_element_refs),
         element.description ?? '',
         element.forked_from_id,
+        element.meta ? JSON.stringify(element.meta) : null,
         element.name,
         element.slot,
         Math.floor(element.time_created.getTime() / 1000),
@@ -140,6 +142,13 @@ export function getElementById(sql: SqlStorage, elementId: string) {
         // `slot` column is recent (ADR 0011); older DO storage may omit
         // it entirely. Treat undefined and null the same.
         data.slot = data.slot ?? null;
+        // `meta` is a stringified JSON blob (ADR 0011 §Step 5). Parse
+        // on the way out; tolerate `null` (column default) and the
+        // empty-string seen on some legacy DO rows.
+        data.meta =
+            data.meta && typeof data.meta === 'string'
+                ? JSON.parse(data.meta)
+                : null;
     }
 
     // Default `references_entity_id` to null for items: column is recent;
@@ -198,6 +207,10 @@ export function getChangedElements(sql: SqlStorage, previousVersion: number) {
             data.workspace_id = data.workspace_id ?? null;
             data.forked_from_id = data.forked_from_id ?? null;
             data.slot = data.slot ?? null;
+            data.meta =
+                data.meta && typeof data.meta === 'string'
+                    ? JSON.parse(data.meta)
+                    : null;
         }
 
         // Default `references_entity_id` to null for items: column is recent;
@@ -280,7 +293,7 @@ export function InitializeTables(
             "child_element_refs" TEXT NOT NULL DEFAULT '[]',
             "description" TEXT DEFAULT "",
             "forked_from_id" TEXT DEFAULT NULL, -- entity rows only
-            "meta" TEXT DEFAULT NULL,
+            "meta" TEXT DEFAULT NULL, -- entity rows only; JSON blob (ADR 0011 §Step 5)
             "name" TEXT NOT NULL,
             "parent_element_ref" TEXT DEFAULT NULL,
             "references_entity_id" TEXT DEFAULT NULL,
@@ -340,7 +353,7 @@ export function InitializeTables(
     // the entity's own list_elements row per ADR 0003.
     sql.exec(
         `INSERT INTO kv VALUES
-        ("schema_version", "6");`
+        ("schema_version", "7");`
     );
 
     sql.exec(
@@ -725,6 +738,119 @@ export function unarchiveListGroups(
 ): void {
     for (const groupId of groupIds) {
         unarchiveListGroup(sql, { groupId, version });
+    }
+}
+
+/**
+ * Outcome of `setEntityMetaField`. `gone` means the target row is
+ * missing or soft-deleted; surfaced for parity with other set-family
+ * helpers. ADR 0005 §"Defensive conflict policy".
+ */
+export type SetMetaFieldOutcome = 'applied' | 'gone';
+
+/**
+ * Read-modify-write a single key inside an entity row's `meta` JSON
+ * column. Pass `value: null` to remove the key; if removing it
+ * empties the object, the whole column is set back to NULL (so the
+ * "never written" and "explicitly empty" states converge).
+ *
+ * Type-narrowed via `entityType` so a misrouted call against the
+ * wrong entity surfaces as `gone` instead of silently mutating. The
+ * DO is single-threaded so the read-modify-write isn't subject to
+ * race conditions within a single mutator invocation.
+ *
+ * Used by `setWorkspaceImage` (writes `meta.image_url`); future
+ * presentation-y setters land here too. ADR 0011 §Step 5.
+ */
+export function setEntityMetaField(
+    sql: SqlStorage,
+    {
+        entityId,
+        entityType,
+        key,
+        value,
+        version,
+    }: {
+        entityId: string;
+        entityType: 'list' | 'template' | 'workspace';
+        key: string;
+        value: unknown;
+        version: number;
+    }
+): SetMetaFieldOutcome {
+    const rows = sql
+        .exec(
+            `SELECT meta FROM list_elements
+             WHERE id = ?
+               AND type = ?
+               AND time_deleted IS NULL;`,
+            entityId,
+            entityType
+        )
+        .toArray();
+    const row = rows[0];
+    if (!row) return 'gone';
+
+    const current: Record<string, unknown> =
+        row.meta && typeof row.meta === 'string'
+            ? JSON.parse(row.meta as string)
+            : {};
+    if (value === null || value === undefined) {
+        delete current[key];
+    } else {
+        current[key] = value;
+    }
+    const nextMeta =
+        Object.keys(current).length === 0 ? null : JSON.stringify(current);
+
+    const cursor = sql.exec(
+        `UPDATE list_elements
+        SET
+            meta = ?,
+            version = ?,
+            time_updated = CURRENT_TIMESTAMP
+        WHERE id = ?
+            AND type = ?
+            AND time_deleted IS NULL;`,
+        nextMeta,
+        version,
+        entityId,
+        entityType
+    );
+    return cursor.rowsWritten === 1 ? 'applied' : 'gone';
+}
+
+/**
+ * Update a workspace entity row's name. Symmetric to `renameEntity` but
+ * type-narrowed to `workspace` rows so a misrouted `renameWorkspace`
+ * against a list/template id surfaces as `NotFoundError`. Used by
+ * `renameWorkspace`.
+ */
+export function renameWorkspaceEntity(
+    sql: SqlStorage,
+    {
+        workspaceId,
+        name,
+        version,
+    }: { workspaceId: string; name: string; version: number }
+): void {
+    const cursor = sql.exec(
+        `UPDATE list_elements
+        SET
+            name = ?,
+            version = ?,
+            time_updated = CURRENT_TIMESTAMP
+        WHERE id = ?
+            AND type = 'workspace'
+            AND time_deleted IS NULL;`,
+        name,
+        version,
+        workspaceId
+    );
+    if (cursor.rowsWritten !== 1) {
+        throw new NotFoundError(
+            `\`renameWorkspaceEntity()\` workspace "${workspaceId}" not found (rowsWritten=${cursor.rowsWritten})`
+        );
     }
 }
 

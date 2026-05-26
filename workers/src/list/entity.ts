@@ -20,6 +20,7 @@ export const EntityRowSchema = z.object({
     name: z.string().nullable(),
     description: z.string().nullable(),
     forked_from_id: z.string().nullable(),
+    meta: z.record(z.string(), z.unknown()).nullable(),
     slot: SlotEnum.nullable(),
     authorization_rules: AuthorizationRulesSchema,
     time_created: z.number(),
@@ -35,6 +36,10 @@ function parseRow(row: any): EntityRow {
         typeof row.authorization_rules === 'string'
             ? JSON.parse(row.authorization_rules)
             : row.authorization_rules;
+    const meta =
+        row.meta && typeof row.meta === 'string'
+            ? JSON.parse(row.meta)
+            : row.meta ?? null;
     const parsed = EntityRowSchema.safeParse({
         id: row.id,
         workspace_id: row.workspace_id ?? null,
@@ -42,6 +47,7 @@ function parseRow(row: any): EntityRow {
         name: row.name ?? null,
         description: row.description ?? null,
         forked_from_id: row.forked_from_id ?? null,
+        meta,
         slot: row.slot ?? null,
         authorization_rules: rules,
         time_created: row.time_created,
@@ -84,7 +90,7 @@ export async function GetEntity(
     const row = await d1
         .prepare(
             `SELECT id, workspace_id, type, name, description, forked_from_id,
-                    slot, authorization_rules, time_created, time_updated,
+                    meta, slot, authorization_rules, time_created, time_updated,
                     time_deleted, version
              FROM workspace_entities WHERE id = ? LIMIT 1`,
         )
@@ -101,6 +107,7 @@ export type EntitySnapshot = {
     name: string;
     description: string | null;
     forked_from_id: string | null;
+    meta: Record<string, unknown> | null;
     slot: Slot | null;
     authorization_rules: AuthorizationRules;
     time_created: number;
@@ -137,14 +144,15 @@ export async function EmitEntitySnapshotToCatalog(
         .prepare(
             `INSERT INTO workspace_entities (
                 id, workspace_id, type, name, description, forked_from_id,
-                slot, authorization_rules, time_created, time_updated,
+                meta, slot, authorization_rules, time_created, time_updated,
                 time_deleted, version
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
                 name = excluded.name,
                 description = excluded.description,
                 forked_from_id = excluded.forked_from_id,
+                meta = excluded.meta,
                 slot = excluded.slot,
                 authorization_rules = excluded.authorization_rules,
                 time_updated = excluded.time_updated,
@@ -159,6 +167,7 @@ export async function EmitEntitySnapshotToCatalog(
             snapshot.name,
             snapshot.description,
             snapshot.forked_from_id,
+            snapshot.meta ? JSON.stringify(snapshot.meta) : null,
             snapshot.slot,
             JSON.stringify(snapshot.authorization_rules),
             snapshot.time_created,

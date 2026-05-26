@@ -41,6 +41,22 @@ const entityBaseFields = {
      * separate field is needed.
      */
     forked_from_id: z.string().nullable(),
+    /**
+     * Open JSON bag for presentation-y, speculative, and client-specific
+     * fields that don't warrant first-class columns. Today: workspaces
+     * use `meta.image_url` via `setWorkspaceImage`. Tomorrow: icon
+     * emoji, theme color, UI prefs, A/B-test flags, etc.
+     *
+     * Promotion rule: a field earns its own column when the catalog
+     * needs to filter/sort/index on it, or when auth/security cares.
+     * `slot` clears that bar; `image_url` does not. ADR 0011 §Step 5
+     * established the convention.
+     *
+     * `null` means "never written or fully cleared." Empty `{}` is not
+     * a meaningful state — writers that remove the last key should
+     * clear to `null`.
+     */
+    meta: z.record(z.string(), z.unknown()).nullable(),
     name: z.string(),
     /**
      * Well-known slot this entity fills, if any. See `SlotEnum` and

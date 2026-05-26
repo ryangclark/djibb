@@ -1311,6 +1311,7 @@ export class DjibbList extends DurableObject {
                 name: entity.name,
                 description: entity.description ?? null,
                 forked_from_id: entity.forked_from_id,
+                meta: entity.meta,
                 slot: entity.slot,
                 authorization_rules: entity.authorization_rules,
                 time_created: Math.floor(

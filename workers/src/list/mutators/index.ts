@@ -17,11 +17,13 @@ import * as archiveListGroup from './archiveListGroup';
 import * as archiveListGroups from './archiveListGroups';
 import * as archiveListItem from './archiveListItem';
 import * as archiveListItems from './archiveListItems';
+import * as createWorkspace from './createWorkspace';
 import * as initList from './initList';
 import * as createListItem from './createListItem';
 import * as initFromTemplate from './initFromTemplate';
 import * as inviteByIdentity from './inviteByIdentity';
 import * as renameList from './renameList';
+import * as renameWorkspace from './renameWorkspace';
 import * as revokeInvitation from './revokeInvitation';
 import * as reorderListGroup from './reorderListGroup';
 import * as reorderListItem from './reorderListItem';
@@ -32,6 +34,7 @@ import * as setItemFields from './setItemFields';
 import * as setItemsAtomic from './setItemsAtomic';
 import * as setItemQuantity from './setItemQuantity';
 import * as setListAuthRules from './setListAuthRules';
+import * as setWorkspaceImage from './setWorkspaceImage';
 import * as transferOwnership from './transferOwnership';
 import * as unarchiveList from './unarchiveList';
 import * as unarchiveListGroup from './unarchiveListGroup';
@@ -73,11 +76,13 @@ export const Mutations = {
     [archiveListGroups.name]: archiveListGroups,
     [archiveListItem.name]: archiveListItem,
     [archiveListItems.name]: archiveListItems,
+    [createWorkspace.name]: createWorkspace,
     [initList.name]: initList,
     [createListItem.name]: createListItem,
     [initFromTemplate.name]: initFromTemplate,
     [inviteByIdentity.name]: inviteByIdentity,
     [renameList.name]: renameList,
+    [renameWorkspace.name]: renameWorkspace,
     [revokeInvitation.name]: revokeInvitation,
     [reorderListGroup.name]: reorderListGroup,
     [reorderListItem.name]: reorderListItem,
@@ -88,6 +93,7 @@ export const Mutations = {
     [setItemsAtomic.name]: setItemsAtomic,
     [setItemQuantity.name]: setItemQuantity,
     [setListAuthRules.name]: setListAuthRules,
+    [setWorkspaceImage.name]: setWorkspaceImage,
     [transferOwnership.name]: transferOwnership,
     [unarchiveList.name]: unarchiveList,
     [unarchiveListGroup.name]: unarchiveListGroup,
