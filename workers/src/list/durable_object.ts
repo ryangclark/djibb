@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { MutationV1, PullResponseOKV1, PushRequestV1 } from 'replicache';
 
 import { ReplicachePullRequest } from '../replicache';
-import { List, ListElement } from './index';
+import { isEntityRow, isEntityRowType, List, ListElement } from './index';
 import {
     executeServerMutation,
     MutationStatus,
@@ -230,9 +230,9 @@ export class DjibbList extends DurableObject {
     _getList({ listId }: { listId: string }) {
         const list = getElementById(this.sql, listId);
 
-        // Same DO machinery serves both lists and templates; accept
-        // either entity type here.
-        if (list?.type !== 'list' && list?.type !== 'template') {
+        // Same DO machinery serves every entity-row type (list,
+        // template, workspace — see ADR 0011); accept any of them.
+        if (!list || !isEntityRow(list)) {
             console.log('bad entity:', list);
 
             throw new NotFoundError(`entity not found: ${listId}`);
@@ -364,7 +364,7 @@ export class DjibbList extends DurableObject {
         let foundListVersion = false;
         if (listElements.length > 0) {
             for (const element of listElements) {
-                if (element.type === 'list' || element.type === 'template') {
+                if (isEntityRowType(element.type)) {
                     foundListVersion = true;
                     resolvedEntityVersion = element.version;
                     break;
@@ -373,10 +373,11 @@ export class DjibbList extends DurableObject {
         }
 
         if (!foundListVersion) {
-            // Pull the entity itself (list or template — same machinery).
+            // Pull the entity itself (list / template / workspace —
+            // same machinery per ADR 0011).
             const entity = getElementById(this.sql, listId);
 
-            if (entity?.type !== 'list' && entity?.type !== 'template') {
+            if (!entity || !isEntityRowType(entity.type)) {
                 throw new NotFoundError(`entity not found: ${listId}`);
             }
             resolvedEntityVersion = entity.version;
@@ -514,8 +515,7 @@ export class DjibbList extends DurableObject {
                 ? getElementById(this.sql, entityId)
                 : null;
             const rules =
-                entity &&
-                (entity.type === 'list' || entity.type === 'template')
+                entity && isEntityRow(entity)
                     ? entity.authorization_rules
                     : null;
 
@@ -1295,7 +1295,7 @@ export class DjibbList extends DurableObject {
      */
     private async emitEntitySnapshot(entityId: string): Promise<void> {
         const entity = getElementById(this.sql, entityId);
-        if (!entity || (entity.type !== 'list' && entity.type !== 'template')) {
+        if (!entity || !isEntityRow(entity)) {
             console.warn(
                 `\`emitEntitySnapshot()\` no entity row for "${entityId}"`
             );
@@ -1311,6 +1311,7 @@ export class DjibbList extends DurableObject {
                 name: entity.name,
                 description: entity.description ?? null,
                 forked_from_id: entity.forked_from_id,
+                slot: entity.slot,
                 authorization_rules: entity.authorization_rules,
                 time_created: Math.floor(
                     entity.time_created.getTime() / 1000
@@ -1363,10 +1364,7 @@ export class DjibbList extends DurableObject {
         authorizedAccounts: Readonly<Account[]>
     ): Promise<void> {
         const entity = getElementById(this.sql, entityId);
-        if (
-            !entity ||
-            (entity.type !== 'list' && entity.type !== 'template')
-        ) {
+        if (!entity || !isEntityRow(entity)) {
             console.warn(
                 `\`fireInvitationEmails()\` no entity row for "${entityId}"`
             );
@@ -1392,7 +1390,14 @@ export class DjibbList extends DurableObject {
                 '`fireInvitationEmails()` no AUTHORIZED_DOMAINS; using relative URL.'
             );
         }
-        const pathPrefix = entityTypeLabel === 'list' ? '/l/' : '/t/';
+        // URL prefix mirrors the entity ID's type prefix (`l/`, `t/`, `w/`)
+        // — see user memory note "URLs mirror ID type prefixes".
+        const pathPrefix =
+            entityTypeLabel === 'list'
+                ? '/l/'
+                : entityTypeLabel === 'workspace'
+                  ? '/w/'
+                  : '/t/';
         // ID prefix lives in the entity id (`l/<suffix>` / `t/<suffix>`)
         // but the URL form strips the prefix segment (see user memory:
         // URLs mirror ID type prefixes — `/l/<suffix>` not `/l/l/<suffix>`).
@@ -1428,7 +1433,7 @@ export class DjibbList extends DurableObject {
 
     private async emitInvitationsSnapshot(entityId: string): Promise<void> {
         const entity = getElementById(this.sql, entityId);
-        if (!entity || (entity.type !== 'list' && entity.type !== 'template')) {
+        if (!entity || !isEntityRow(entity)) {
             console.warn(
                 `\`emitInvitationsSnapshot()\` no entity row for "${entityId}"`
             );
@@ -1514,7 +1519,7 @@ export class DjibbList extends DurableObject {
 
         const entity = getElementById(this.sql, entityId);
         const doVersion =
-            entity && (entity.type === 'list' || entity.type === 'template')
+            entity && isEntityRowType(entity.type)
                 ? entity.version
                 : null;
 

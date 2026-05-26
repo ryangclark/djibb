@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
-import { ListSchema } from '..';
+import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '..';
 import { renameEntity } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
@@ -43,7 +43,7 @@ export const server: ServerMutator<Args> = (
             .exec(
                 `SELECT name FROM list_elements
                  WHERE id = ?
-                   AND (type = 'list' OR type = 'template')
+                   AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
                    AND time_deleted IS NULL;`,
                 listId
             )

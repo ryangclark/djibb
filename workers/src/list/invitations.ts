@@ -342,7 +342,7 @@ export async function EmitInvitationsSnapshot(
         newIdForRow,
     }: {
         targetId: string;
-        targetType: 'list' | 'template';
+        targetType: 'list' | 'template' | 'workspace';
         doInvites: readonly PendingInviteRow[];
         /**
          * Caller-supplied ID minter for fresh index rows. Injected so

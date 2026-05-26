@@ -6,7 +6,7 @@ import {
     type AuthorizationRules,
 } from '../../auth/rules';
 import { BadMutationError, NotFoundError } from '../../errors';
-import { ListSchema } from '..';
+import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '..';
 import {
     InvitationIdentityKindEnum,
     getPendingInvite,
@@ -112,7 +112,7 @@ export const server: ServerMutator<Args> = (
         .exec(
             `SELECT authorization_rules FROM list_elements
              WHERE id = ?
-               AND (type = 'list' OR type = 'template')
+               AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
                AND time_deleted IS NULL;`,
             listId
         )

@@ -1,6 +1,6 @@
 export type CatalogEntity = {
     id: string;
-    type: 'list' | 'template';
+    type: 'list' | 'template' | 'workspace';
     name: string | null;
 };
 

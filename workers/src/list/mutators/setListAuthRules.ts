@@ -2,9 +2,9 @@ import { z } from 'zod';
 
 import { AuthorizationRulesSchema } from '../../auth/rules';
 import { NotFoundError } from '../../errors';
-import { ListSchema } from '..';
+import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '..';
 import { setEntityAuthorizationRules } from '../sql';
-import { OWNER_ROLES, toStoredValue } from './_shared';
+import { assertSingleOwner, OWNER_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
     ClientMutator,
@@ -54,12 +54,17 @@ export const server: ServerMutator<Args> = (
     { listId, authorization_rules, expected },
     { sql, nextVersion }
 ) => {
+    // ADR 0011 §Decision C: at most one principal `'owner'` per entity.
+    // Non-principal collaborators with the same powers go through the
+    // `'admin'` role; ownership is transferable via `transferOwnership`.
+    assertSingleOwner(authorization_rules);
+
     if (expected?.authorization_rules !== undefined) {
         const rows = sql
             .exec(
                 `SELECT authorization_rules FROM list_elements
                  WHERE id = ?
-                   AND (type = 'list' OR type = 'template')
+                   AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
                    AND time_deleted IS NULL;`,
                 listId
             )

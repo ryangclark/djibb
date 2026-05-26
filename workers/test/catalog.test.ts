@@ -44,6 +44,7 @@ async function seedEntity({
         name,
         description: null,
         forked_from_id: null,
+        slot: null,
         authorization_rules: ownerId
             ? {
                   authorized_accounts: { [ownerId]: { role: 'owner' } },
@@ -175,6 +176,7 @@ describe('EmitEntitySnapshotToCatalog (version guard)', () => {
             name,
             description: null,
             forked_from_id: null,
+            slot: null,
             authorization_rules: {
                 authorized_accounts: {},
                 default_role: 'ownerless' as const,

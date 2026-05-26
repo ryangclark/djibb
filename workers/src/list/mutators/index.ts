@@ -32,6 +32,7 @@ import * as setItemFields from './setItemFields';
 import * as setItemsAtomic from './setItemsAtomic';
 import * as setItemQuantity from './setItemQuantity';
 import * as setListAuthRules from './setListAuthRules';
+import * as transferOwnership from './transferOwnership';
 import * as unarchiveList from './unarchiveList';
 import * as unarchiveListGroup from './unarchiveListGroup';
 import * as unarchiveListGroups from './unarchiveListGroups';
@@ -87,6 +88,7 @@ export const Mutations = {
     [setItemsAtomic.name]: setItemsAtomic,
     [setItemQuantity.name]: setItemQuantity,
     [setListAuthRules.name]: setListAuthRules,
+    [transferOwnership.name]: transferOwnership,
     [unarchiveList.name]: unarchiveList,
     [unarchiveListGroup.name]: unarchiveListGroup,
     [unarchiveListGroups.name]: unarchiveListGroups,

@@ -1,4 +1,13 @@
-import { ListElement, ListElementUnion, ListItem, ListSchema, Quantity } from '.';
+import {
+    ENTITY_ROW_TYPES_SQL_LIST,
+    isEntityRow,
+    isEntityRowType,
+    ListElement,
+    ListElementUnion,
+    ListItem,
+    ListSchema,
+    Quantity,
+} from '.';
 import {
     BadMutationError,
     DjibbError,
@@ -29,7 +38,7 @@ import { MutationEnvelope, MutationStatus } from './mutators';
  * overlaid from D1.
  */
 export function createElement(sql: SqlStorage, element: ListElement) {
-    if (element.type !== 'list' && element.type !== 'template') {
+    if (!isEntityRow(element)) {
         throw new BadMutationError(
             `\`createElement()\` not supported for type "${element.type}"`
         );
@@ -57,18 +66,20 @@ export function createElement(sql: SqlStorage, element: ListElement) {
             description,
             forked_from_id,
             name,
+            slot,
             time_created,
             time_updated,
             type,
             version,
             workspace_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
         element.id,
         JSON.stringify(element.authorization_rules),
         JSON.stringify(element.child_element_refs),
         element.description ?? '',
         element.forked_from_id,
         element.name,
+        element.slot,
         Math.floor(element.time_created.getTime() / 1000),
         Math.floor(element.time_updated.getTime() / 1000),
         element.type,
@@ -120,12 +131,15 @@ export function getElementById(sql: SqlStorage, elementId: string) {
 
     // Entity-level fields are stored on the DO row per ADR 0003. Parse
     // them out of their TEXT columns; tolerate nulls for legacy rows.
-    if (data.type === 'list' || data.type === 'template') {
+    if (isEntityRowType(data.type)) {
         data.authorization_rules = data.authorization_rules
             ? JSON.parse(data.authorization_rules)
             : DefaultAuthorizationRules;
         data.workspace_id = data.workspace_id ?? null;
         data.forked_from_id = data.forked_from_id ?? null;
+        // `slot` column is recent (ADR 0011); older DO storage may omit
+        // it entirely. Treat undefined and null the same.
+        data.slot = data.slot ?? null;
     }
 
     // Default `references_entity_id` to null for items: column is recent;
@@ -177,12 +191,13 @@ export function getChangedElements(sql: SqlStorage, previousVersion: number) {
         if (typeof data.time_updated === 'number') data.time_updated *= 1000;
         if (typeof data.time_deleted === 'number') data.time_deleted *= 1000;
 
-        if (row.type === 'list' || row.type === 'template') {
+        if (isEntityRowType(row.type)) {
             data.authorization_rules = data.authorization_rules
                 ? JSON.parse(data.authorization_rules as string)
                 : DefaultAuthorizationRules;
             data.workspace_id = data.workspace_id ?? null;
             data.forked_from_id = data.forked_from_id ?? null;
+            data.slot = data.slot ?? null;
         }
 
         // Default `references_entity_id` to null for items: column is recent;
@@ -269,6 +284,7 @@ export function InitializeTables(
             "name" TEXT NOT NULL,
             "parent_element_ref" TEXT DEFAULT NULL,
             "references_entity_id" TEXT DEFAULT NULL,
+            "slot" TEXT DEFAULT NULL, -- entity rows only; see ADR 0011 / SlotEnum
             "time_created" INTEGER NOT NULL DEFAULT CURRENT_TIMESTAMP,
             "time_deleted" INTEGER DEFAULT NULL,
             "time_updated" INTEGER NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -324,7 +340,7 @@ export function InitializeTables(
     // the entity's own list_elements row per ADR 0003.
     sql.exec(
         `INSERT INTO kv VALUES
-        ("schema_version", "5");`
+        ("schema_version", "6");`
     );
 
     sql.exec(
@@ -395,7 +411,7 @@ export function getEntityId(sql: SqlStorage): string | null {
     const cursor = sql.exec(
         `SELECT id
         FROM list_elements
-        WHERE type IN ('list', 'template')
+        WHERE type IN (${ENTITY_ROW_TYPES_SQL_LIST})
         LIMIT 1;`
     );
 
@@ -410,7 +426,7 @@ export function getListVersion(sql: SqlStorage) {
     const cursor = sql.exec(
         `SELECT version
         FROM list_elements
-        WHERE type IN ('list', 'template')
+        WHERE type IN (${ENTITY_ROW_TYPES_SQL_LIST})
         LIMIT 1;`
     );
 
@@ -437,7 +453,7 @@ export function setListVersion(sql: SqlStorage, version: number) {
         SET
             time_updated = CURRENT_TIMESTAMP,
             version = ?
-        WHERE type IN ('list', 'template')`,
+        WHERE type IN (${ENTITY_ROW_TYPES_SQL_LIST})`,
         version
     );
 
@@ -513,7 +529,7 @@ export function renameEntity(
             version = ?,
             time_updated = CURRENT_TIMESTAMP
         WHERE id = ?
-            AND (type = 'list' OR type = 'template')
+            AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
             AND time_deleted IS NULL;`,
         name,
         version,
@@ -549,7 +565,7 @@ export function archiveEntity(
             version = ?,
             time_updated = CURRENT_TIMESTAMP
         WHERE id = ?
-            AND (type = 'list' OR type = 'template');`,
+            AND type IN (${ENTITY_ROW_TYPES_SQL_LIST});`,
         version,
         entityId
     );
@@ -576,7 +592,7 @@ export function unarchiveEntity(
             version = ?,
             time_updated = CURRENT_TIMESTAMP
         WHERE id = ?
-            AND (type = 'list' OR type = 'template');`,
+            AND type IN (${ENTITY_ROW_TYPES_SQL_LIST});`,
         version,
         entityId
     );
@@ -732,7 +748,7 @@ export function setEntityDescription(
             version = ?,
             time_updated = CURRENT_TIMESTAMP
         WHERE id = ?
-            AND (type = 'list' OR type = 'template')
+            AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
             AND time_deleted IS NULL;`,
         description,
         version,
@@ -774,7 +790,7 @@ export function setEntityAuthorizationRules(
             version = ?,
             time_updated = CURRENT_TIMESTAMP
         WHERE id = ?
-            AND (type = 'list' OR type = 'template')
+            AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
             AND time_deleted IS NULL;`,
         JSON.stringify(authorization_rules),
         version,

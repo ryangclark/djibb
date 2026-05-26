@@ -8,6 +8,7 @@ import migration0004 from '../../migrations/0004_workspace_entities.sql?raw';
 import migration0005 from '../../migrations/0005_magic_link_tokens.sql?raw';
 import migration0006 from '../../migrations/0006_magic_link_ip_index.sql?raw';
 import migration0007 from '../../migrations/0007_entity_invitations_index.sql?raw';
+import migration0008 from '../../migrations/0008_entity_slot.sql?raw';
 
 const ALL_MIGRATIONS = [
     migration0001,
@@ -17,6 +18,7 @@ const ALL_MIGRATIONS = [
     migration0005,
     migration0006,
     migration0007,
+    migration0008,
 ];
 
 function splitStatements(sql: string): string[] {
@@ -61,7 +63,14 @@ export async function withMissingEntitiesTable<T>(
     try {
         return await fn();
     } finally {
+        // Recreate the table by replaying every migration that touches
+        // `workspace_entities`. 0008 adds the `slot` column; without it
+        // EmitEntitySnapshotToCatalog binds a slot value into a missing
+        // column and the test surface diverges from production schema.
         for (const stmt of splitStatements(migration0004)) {
+            await env.DJIBB_AUTH.exec(stmt.replace(/\n/g, ' '));
+        }
+        for (const stmt of splitStatements(migration0008)) {
             await env.DJIBB_AUTH.exec(stmt.replace(/\n/g, ' '));
         }
     }

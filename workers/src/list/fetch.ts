@@ -30,7 +30,7 @@ import { initListArgsSchema } from './mutators/client';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
 
-type EntityType = 'list' | 'template';
+type EntityType = 'list' | 'template' | 'workspace';
 
 /**
  * Resolves a role from the session against given rules + the calling
@@ -102,10 +102,11 @@ async function resolveSessionRole(
 
 /**
  * Builds the sub-router that handles a single top-level entity type
- * (List or Template). Both share the same DO machinery and Replicache
- * sync — the differences are: which ID prefix is the default for
- * unprefixed query params, which prefix is required, and which value
- * gets written into `workspace_entities.type` on init reconciliation.
+ * (List, Template, or Workspace — see ADR 0011). They share the same
+ * DO machinery and Replicache sync — the only per-type differences are
+ * the ID prefix that's the default for unprefixed query params, the
+ * prefix that's required, and the value written into
+ * `workspace_entities.type` on init reconciliation.
  */
 export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
     const idPrefix = IdTypes[entityType];
@@ -401,3 +402,4 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
 
 export const list_app = makeEntityRouter('list');
 export const template_app = makeEntityRouter('template');
+export const workspace_app = makeEntityRouter('workspace');

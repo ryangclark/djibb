@@ -36,8 +36,8 @@ export async function sendInvitationEmail(
 
 export interface EntityInvitationEmailParams {
     to: string;
-    /** "list" or "template" — drives subject phrasing. */
-    entityTypeLabel: 'list' | 'template';
+    /** "list", "template", or "workspace" — drives subject phrasing. */
+    entityTypeLabel: 'list' | 'template' | 'workspace';
     /** Display name of the entity. May be empty; falls back to a
      *  generic phrase. */
     entityName: string;

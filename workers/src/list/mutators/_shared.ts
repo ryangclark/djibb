@@ -7,7 +7,7 @@ import type {
 } from 'replicache';
 
 import { AuthorizationRoleEnum } from '../../auth/rules';
-import type { AuthorizationRole } from '../../auth/rules';
+import type { AuthorizationRole, AuthorizationRules } from '../../auth/rules';
 import { DatelikeToDateSchema } from '../../schema';
 
 /**
@@ -149,6 +149,7 @@ export const FRICTION_TIER_MUTATORS: readonly string[] = [
     'setListAuthRules',
     'initList',
     'initFromTemplate',
+    'transferOwnership',
 ] as const;
 
 export type FrictionTier = 'two-step-confirm';
@@ -201,4 +202,85 @@ export type MutatorModule<A = unknown> = {
 /** Replicache values must be plain JSON; round-trip strips Date instances. */
 export function toStoredValue(value: unknown): ReadonlyJSONObject {
     return JSON.parse(JSON.stringify(value));
+}
+
+// ---------- Single-owner invariant (ADR 0011 §Decision C) ----------
+
+/**
+ * Every entity has at most one principal owner. The `'owner'` role is
+ * the unique-per-entity transferable principal; non-principal
+ * collaborators with the same powers go through the `'admin'` role.
+ * Ownerless entities (`default_role: 'ownerless'`) carry zero owners.
+ *
+ * Enforcing the invariant in one place lets every rules-writing path
+ * (`setListAuthRules`, `acceptInvitation`, `transferOwnership`, and any
+ * future grant mutator) share the same gate.
+ */
+
+/**
+ * Count the accounts holding `role: 'owner'` in a rules block. Used by
+ * the single-owner invariant guard and by `transferOwnership`'s
+ * "current owner" lookup.
+ */
+export function countOwners(rules: AuthorizationRules): number {
+    let n = 0;
+    for (const a of Object.values(rules.authorized_accounts)) {
+        if (a.role === 'owner') n += 1;
+    }
+    return n;
+}
+
+/**
+ * Return the account ID currently holding `'owner'` in `rules`, or
+ * `null` if the entity is ownerless. Throws when the invariant is
+ * already violated — that state should be impossible because every
+ * rules-writing path runs through `assertSingleOwner`.
+ */
+export function findOwnerAccountId(
+    rules: AuthorizationRules
+): string | null {
+    let owner: string | null = null;
+    for (const [accountId, a] of Object.entries(rules.authorized_accounts)) {
+        if (a.role !== 'owner') continue;
+        if (owner !== null) {
+            throw new SingleOwnerInvariantError(
+                `multiple owners on entity rules (at least "${owner}" and "${accountId}")`
+            );
+        }
+        owner = accountId;
+    }
+    return owner;
+}
+
+/**
+ * Throw if `rules` would have two or more `'owner'` accounts. Use this
+ * at the top of every server mutator that writes `authorization_rules`.
+ * Pure check on the post-image — does not consult the DO sql.
+ *
+ * Zero owners is valid: an entity can be ownerless (`default_role:
+ * 'ownerless'`) or admin-managed before a principal is ever assigned.
+ * The "exactly-one" version is the post-principal shape; the
+ * "at-most-one" check is the broader invariant the system upholds.
+ */
+export function assertSingleOwner(rules: AuthorizationRules): void {
+    const n = countOwners(rules);
+    if (n > 1) {
+        throw new SingleOwnerInvariantError(
+            `single-owner invariant: rules would set ${n} owners`
+        );
+    }
+}
+
+/**
+ * Thrown when a mutation would violate the single-owner invariant.
+ * Inherits from `Error` rather than `DjibbError` (one of the catalog
+ * codes in `workers/src/errors.ts`) so existing dispatch surfaces it
+ * as an unhandled failure — the UI never offers a way to construct
+ * invalid rules, so this firing is always a bug to fix in the caller.
+ */
+export class SingleOwnerInvariantError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'SingleOwnerInvariantError';
+    }
 }

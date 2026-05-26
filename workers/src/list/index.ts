@@ -5,6 +5,28 @@ import { ID_LENGTH, IdTypes } from '../id';
 import { DatelikeToDateSchema } from '../schema';
 
 /**
+ * Well-known "slot" assignments for entities that fill a singular role
+ * for an account, workspace, or the system as a whole. See ADR 0011.
+ *
+ * Nullable everywhere by default; only specific entities (the personal
+ * Workspace for an account, the account's Inbox List, the global Seed
+ * Pool List) carry a non-null value. Booleans like `is_personal` /
+ * `system: true` collapse onto this single enum column so further roles
+ * can be added without further schema churn.
+ *
+ *  - `personal_workspace` — Workspace entity, exactly one per account.
+ *  - `inbox`              — List entity, exactly one per account.
+ *  - `seed_pool`          — List entity, exactly one globally.
+ */
+export const SlotEnum = z.enum([
+    'personal_workspace',
+    'inbox',
+    'seed_pool',
+]);
+
+export type Slot = z.TypeOf<typeof SlotEnum>;
+
+/**
  * Fields shared by every top-level entity (List, Template). The `type`
  * literal and `id` length differ per concrete entity and are added by
  * the extending schemas.
@@ -20,6 +42,11 @@ const entityBaseFields = {
      */
     forked_from_id: z.string().nullable(),
     name: z.string(),
+    /**
+     * Well-known slot this entity fills, if any. See `SlotEnum` and
+     * ADR 0011. `null` for ordinary user-created entities.
+     */
+    slot: SlotEnum.nullable(),
     time_created: DatelikeToDateSchema,
     time_deleted: DatelikeToDateSchema.nullable(),
     time_updated: DatelikeToDateSchema,
@@ -53,6 +80,57 @@ export const TemplateSchema = z.object({
  * CONTEXT.md.
  */
 export type Template = z.TypeOf<typeof TemplateSchema>;
+
+export const WorkspaceEntitySchema = z.object({
+    ...entityBaseFields,
+    id: z.string().length(ID_LENGTH + IdTypes['workspace'].length + 1), // +1 for slash
+    type: z.literal('workspace'),
+});
+
+/**
+ * A Workspace as a DjibbList-substrate entity (ADR 0011). Identical
+ * machinery to List/Template — only the `type` discriminator and ID
+ * prefix differ. The legacy `workers/src/workspace/index.ts`
+ * `WorkspaceSchema` (D1 `workspaces` table row) is what this replaces
+ * once the membership/auth migration in steps 7–8 lands.
+ */
+export type WorkspaceEntity = z.TypeOf<typeof WorkspaceEntitySchema>;
+
+/**
+ * Set of `type` discriminator values that represent a "top-level entity
+ * row" (the row that owns its DO, the row a pull cookie's version
+ * tracks, the row that emits to the D1 catalog). Single source of truth
+ * for the predicates and SQL filters scattered across the list package.
+ */
+export const ENTITY_ROW_TYPES = ['list', 'template', 'workspace'] as const;
+export type EntityRowType = (typeof ENTITY_ROW_TYPES)[number];
+
+export function isEntityRowType(t: unknown): t is EntityRowType {
+    return (
+        t === 'list' || t === 'template' || t === 'workspace'
+    );
+}
+
+/**
+ * Type predicate for narrowing a parsed `ListElement` (the discriminated
+ * union) down to "this is an entity row" — i.e. one of `List | Template |
+ * WorkspaceEntity`. Use this when the surrounding code needs access to
+ * entity-only fields (`authorization_rules`, `workspace_id`, `slot`,
+ * etc.) that don't exist on the item/group branches of the union.
+ */
+export function isEntityRow(
+    element: ListElement
+): element is List | Template | WorkspaceEntity {
+    return isEntityRowType(element.type);
+}
+
+/**
+ * SQL fragment for `WHERE type IN (...)` clauses that target every
+ * entity-row type. Kept as a single string so adding/removing types
+ * doesn't require chasing every callsite — though new types should
+ * also extend `ENTITY_ROW_TYPES` and any TS-side type guards.
+ */
+export const ENTITY_ROW_TYPES_SQL_LIST = `'list', 'template', 'workspace'`;
 
 export const ListGroupSchema = z.object({
     child_element_refs: z.array(z.string()),
@@ -150,7 +228,13 @@ export const ListElementUnion = z.discriminatedUnion('type', [
     ListItemSchema,
     ListSchema,
     TemplateSchema,
+    WorkspaceEntitySchema,
 ]);
 
-/** An element in a list/template, or the entity itself. */
-export type ListElement = List | Template | ListGroup | ListItem;
+/** An element in a list/template/workspace, or the entity itself. */
+export type ListElement =
+    | List
+    | Template
+    | WorkspaceEntity
+    | ListGroup
+    | ListItem;

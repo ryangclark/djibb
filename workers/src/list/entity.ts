@@ -5,6 +5,7 @@ import {
     AuthorizationRulesSchema,
 } from '../auth/rules';
 import { UnexpectedError } from '../errors';
+import { ENTITY_ROW_TYPES, Slot, SlotEnum } from '.';
 
 /**
  * Snapshot of entity metadata as it lives in the D1 `workspace_entities`
@@ -15,10 +16,11 @@ import { UnexpectedError } from '../errors';
 export const EntityRowSchema = z.object({
     id: z.string(),
     workspace_id: z.string().nullable(),
-    type: z.enum(['list', 'template']),
+    type: z.enum(ENTITY_ROW_TYPES),
     name: z.string().nullable(),
     description: z.string().nullable(),
     forked_from_id: z.string().nullable(),
+    slot: SlotEnum.nullable(),
     authorization_rules: AuthorizationRulesSchema,
     time_created: z.number(),
     time_updated: z.number(),
@@ -40,6 +42,7 @@ function parseRow(row: any): EntityRow {
         name: row.name ?? null,
         description: row.description ?? null,
         forked_from_id: row.forked_from_id ?? null,
+        slot: row.slot ?? null,
         authorization_rules: rules,
         time_created: row.time_created,
         time_updated: row.time_updated,
@@ -81,7 +84,7 @@ export async function GetEntity(
     const row = await d1
         .prepare(
             `SELECT id, workspace_id, type, name, description, forked_from_id,
-                    authorization_rules, time_created, time_updated,
+                    slot, authorization_rules, time_created, time_updated,
                     time_deleted, version
              FROM workspace_entities WHERE id = ? LIMIT 1`,
         )
@@ -94,10 +97,11 @@ export async function GetEntity(
 export type EntitySnapshot = {
     id: string;
     workspace_id: string | null;
-    type: 'list' | 'template';
+    type: 'list' | 'template' | 'workspace';
     name: string;
     description: string | null;
     forked_from_id: string | null;
+    slot: Slot | null;
     authorization_rules: AuthorizationRules;
     time_created: number;
     time_updated: number;
@@ -133,14 +137,15 @@ export async function EmitEntitySnapshotToCatalog(
         .prepare(
             `INSERT INTO workspace_entities (
                 id, workspace_id, type, name, description, forked_from_id,
-                authorization_rules, time_created, time_updated,
+                slot, authorization_rules, time_created, time_updated,
                 time_deleted, version
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
                 name = excluded.name,
                 description = excluded.description,
                 forked_from_id = excluded.forked_from_id,
+                slot = excluded.slot,
                 authorization_rules = excluded.authorization_rules,
                 time_updated = excluded.time_updated,
                 time_deleted = excluded.time_deleted,
@@ -154,6 +159,7 @@ export async function EmitEntitySnapshotToCatalog(
             snapshot.name,
             snapshot.description,
             snapshot.forked_from_id,
+            snapshot.slot,
             JSON.stringify(snapshot.authorization_rules),
             snapshot.time_created,
             snapshot.time_updated,
