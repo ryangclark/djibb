@@ -122,8 +122,15 @@ WorkspaceApp.get('/:slug/members', async c => {
     return c.json(members);
 });
 
+/**
+ * Valid roles for the change-role surface. The narrower subset of
+ * `AuthorizationRoleEnum` that's meaningful at the membership level —
+ * `'restricted'` and `'ownerless'` are entity-level concepts that don't
+ * belong on a workspace member. `'checker'` is omitted from the UI for
+ * now; can be added back when the workspace membership UX expects it.
+ */
 const PatchMemberSchema = z.object({
-    role: z.enum(['owner', 'admin', 'member', 'viewer']),
+    role: z.enum(['owner', 'admin', 'editor', 'viewer']),
 });
 
 WorkspaceApp.patch('/:slug/members/:accountId', async c => {

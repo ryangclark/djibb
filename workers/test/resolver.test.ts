@@ -96,20 +96,23 @@ describe('resolveRole', () => {
         });
     });
 
-    describe('workspace membership translation', () => {
-        it('owner → owner', () => {
+    describe('workspace membership pass-through', () => {
+        // ADR 0011 §Step 4 retired the legacy 4-tier WorkspaceRoleEnum;
+        // workspace memberships now carry an AuthorizationRole directly,
+        // so the resolver pass-through is identity — no translation.
+        it('owner stays owner', () => {
             expect(resolveRole(session, rules(), 'owner')).toBe('owner');
         });
 
-        it('admin → admin', () => {
+        it('admin stays admin', () => {
             expect(resolveRole(session, rules(), 'admin')).toBe('admin');
         });
 
-        it('member → editor', () => {
-            expect(resolveRole(session, rules(), 'member')).toBe('editor');
+        it('editor stays editor', () => {
+            expect(resolveRole(session, rules(), 'editor')).toBe('editor');
         });
 
-        it('viewer → viewer', () => {
+        it('viewer stays viewer', () => {
             expect(resolveRole(session, rules(), 'viewer')).toBe('viewer');
         });
 
@@ -118,7 +121,7 @@ describe('resolveRole', () => {
                 resolveRole(
                     session,
                     rules({ default_role: 'restricted' }),
-                    'member',
+                    'editor',
                 ),
             ).toBe('editor');
         });

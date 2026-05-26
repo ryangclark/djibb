@@ -4,11 +4,11 @@ import {
     UpdateWorkspaceRequest,
     Workspace,
     WorkspaceMember,
-    WorkspaceRole,
-    WorkspaceRoleEnum,
     WorkspaceSchema,
     WorkspaceWithMembership,
 } from './index';
+import { AuthorizationRoleEnum } from '../auth/rules';
+import type { AuthorizationRole } from '../auth/rules';
 import {
     BadRequestError,
     FailedPreconditionError,
@@ -109,7 +109,7 @@ function buildInsertMembershipStatement(
     d1: D1Database,
     workspaceId: string,
     accountId: string,
-    role: WorkspaceRole,
+    role: AuthorizationRole,
     joinedAt: Date
 ): D1PreparedStatement {
     return d1
@@ -258,7 +258,7 @@ export async function GetWorkspacesByAccountId(
         workspace: shapeWorkspaceRow(row),
         membership: {
             account_id: accountId,
-            role: WorkspaceRoleEnum.parse(row.role),
+            role: AuthorizationRoleEnum.parse(row.role),
             permissions: row.permissions ? JSON.parse(row.permissions) : [],
             time_joined: new Date(row.time_joined * 1000),
         },
@@ -280,7 +280,7 @@ export async function GetWorkspaceMembers(
     if (!result.success) throw new UnexpectedError();
     return (result.results as any[]).map(row => ({
         account_id: row.account_id,
-        role: WorkspaceRoleEnum.parse(row.role),
+        role: AuthorizationRoleEnum.parse(row.role),
         permissions: row.permissions ? JSON.parse(row.permissions) : [],
         time_joined: new Date(row.time_joined * 1000),
     }));
@@ -306,7 +306,7 @@ export async function GetMembership(
     if (!row) return null;
     return {
         account_id: (row as any).account_id,
-        role: WorkspaceRoleEnum.parse((row as any).role),
+        role: AuthorizationRoleEnum.parse((row as any).role),
         permissions: (row as any).permissions
             ? JSON.parse((row as any).permissions)
             : [],
@@ -315,8 +315,8 @@ export async function GetMembership(
 }
 
 function requireRole(
-    actual: WorkspaceRole,
-    allowed: WorkspaceRole[]
+    actual: AuthorizationRole,
+    allowed: AuthorizationRole[]
 ): void {
     if (!allowed.includes(actual)) {
         throw new UnauthorizedError(
@@ -408,7 +408,7 @@ export async function ChangeMemberRole(
     actorAccountId: string,
     slug: string,
     targetAccountId: string,
-    newRole: WorkspaceRole
+    newRole: AuthorizationRole
 ): Promise<WorkspaceMember> {
     const workspace = await GetWorkspaceBySlug(d1, slug);
     if (workspace.is_personal) {

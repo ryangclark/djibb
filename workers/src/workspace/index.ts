@@ -1,21 +1,40 @@
 import { z } from 'zod';
+import { AuthorizationRoleEnum } from '../auth/rules';
+import type { AuthorizationRole } from '../auth/rules';
 import { DatelikeToDateSchema } from '../schema';
 
 export const WORKSPACE_ID_LENGTH = 22;
 
 export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/;
 
-export const WorkspaceRoleEnum = z.enum([
-    'owner',
-    'admin',
-    'member',
-    'viewer',
-]);
-export type WorkspaceRole = z.TypeOf<typeof WorkspaceRoleEnum>;
-
+/**
+ * ADR 0011 §Step 4: workspace memberships now carry an entity-level
+ * `AuthorizationRole` directly. The legacy `WorkspaceRoleEnum` (`owner
+ * | admin | member | viewer`) is gone. The mapping:
+ *
+ *   - `'owner'`  → `'owner'`   (already aligned)
+ *   - `'admin'`  → `'admin'`   (already aligned)
+ *   - `'member'` → `'viewer'`  (NOT `'editor'`: a workspace "member"
+ *     historically meant "read access to the workspace, may be
+ *     promoted on specific entities" — a viewer with explicit
+ *     per-entity grants, not a workspace-wide editor)
+ *   - `'viewer'` → `'viewer'`  (already aligned)
+ *
+ * The resolver's translation table is now an identity pass-through.
+ * Membership rows themselves move off D1 to entity-level
+ * `authorization_rules.authorized_accounts` in step 7; this step just
+ * brings the vocabulary into alignment ahead of that move.
+ *
+ * The 7-tier `AuthorizationRoleEnum` is broader than what's legal for a
+ * workspace member (`'restricted'` and `'ownerless'` don't make sense
+ * at the membership level), but we don't enforce a narrower subset at
+ * the schema level. The HTTP boundary (`PatchMemberSchema` in
+ * `fetch.ts`) narrows to the valid set for the change-role surface;
+ * `InvitableRoleEnum` narrows further for the invite surface.
+ */
 export const WorkspaceMemberSchema = z.object({
     account_id: z.string(),
-    role: WorkspaceRoleEnum,
+    role: AuthorizationRoleEnum,
     permissions: z.array(z.string()),
     time_joined: DatelikeToDateSchema,
 });
@@ -72,10 +91,11 @@ export const InvitationStatusEnum = z.enum([
 export type InvitationStatus = z.TypeOf<typeof InvitationStatusEnum>;
 
 /**
- * Roles that may be granted via an invite. Owner is granted only via
- * an explicit transfer-ownership flow, so it's excluded here.
+ * Roles that may be granted via an invite. `'owner'` is excluded — the
+ * unique principal role is mintable only via the `transferOwnership`
+ * mutator (ADR 0011 §Decision C). Subset of `AuthorizationRoleEnum`.
  */
-export const InvitableRoleEnum = z.enum(['admin', 'member', 'viewer']);
+export const InvitableRoleEnum = z.enum(['admin', 'editor', 'viewer']);
 export type InvitableRole = z.TypeOf<typeof InvitableRoleEnum>;
 
 export const WorkspaceInvitationSchema = z.object({
@@ -84,7 +104,7 @@ export const WorkspaceInvitationSchema = z.object({
     type: InvitationTypeEnum,
     target_email: z.string().nullable(),
     target_account_id: z.string().nullable(),
-    role: WorkspaceRoleEnum,
+    role: AuthorizationRoleEnum,
     token: z.string(),
     inviter_account_id: z.string(),
     status: InvitationStatusEnum,
@@ -123,7 +143,7 @@ export type CreateInvitationRequest = z.TypeOf<
  */
 export const InvitationPreviewSchema = z.object({
     type: InvitationTypeEnum,
-    role: WorkspaceRoleEnum,
+    role: AuthorizationRoleEnum,
     workspace: z.object({
         slug: z.string(),
         name: z.string().nullable(),

@@ -1,21 +1,16 @@
 import type { AuthorizationRole, AuthorizationRules } from './rules';
-import type { WorkspaceRole } from '../workspace';
 
 export type Session = { account_id: string } | null;
-
-const WORKSPACE_ROLE_TO_ENTITY_ROLE: Record<WorkspaceRole, AuthorizationRole> = {
-    owner: 'owner',
-    admin: 'admin',
-    member: 'editor',
-    viewer: 'viewer',
-};
 
 /**
  * Resolves the AuthorizationRole an account holds against a single entity.
  *
  * Specificity (highest to lowest):
  *   1. authorized_accounts[account_id] — explicit per-entity grant or demotion
- *   2. workspace membership — translated via WORKSPACE_ROLE_TO_ENTITY_ROLE
+ *   2. workspace membership — passed through as-is (ADR 0011 §Step 4
+ *      retired the legacy 4-tier `WorkspaceRoleEnum`; memberships now
+ *      carry `AuthorizationRole` directly, so what used to be a
+ *      translation table is now an identity pass-through)
  *   3. default_role — the floor for anyone else (including anonymous)
  *
  * An explicit `authorized_accounts` entry wins both directions: it can grant
@@ -27,13 +22,13 @@ const WORKSPACE_ROLE_TO_ENTITY_ROLE: Record<WorkspaceRole, AuthorizationRole> = 
 export function resolveRole(
     session: Session,
     rules: AuthorizationRules,
-    workspace_role: WorkspaceRole | null,
+    workspace_role: AuthorizationRole | null,
 ): AuthorizationRole {
     if (session) {
         const explicit = rules.authorized_accounts[session.account_id];
         if (explicit) return explicit.role;
 
-        if (workspace_role) return WORKSPACE_ROLE_TO_ENTITY_ROLE[workspace_role];
+        if (workspace_role) return workspace_role;
     }
 
     return rules.default_role;

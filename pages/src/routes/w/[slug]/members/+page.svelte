@@ -34,8 +34,8 @@
 	let inviteUsername = $state('');
 	/** @type {number|''} */
 	let inviteMaxUses = $state('');
-	/** @type {'admin'|'member'|'viewer'} */
-	let inviteRole = $state('member');
+	/** @type {'admin'|'editor'|'viewer'} */
+	let inviteRole = $state('viewer');
 	let creating = $state(false);
 	let lastInviteUrl = $state('');
 
@@ -119,7 +119,7 @@
 	async function onChangeRole(accountId, ev) {
 		if (!actorAccountId) return;
 		const target = /** @type {HTMLSelectElement} */ (ev.target);
-		const role = /** @type {'owner'|'admin'|'member'|'viewer'} */ (target.value);
+		const role = /** @type {'owner'|'admin'|'editor'|'viewer'} */ (target.value);
 		try {
 			await changeMemberRole(slug, accountId, role, actorAccountId);
 			await loadMembers();
@@ -168,7 +168,7 @@
 						<select value={m.role} onchange={ev => onChangeRole(m.account_id, ev)}>
 							<option value="owner">owner</option>
 							<option value="admin">admin</option>
-							<option value="member">member</option>
+							<option value="editor">editor</option>
 							<option value="viewer">viewer</option>
 						</select>
 					{:else}
@@ -242,7 +242,7 @@
 				Role
 				<select bind:value={inviteRole} class="border p-1">
 					<option value="admin">admin</option>
-					<option value="member">member</option>
+					<option value="editor">editor</option>
 					<option value="viewer">viewer</option>
 				</select>
 			</label>

@@ -9,6 +9,7 @@ import migration0005 from '../../migrations/0005_magic_link_tokens.sql?raw';
 import migration0006 from '../../migrations/0006_magic_link_ip_index.sql?raw';
 import migration0007 from '../../migrations/0007_entity_invitations_index.sql?raw';
 import migration0008 from '../../migrations/0008_entity_slot.sql?raw';
+import migration0009 from '../../migrations/0009_workspace_roles_to_authorization_roles.sql?raw';
 
 const ALL_MIGRATIONS = [
     migration0001,
@@ -19,6 +20,7 @@ const ALL_MIGRATIONS = [
     migration0006,
     migration0007,
     migration0008,
+    migration0009,
 ];
 
 function splitStatements(sql: string): string[] {

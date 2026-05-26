@@ -3,7 +3,7 @@ const BASE = import.meta.env.VITE_API_BASE_URL;
 /**
  * @typedef {'email'|'username'|'link'} InvitationType
  * @typedef {'pending'|'accepted'|'revoked'|'expired'} InvitationStatus
- * @typedef {'admin'|'member'|'viewer'} InvitableRole
+ * @typedef {'admin'|'editor'|'viewer'} InvitableRole
  */
 
 /**
@@ -13,7 +13,7 @@ const BASE = import.meta.env.VITE_API_BASE_URL;
  * @property {InvitationType} type
  * @property {string|null} target_email
  * @property {string|null} target_account_id
- * @property {'owner'|'admin'|'member'|'viewer'} role
+ * @property {'owner'|'admin'|'editor'|'viewer'} role
  * @property {string} token
  * @property {string} inviter_account_id
  * @property {InvitationStatus} status
@@ -27,7 +27,7 @@ const BASE = import.meta.env.VITE_API_BASE_URL;
 /**
  * @typedef {object} InvitationPreview
  * @property {InvitationType} type
- * @property {'owner'|'admin'|'member'|'viewer'} role
+ * @property {'owner'|'admin'|'editor'|'viewer'} role
  * @property {{ slug: string, name: string|null, image: string|null }} workspace
  * @property {{ display_name: string }} inviter
  * @property {string} time_expires
@@ -127,7 +127,7 @@ export async function acceptInvitation(token, actorAccountId) {
 /**
  * @param {string} slug
  * @param {string} accountId
- * @param {'owner'|'admin'|'member'|'viewer'} role
+ * @param {'owner'|'admin'|'editor'|'viewer'} role
  * @param {string} actorAccountId
  */
 export async function changeMemberRole(slug, accountId, role, actorAccountId) {

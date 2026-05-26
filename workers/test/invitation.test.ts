@@ -63,7 +63,7 @@ describe('CreateInvitation authorization', () => {
             CreateInvitation(env.DJIBB_AUTH, stranger.id, ws.slug, {
                 type: 'email',
                 email: 'x@example.com',
-                role: 'member',
+                role: 'viewer',
             })
         ).rejects.toThrow(/member|owner|admin/i);
     });
@@ -83,7 +83,7 @@ describe('CreateInvitation authorization', () => {
             CreateInvitation(env.DJIBB_AUTH, owner.id, personalSlug, {
                 type: 'email',
                 email: 'x@example.com',
-                role: 'member',
+                role: 'viewer',
             })
         ).rejects.toThrow(/personal/i);
     });
@@ -101,7 +101,7 @@ describe('CreateInvitation authorization', () => {
             CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
                 type: 'email',
                 email: 'x@example.com',
-                role: 'member',
+                role: 'viewer',
             })
         ).rejects.toThrow(/verified/i);
     });
@@ -113,7 +113,7 @@ describe('CreateInvitation per-type behavior', () => {
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'email',
             email: 'Eva@Example.COM',
-            role: 'member',
+            role: 'viewer',
         });
         expect(inv.target_email).toBe('eva@example.com');
         expect(inv.token.length).toBeGreaterThan(10);
@@ -127,7 +127,7 @@ describe('CreateInvitation per-type behavior', () => {
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'username',
             username: 'frank',
-            role: 'member',
+            role: 'viewer',
         });
         expect(inv.target_account_id).toBe(target.id);
     });
@@ -138,7 +138,7 @@ describe('CreateInvitation per-type behavior', () => {
             CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
                 type: 'username',
                 username: 'nobody-here',
-                role: 'member',
+                role: 'viewer',
             })
         ).rejects.toThrow(/no account/i);
     });
@@ -149,7 +149,7 @@ describe('CreateInvitation per-type behavior', () => {
             CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
                 type: 'link',
                 max_uses: 9999,
-                role: 'member',
+                role: 'viewer',
             })
         ).rejects.toThrow();
     });
@@ -166,7 +166,7 @@ describe('AcceptInvitation', () => {
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'email',
             email: inviteeEmail,
-            role: 'member',
+            role: 'viewer',
         });
         const result = await AcceptInvitation(
             env.DJIBB_AUTH,
@@ -176,7 +176,7 @@ describe('AcceptInvitation', () => {
         expect(result.workspace_slug).toBe(ws.slug);
         expect(result.membership_created).toBe(true);
         const m = await GetMembership(env.DJIBB_AUTH, invitee.id, ws.id);
-        expect(m?.role).toBe('member');
+        expect(m?.role).toBe('viewer');
     });
 
     it('email type: rejects mismatched email', async () => {
@@ -188,7 +188,7 @@ describe('AcceptInvitation', () => {
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'email',
             email: 'right@example.com',
-            role: 'member',
+            role: 'viewer',
         });
         await expect(
             AcceptInvitation(env.DJIBB_AUTH, wrong.id, inv.token)
@@ -203,14 +203,14 @@ describe('AcceptInvitation', () => {
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'username',
             username: 'gabe',
-            role: 'member',
+            role: 'viewer',
         });
         await expect(
             AcceptInvitation(env.DJIBB_AUTH, intruder.id, inv.token)
         ).rejects.toThrow();
         await AcceptInvitation(env.DJIBB_AUTH, target.id, inv.token);
         const m = await GetMembership(env.DJIBB_AUTH, target.id, ws.id);
-        expect(m?.role).toBe('member');
+        expect(m?.role).toBe('viewer');
     });
 
     it('link type: multi-use until max_uses reached', async () => {
@@ -239,7 +239,7 @@ describe('AcceptInvitation', () => {
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'link',
             max_uses: 5,
-            role: 'member',
+            role: 'viewer',
         });
         await AcceptInvitation(env.DJIBB_AUTH, invitee.id, inv.token);
         const second = await AcceptInvitation(
@@ -254,7 +254,7 @@ describe('AcceptInvitation', () => {
         const { owner, ws } = await setup();
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'link',
-            role: 'member',
+            role: 'viewer',
         });
         await RevokeInvitation(env.DJIBB_AUTH, owner.id, ws.slug, inv.id);
         const j = await CreateAccount(env.DJIBB_AUTH, makeAccount());
@@ -269,7 +269,7 @@ describe('ListInvitations + Revoke', () => {
         const { owner, ws } = await setup();
         await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'link',
-            role: 'member',
+            role: 'viewer',
         });
         const inv2 = await CreateInvitation(
             env.DJIBB_AUTH,
@@ -290,11 +290,11 @@ describe('ListInvitations + Revoke', () => {
         const { owner, ws } = await setup();
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'link',
-            role: 'member',
+            role: 'viewer',
         });
         const preview = await GetInvitationPreview(env.DJIBB_AUTH, inv.token);
         expect(preview.workspace.slug).toBe(ws.slug);
-        expect(preview.role).toBe('member');
+        expect(preview.role).toBe('viewer');
     });
 });
 
@@ -304,7 +304,7 @@ describe('Member role + remove', () => {
         const m = await CreateAccount(env.DJIBB_AUTH, makeAccount());
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'link',
-            role: 'member',
+            role: 'viewer',
         });
         await AcceptInvitation(env.DJIBB_AUTH, m.id, inv.token);
 
@@ -349,7 +349,7 @@ describe('Member role + remove', () => {
         });
         const inv2 = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'link',
-            role: 'member',
+            role: 'viewer',
         });
         await AcceptInvitation(env.DJIBB_AUTH, adminAcct.id, inv1.token);
         await AcceptInvitation(env.DJIBB_AUTH, member.id, inv2.token);

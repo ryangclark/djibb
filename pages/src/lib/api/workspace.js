@@ -16,7 +16,7 @@ const BASE = import.meta.env.VITE_API_BASE_URL;
 /**
  * @typedef {object} WorkspaceMember
  * @property {string} account_id
- * @property {'owner'|'admin'|'member'|'viewer'} role
+ * @property {'owner'|'admin'|'editor'|'viewer'} role
  * @property {string[]} permissions
  * @property {string} time_joined
  */

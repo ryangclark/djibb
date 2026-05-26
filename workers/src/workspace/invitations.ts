@@ -16,8 +16,8 @@ import {
     InvitationType,
     InvitableRole,
     WorkspaceInvitation,
-    WorkspaceRoleEnum,
 } from './index';
+import { AuthorizationRoleEnum } from '../auth/rules';
 import {
     GetMembership,
     GetWorkspaceById,
@@ -43,7 +43,7 @@ function shapeInvitationRow(row: any): WorkspaceInvitation {
         type: row.type as InvitationType,
         target_email: row.target_email ?? null,
         target_account_id: row.target_account_id ?? null,
-        role: WorkspaceRoleEnum.parse(row.role),
+        role: AuthorizationRoleEnum.parse(row.role),
         token: row.token,
         inviter_account_id: row.inviter_account_id,
         status: row.status as InvitationStatus,
