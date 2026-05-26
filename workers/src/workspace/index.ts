@@ -29,8 +29,7 @@ export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/;
  * workspace member (`'restricted'` and `'ownerless'` don't make sense
  * at the membership level), but we don't enforce a narrower subset at
  * the schema level. The HTTP boundary (`PatchMemberSchema` in
- * `fetch.ts`) narrows to the valid set for the change-role surface;
- * `InvitableRoleEnum` narrows further for the invite surface.
+ * `fetch.ts`) narrows to the valid set for the change-role surface.
  */
 export const WorkspaceMemberSchema = z.object({
     account_id: z.string(),
@@ -84,80 +83,9 @@ export type UpdateWorkspaceRequest = z.TypeOf<
     typeof UpdateWorkspaceRequestSchema
 >;
 
-export const InvitationTypeEnum = z.enum(['email', 'username', 'link']);
-export type InvitationType = z.TypeOf<typeof InvitationTypeEnum>;
-
-export const InvitationStatusEnum = z.enum([
-    'pending',
-    'accepted',
-    'revoked',
-    'expired',
-]);
-export type InvitationStatus = z.TypeOf<typeof InvitationStatusEnum>;
-
-/**
- * Roles that may be granted via an invite. `'owner'` is excluded — the
- * unique principal role is mintable only via the `transferOwnership`
- * mutator (ADR 0011 §Decision C). Subset of `AuthorizationRoleEnum`.
- */
-export const InvitableRoleEnum = z.enum(['admin', 'editor', 'viewer']);
-export type InvitableRole = z.TypeOf<typeof InvitableRoleEnum>;
-
-export const WorkspaceInvitationSchema = z.object({
-    id: z.string(),
-    workspace_id: z.string(),
-    type: InvitationTypeEnum,
-    target_email: z.string().nullable(),
-    target_account_id: z.string().nullable(),
-    role: AuthorizationRoleEnum,
-    token: z.string(),
-    inviter_account_id: z.string(),
-    status: InvitationStatusEnum,
-    max_uses: z.number().nullable(),
-    use_count: z.number(),
-    time_created: DatelikeToDateSchema,
-    time_expires: DatelikeToDateSchema,
-    time_accepted: DatelikeToDateSchema.nullable(),
-});
-export type WorkspaceInvitation = z.TypeOf<typeof WorkspaceInvitationSchema>;
-
-export const CreateInvitationRequestSchema = z.discriminatedUnion('type', [
-    z.object({
-        type: z.literal('email'),
-        email: z.string().email(),
-        role: InvitableRoleEnum,
-    }),
-    z.object({
-        type: z.literal('username'),
-        username: z.string().min(1),
-        role: InvitableRoleEnum,
-    }),
-    z.object({
-        type: z.literal('link'),
-        max_uses: z.number().int().min(1).max(500).nullable().optional(),
-        role: InvitableRoleEnum,
-    }),
-]);
-export type CreateInvitationRequest = z.TypeOf<
-    typeof CreateInvitationRequestSchema
->;
-
-/**
- * Public-safe preview shape returned from `GET /invitations/:token`.
- * No PII beyond the inviter's display name.
- */
-export const InvitationPreviewSchema = z.object({
-    type: InvitationTypeEnum,
-    role: AuthorizationRoleEnum,
-    workspace: z.object({
-        slug: z.string(),
-        name: z.string().nullable(),
-        image: z.string().nullable(),
-    }),
-    inviter: z.object({
-        display_name: z.string(),
-    }),
-    time_expires: DatelikeToDateSchema,
-    status: InvitationStatusEnum,
-});
-export type InvitationPreview = z.TypeOf<typeof InvitationPreviewSchema>;
+// ADR 0011 §7b.3: the legacy token-based `WorkspaceInvitation` system
+// (multi-type: email, username, link) was deleted. Invitations now live
+// on the entity DO via ADR 0009 `pending_invites` + `inviteByIdentity`/
+// `acceptInvitation` mutators. `InvitationTypeEnum`, `InvitableRoleEnum`,
+// `WorkspaceInvitationSchema`, `CreateInvitationRequestSchema`,
+// `InvitationPreviewSchema` are gone.

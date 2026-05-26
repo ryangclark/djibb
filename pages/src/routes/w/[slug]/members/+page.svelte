@@ -1,14 +1,16 @@
 <script>
 	import { fetchWorkspaceMembers } from '$lib/api/workspace';
-	import {
-		listInvitations,
-		createInvitation,
-		revokeInvitation,
-		changeMemberRole,
-		removeMember
-	} from '$lib/api/invitation';
+	import { changeMemberRole, removeMember } from '$lib/api/workspace';
 	import { page } from '$app/state';
 	import { getSessionState } from '$lib/session.svelte';
+
+	// ADR 0011 §7b.3: the legacy `WorkspaceInvitation`/`InvitationApp`
+	// system was deleted. Invitations now go through the entity-resident
+	// ADR 0009 `inviteByIdentity`/`acceptInvitation` mutators surfaced
+	// via the `Share` component on individual entities. The
+	// workspace-scoped invitation UI (multi-type forms, link tokens,
+	// invitation lists) is postponed; 7b.4 rebuilds it on top of the
+	// per-entity Share surface or a new workspace-level mutator.
 
 	const session = getSessionState();
 	const slug = $derived(page.params.slug);
@@ -23,21 +25,7 @@
 
 	/** @type {import('$lib/api/workspace').WorkspaceMember[]} */
 	let members = $state([]);
-	/** @type {import('$lib/api/invitation').WorkspaceInvitation[]} */
-	let invitations = $state([]);
 	let error = $state('');
-
-	// Invite form
-	/** @type {'email'|'username'|'link'} */
-	let inviteType = $state('email');
-	let inviteEmail = $state('');
-	let inviteUsername = $state('');
-	/** @type {number|''} */
-	let inviteMaxUses = $state('');
-	/** @type {'admin'|'editor'|'viewer'} */
-	let inviteRole = $state('viewer');
-	let creating = $state(false);
-	let lastInviteUrl = $state('');
 
 	async function loadMembers() {
 		try {
@@ -47,70 +35,10 @@
 		}
 	}
 
-	async function loadInvitations() {
-		if (!isAdmin || !actorAccountId || isPersonal) {
-			invitations = [];
-			return;
-		}
-		try {
-			invitations = await listInvitations(slug, actorAccountId);
-		} catch (e) {
-			error = /** @type {Error} */ (e).message ?? String(e);
-		}
-	}
-
 	$effect(() => {
 		if (!slug) return;
 		loadMembers();
-		loadInvitations();
 	});
-
-	async function onCreateInvite() {
-		if (!actorAccountId) return;
-		creating = true;
-		error = '';
-		lastInviteUrl = '';
-		try {
-			let body;
-			if (inviteType === 'email') {
-				body = { type: 'email', email: inviteEmail.trim(), role: inviteRole };
-			} else if (inviteType === 'username') {
-				body = {
-					type: 'username',
-					username: inviteUsername.trim(),
-					role: inviteRole
-				};
-			} else {
-				body = {
-					type: 'link',
-					max_uses: inviteMaxUses === '' ? null : Number(inviteMaxUses),
-					role: inviteRole
-				};
-			}
-			const inv = await createInvitation(slug, body, actorAccountId);
-			// Build the user-facing accept URL.
-			lastInviteUrl = `${window.location.origin}/invites/${inv.token}`;
-			inviteEmail = '';
-			inviteUsername = '';
-			inviteMaxUses = '';
-			await loadInvitations();
-		} catch (e) {
-			error = /** @type {Error} */ (e).message ?? String(e);
-		} finally {
-			creating = false;
-		}
-	}
-
-	/** @param {string} id */
-	async function onRevoke(id) {
-		if (!actorAccountId) return;
-		try {
-			await revokeInvitation(slug, id, actorAccountId);
-			await loadInvitations();
-		} catch (e) {
-			error = /** @type {Error} */ (e).message ?? String(e);
-		}
-	}
 
 	/**
 	 * @param {string} accountId
@@ -192,113 +120,11 @@
 </table>
 
 {#if isAdmin && !isPersonal}
-	<section class="border-t pt-4">
-		<h3 class="text-md mb-2">Invite</h3>
-
-		<div class="flex gap-2 items-end mb-3 flex-wrap">
-			<label class="flex flex-col text-xs">
-				Type
-				<select bind:value={inviteType} class="border p-1">
-					<option value="email">Email</option>
-					<option value="username">Username</option>
-					<option value="link">Link</option>
-				</select>
-			</label>
-
-			{#if inviteType === 'email'}
-				<label class="flex flex-col text-xs">
-					Email
-					<input
-						type="email"
-						bind:value={inviteEmail}
-						class="border p-1"
-						placeholder="user@example.com"
-					/>
-				</label>
-			{:else if inviteType === 'username'}
-				<label class="flex flex-col text-xs">
-					Username
-					<input
-						type="text"
-						bind:value={inviteUsername}
-						class="border p-1"
-						placeholder="alice"
-					/>
-				</label>
-			{:else}
-				<label class="flex flex-col text-xs">
-					Max uses (blank = unlimited)
-					<input
-						type="number"
-						min="1"
-						max="500"
-						bind:value={inviteMaxUses}
-						class="border p-1"
-					/>
-				</label>
-			{/if}
-
-			<label class="flex flex-col text-xs">
-				Role
-				<select bind:value={inviteRole} class="border p-1">
-					<option value="admin">admin</option>
-					<option value="editor">editor</option>
-					<option value="viewer">viewer</option>
-				</select>
-			</label>
-
-			<button
-				disabled={creating}
-				onclick={onCreateInvite}
-				class="border px-3 py-1 text-sm">{creating ? 'Sending…' : 'Send invite'}</button
-			>
-		</div>
-
-		{#if lastInviteUrl}
-			<p class="text-xs mb-3">
-				Invite created. Share this URL:
-				<code class="font-mono break-all">{lastInviteUrl}</code>
-			</p>
-		{/if}
-
-		<h4 class="text-sm mb-1 text-stone-600">Pending invitations</h4>
-		{#if !invitations.length}
-			<p class="text-xs text-stone-500">None.</p>
-		{:else}
-			<table class="text-xs">
-				<thead>
-					<tr class="text-stone-500">
-						<th class="text-left pr-4">Type</th>
-						<th class="text-left pr-4">Target</th>
-						<th class="text-left pr-4">Role</th>
-						<th class="text-left pr-4">Uses</th>
-						<th class="text-left pr-4">Expires</th>
-						<th></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each invitations as inv}
-						<tr>
-							<td class="pr-4">{inv.type}</td>
-							<td class="pr-4 font-mono">
-								{inv.target_email ?? inv.target_account_id ?? '(any)'}
-							</td>
-							<td class="pr-4">{inv.role}</td>
-							<td class="pr-4">
-								{inv.use_count}{inv.max_uses != null ? `/${inv.max_uses}` : ''}
-							</td>
-							<td class="pr-4">{new Date(inv.time_expires).toLocaleDateString()}</td>
-							<td>
-								<button class="text-red-600" onclick={() => onRevoke(inv.id)}>
-									Revoke
-								</button>
-							</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
-		{/if}
-	</section>
+	<p class="text-xs text-stone-500">
+		Workspace-level invitations are temporarily unavailable. Use the
+		Share button on individual entities to invite people for now;
+		workspace-scoped invitations return in a follow-up.
+	</p>
 {:else if isPersonal}
 	<p class="text-xs text-stone-500">Personal workspaces don't have invitations.</p>
 {/if}

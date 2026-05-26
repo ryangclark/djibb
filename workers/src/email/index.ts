@@ -1,38 +1,8 @@
 import { Bindings } from '..';
 
-export interface InvitationEmailParams {
-    to: string;
-    workspaceName: string;
-    inviterName: string;
-    acceptUrl: string;
-}
-
-export async function sendInvitationEmail(
-    env: Bindings,
-    params: InvitationEmailParams
-): Promise<void> {
-    const from = env.EMAIL_FROM || 'no-reply@djibb.app';
-    const subject = `${sanitizeHeader(params.inviterName)} invited you to ${sanitizeHeader(params.workspaceName)} on djibb`;
-
-    const text =
-        `${params.inviterName} invited you to join "${params.workspaceName}" on djibb.\n\n` +
-        `Accept the invite:\n${params.acceptUrl}\n\n` +
-        `If you weren't expecting this, you can ignore this email.\n`;
-
-    const html =
-        `<p><strong>${escapeHtml(params.inviterName)}</strong> invited you to join ` +
-        `<strong>${escapeHtml(params.workspaceName)}</strong> on djibb.</p>` +
-        `<p><a href="${escapeAttr(params.acceptUrl)}">Accept the invite</a></p>` +
-        `<p style="color:#888;font-size:12px">If you weren't expecting this, you can ignore this email.</p>`;
-
-    await env.EMAIL.send({
-        from: {email: from, name: 'djibb invites'},
-        to: params.to,
-        subject,
-        html,
-        text,
-    });
-}
+// ADR 0011 §7b.3: `sendInvitationEmail` (the workspace token flow) is
+// gone with the rest of the legacy invitation system. `sendEntityInvitationEmail`
+// below is the only invitation email path now.
 
 export interface EntityInvitationEmailParams {
     to: string;

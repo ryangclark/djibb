@@ -11,7 +11,7 @@ import { Auth_App } from './auth/fetch';
 import { DjibbError } from './errors';
 import { DjibbList } from './list/durable_object';
 import { AccountApp, UserApp } from './account/fetch';
-import { WorkspaceApp, InvitationApp } from './workspace/fetch';
+import { WorkspaceApp } from './workspace/fetch';
 
 /**
  * Associate bindings declared in wrangler.toml with TypeScript types.
@@ -147,7 +147,8 @@ app.get('/', c => c.text('hello, djibb!'));
 app.route('/a', AccountApp);
 app.route('/auth', Auth_App);
 app.route('/entities', CatalogApp);
-app.route('/invitations', InvitationApp);
+// ADR 0011 §7b.3: `/invitations/*` (token-based legacy workspace
+// invitations) is gone. Invites live on the entity DO via ADR 0009.
 app.route('/list', list_app);
 app.route('/template', template_app);
 app.route('/u', UserApp);

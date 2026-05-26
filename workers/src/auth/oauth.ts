@@ -20,7 +20,6 @@ import {
 } from './constants';
 import { FlagRouter, MOCK_AUTH_MODE } from '../flags';
 import { HonoEnv } from '..';
-import { AcceptInvitation } from '../workspace/invitations';
 
 export async function handleGetMockSession(c: Context<HonoEnv>) {
     if (!FlagRouter.featureIsEnabled(MOCK_AUTH_MODE)) {
@@ -292,33 +291,12 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
     // to `state` (after the first `.`). Either way, we attempt the
     // accept and bias the redirect toward the workspace; failures here
     // don't block the login (we still land them on /accounts/verified).
-    let pendingInviteToken = getCookie(c, CookieNames.PendingInvite) ?? null;
-    if (!pendingInviteToken && state && state.includes('.')) {
-        const idx = state.indexOf('.');
-        try {
-            pendingInviteToken = decodeURIComponent(state.slice(idx + 1));
-        } catch {
-            pendingInviteToken = null;
-        }
-    }
+    // ADR 0011 §7b.3: the legacy `PendingInvite` cookie / token-state
+    // accept path is gone with the rest of the token-based invitation
+    // system. Pending invites for new-signup flows are now handled by
+    // the magic-link `next` plumbing (ADR 0009 slice 3) — OAuth users
+    // landing here just go to the verified landing.
     deleteCookie(c, CookieNames.PendingInvite);
-
-    let acceptedSlug: string | null = null;
-    if (pendingInviteToken) {
-        try {
-            const result = await AcceptInvitation(
-                c.env.DJIBB_AUTH,
-                account.id,
-                pendingInviteToken
-            );
-            acceptedSlug = result.workspace_slug;
-        } catch (err) {
-            console.warn(
-                'Pending invite accept failed; continuing with login:',
-                err
-            );
-        }
-    }
 
     const redirectOrigin = getCookie(c, CookieNames.RefererOrigin);
 
@@ -326,12 +304,8 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
         redirectOrigin &&
         c.env.AUTHORIZED_DOMAINS.split(';').includes(redirectOrigin)
     ) {
-        const url = acceptedSlug
-            ? new URL(`${redirectOrigin}/w/${acceptedSlug}`)
-            : new URL(`${redirectOrigin}/accounts/verified`);
-        if (!acceptedSlug) {
-            url.searchParams.set('account_id', account.id);
-        }
+        const url = new URL(`${redirectOrigin}/accounts/verified`);
+        url.searchParams.set('account_id', account.id);
         return c.redirect(url.toString());
     } else {
         console.error(

@@ -135,3 +135,45 @@ export async function leaveWorkspace(slug, actorAccountId) {
 	});
 	if (!res.ok) throw new Error(await res.text());
 }
+
+/**
+ * ADR 0011 §7b.3: member-management helpers moved here from
+ * `$lib/api/invitation` (which was deleted). They still call the
+ * legacy `/workspace/:slug/members/...` HTTP endpoints; 7b.4 collapses
+ * them onto DO mutator dispatch.
+ *
+ * @param {string} slug
+ * @param {string} accountId
+ * @param {'owner'|'admin'|'editor'|'viewer'} role
+ * @param {string} actorAccountId
+ */
+export async function changeMemberRole(slug, accountId, role, actorAccountId) {
+	const res = await fetch(
+		`${BASE}/workspace/${slug}/members/${encodeURIComponent(accountId)}`,
+		{
+			method: 'PATCH',
+			credentials: 'include',
+			headers: headers(actorAccountId),
+			body: JSON.stringify({ role })
+		}
+	);
+	if (!res.ok) throw new Error(await res.text());
+	return res.json();
+}
+
+/**
+ * @param {string} slug
+ * @param {string} accountId
+ * @param {string} actorAccountId
+ */
+export async function removeMember(slug, accountId, actorAccountId) {
+	const res = await fetch(
+		`${BASE}/workspace/${slug}/members/${encodeURIComponent(accountId)}`,
+		{
+			method: 'DELETE',
+			credentials: 'include',
+			headers: headers(actorAccountId)
+		}
+	);
+	if (!res.ok) throw new Error(await res.text());
+}
