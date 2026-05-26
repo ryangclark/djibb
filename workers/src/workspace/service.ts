@@ -19,11 +19,8 @@ import {
 } from '../errors';
 import { newId } from '../id';
 import { Account } from '../account';
-import { customAlphabet } from 'nanoid';
 import type { DjibbList } from '../list/durable_object';
 import type { PushRequestV1 } from 'replicache';
-
-const slugSuffix = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 8);
 
 const RESERVED_SLUGS = new Set([
     'admin',
@@ -52,19 +49,6 @@ export function assertSlugFormat(slug: string): void {
     }
 }
 
-function personalSlugCandidate(account: Account): string {
-    const base = (account.user_name ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-    if (base.length >= 3 && base.length <= 40) return base;
-    return `personal-${slugSuffix()}`;
-}
-
-function personalNameForAccount(account: Account): string | null {
-    if (account.display_name && account.display_name.trim()) {
-        return `${account.display_name.trim()}'s space`;
-    }
-    return null;
-}
-
 function shapeWorkspaceRow(row: any): Workspace {
     const parsed = WorkspaceSchema.safeParse({
         id: row.id,
@@ -84,92 +68,19 @@ function shapeWorkspaceRow(row: any): Workspace {
     return parsed.data;
 }
 
-function buildInsertWorkspaceStatement(
-    d1: D1Database,
-    workspace: Workspace
-): D1PreparedStatement {
-    return d1
-        .prepare(
-            `INSERT INTO workspaces (
-                id, slug, name, is_personal, flags, image,
-                time_created, time_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .bind(
-            workspace.id,
-            workspace.slug,
-            workspace.name,
-            workspace.is_personal ? 1 : 0,
-            workspace.flags,
-            workspace.image,
-            Math.floor(workspace.time_created.getTime() / 1000),
-            Math.floor(workspace.time_updated.getTime() / 1000)
-        );
-}
-
-function buildInsertMembershipStatement(
-    d1: D1Database,
-    workspaceId: string,
-    accountId: string,
-    role: AuthorizationRole,
-    joinedAt: Date
-): D1PreparedStatement {
-    return d1
-        .prepare(
-            `INSERT INTO AccountWorkspace (
-                account_id, workspace_id, role, permissions, time_joined
-            ) VALUES (?, ?, ?, ?, ?)`
-        )
-        .bind(
-            accountId,
-            workspaceId,
-            role,
-            null,
-            Math.floor(joinedAt.getTime() / 1000)
-        );
+function personalNameForAccount(account: Account): string | null {
+    if (account.display_name && account.display_name.trim()) {
+        return `${account.display_name.trim()}'s space`;
+    }
+    return null;
 }
 
 /**
- * Returns prepared statements to insert a personal workspace + owner
- * membership for the given account. Caller batches alongside its own
- * statements (e.g. account creation) for atomicity.
- */
-export function buildPersonalWorkspaceStatements(
-    d1: D1Database,
-    account: Account
-): { workspace: Workspace; statements: D1PreparedStatement[] } {
-    const now = new Date();
-    const workspace: Workspace = {
-        id: newId('workspace'),
-        slug: personalSlugCandidate(account),
-        name: personalNameForAccount(account),
-        is_personal: true,
-        flags: null,
-        image: null,
-        time_created: now,
-        time_deleted: null,
-        time_updated: now,
-    };
-    return {
-        workspace,
-        statements: [
-            buildInsertWorkspaceStatement(d1, workspace),
-            buildInsertMembershipStatement(
-                d1,
-                workspace.id,
-                account.id,
-                'owner',
-                now
-            ),
-        ],
-    };
-}
-
-/**
- * ADR 0011 §Step 6: mint the personal workspace as a DjibbList entity
- * DO with `slot: 'personal_workspace'`. Called from `CreateAccount`
- * alongside the legacy `buildPersonalWorkspaceStatements` D1 writes
- * (dual-write transition).
+ * ADR 0011 §Step 7b.1: mint the personal workspace as a DjibbList entity
+ * DO with `slot: 'personal_workspace'`. The DO is now the sole source
+ * of truth — the legacy `workspaces` + `AccountWorkspace` dual-write
+ * was removed in 7b.1, so this call is fatal-on-failure from
+ * `CreateAccount`'s perspective.
  *
  * Synthesizes a Replicache push containing one `createWorkspace`
  * mutation and dispatches it through the DO's `handlePush`. The
@@ -181,35 +92,38 @@ export function buildPersonalWorkspaceStatements(
  * yet at mint time, so the resolver's default applies; createWorkspace
  * is gated on `EDIT_ROLES` which includes ownerless.
  *
- * Returns nothing; failures propagate. CreateAccount catches and
- * downgrades to a non-fatal log (see comment there).
+ * Slugs are postponed (see workspace/index.ts SLUG_PATTERN comment):
+ * the entity is created with no slug; URL access goes via the id-suffix
+ * route until slug support returns on the entity row.
+ *
+ * Returns the synthesized `workspaceId` so the caller can wire up
+ * defaults (active-account, session.lastWorkspaceId, etc.) without
+ * having to peek at DO state.
  */
 export async function mintPersonalWorkspaceEntity(
     djibbList: DurableObjectNamespace<DjibbList>,
-    args: {
-        accountId: string;
-        workspaceId: string;
-        name: string;
-    }
-): Promise<void> {
-    const stub = djibbList.get(djibbList.idFromName(args.workspaceId));
+    account: Account
+): Promise<{ workspaceId: string }> {
+    const workspaceId = newId('workspace');
+    const name = personalNameForAccount(account) ?? 'Personal';
+    const stub = djibbList.get(djibbList.idFromName(workspaceId));
 
     const pushRequest: PushRequestV1 = {
         profileID: 'p_signup',
-        clientGroupID: `cg_signup_${args.accountId}`,
+        clientGroupID: `cg_signup_${account.id}`,
         pushVersion: 1,
         schemaVersion: '1',
         mutations: [
             {
-                clientID: `c_signup_${args.accountId}`,
+                clientID: `c_signup_${account.id}`,
                 id: 1,
                 name: 'createWorkspace',
                 timestamp: Date.now(),
                 args: {
-                    accountId: args.accountId,
+                    accountId: account.id,
                     timestamp_client: new Date().toISOString(),
-                    workspaceId: args.workspaceId,
-                    name: args.name,
+                    workspaceId,
+                    name,
                     slot: 'personal_workspace',
                 } as any,
             },
@@ -217,9 +131,9 @@ export async function mintPersonalWorkspaceEntity(
     };
 
     const result = await stub.handlePush({
-        authorizedAccounts: [{ id: args.accountId } as any],
+        authorizedAccounts: [{ id: account.id } as any],
         authorizedRole: 'ownerless',
-        listId: args.workspaceId,
+        listId: workspaceId,
         pushRequest,
     });
     if (result.error) {
@@ -229,6 +143,7 @@ export async function mintPersonalWorkspaceEntity(
             )}`
         );
     }
+    return { workspaceId };
 }
 
 export async function CreateWorkspace(
@@ -253,14 +168,36 @@ export async function CreateWorkspace(
 
     try {
         await d1.batch([
-            buildInsertWorkspaceStatement(d1, workspace),
-            buildInsertMembershipStatement(
-                d1,
-                workspace.id,
-                actorAccountId,
-                'owner',
-                now
-            ),
+            d1
+                .prepare(
+                    `INSERT INTO workspaces (
+                        id, slug, name, is_personal, flags, image,
+                        time_created, time_updated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+                )
+                .bind(
+                    workspace.id,
+                    workspace.slug,
+                    workspace.name,
+                    0,
+                    workspace.flags,
+                    workspace.image,
+                    Math.floor(workspace.time_created.getTime() / 1000),
+                    Math.floor(workspace.time_updated.getTime() / 1000)
+                ),
+            d1
+                .prepare(
+                    `INSERT INTO AccountWorkspace (
+                        account_id, workspace_id, role, permissions, time_joined
+                    ) VALUES (?, ?, ?, ?, ?)`
+                )
+                .bind(
+                    actorAccountId,
+                    workspace.id,
+                    'owner',
+                    null,
+                    Math.floor(now.getTime() / 1000)
+                ),
         ]);
     } catch (err: any) {
         if (String(err?.message ?? '').includes('UNIQUE')) {
@@ -299,20 +236,66 @@ export async function GetWorkspaceById(
     return shapeWorkspaceRow(row);
 }
 
+/**
+ * Synthesize a `Workspace` view from a `workspace_entities` row +
+ * `entity_memberships` join. Slugs are postponed (ADR 0011 §7b notes);
+ * for now the slug field carries the id suffix so existing slug-based
+ * routes still return a stable token per entity. Image / flags come
+ * from the `meta` JSON blob.
+ */
+function shapeEntityWorkspaceRow(row: any): Workspace {
+    let meta: any = null;
+    if (row.meta && typeof row.meta === 'string') {
+        try {
+            meta = JSON.parse(row.meta);
+        } catch {
+            meta = null;
+        }
+    }
+    const id = String(row.id);
+    const suffix = id.includes('/') ? id.slice(id.indexOf('/') + 1) : id;
+    const parsed = WorkspaceSchema.safeParse({
+        id,
+        slug: suffix,
+        name: row.name ?? null,
+        is_personal: row.slot === 'personal_workspace',
+        flags: null,
+        image: meta?.image_url ?? null,
+        time_created: new Date(row.time_created * 1000),
+        time_deleted: row.time_deleted
+            ? new Date(row.time_deleted * 1000)
+            : null,
+        time_updated: new Date(row.time_updated * 1000),
+    });
+    if (!parsed.success) {
+        console.error(
+            'shapeEntityWorkspaceRow parse error:',
+            parsed.error.format()
+        );
+        throw new ParseError();
+    }
+    return parsed.data;
+}
+
 export async function GetWorkspacesByAccountId(
     d1: D1Database,
     accountId: string
 ): Promise<WorkspaceWithMembership[]> {
+    // ADR 0011 §Step 7b.2: read from the entity-resident membership
+    // projection (`entity_memberships`) joined with `workspace_entities`
+    // instead of the legacy `workspaces` + `AccountWorkspace` tables.
     const result = await d1
         .prepare(
             `SELECT
-                w.id, w.slug, w.name, w.is_personal, w.flags, w.image,
-                w.time_created, w.time_deleted, w.time_updated,
-                aw.role, aw.permissions, aw.time_joined
-            FROM workspaces w
-            JOIN AccountWorkspace aw ON aw.workspace_id = w.id
-            WHERE aw.account_id = ? AND w.time_deleted IS NULL
-            ORDER BY w.is_personal DESC, w.time_created ASC`
+                we.id, we.name, we.slot, we.meta,
+                we.time_created, we.time_deleted, we.time_updated,
+                em.role, em.time_updated AS time_joined
+            FROM entity_memberships em
+            JOIN workspace_entities we ON we.id = em.entity_id
+            WHERE em.account_id = ?
+              AND we.type = 'workspace'
+              AND we.time_deleted IS NULL
+            ORDER BY (we.slot = 'personal_workspace') DESC, we.time_created ASC`
         )
         .bind(accountId)
         .all();
@@ -323,11 +306,11 @@ export async function GetWorkspacesByAccountId(
     }
 
     return (result.results as any[]).map(row => ({
-        workspace: shapeWorkspaceRow(row),
+        workspace: shapeEntityWorkspaceRow(row),
         membership: {
             account_id: accountId,
             role: AuthorizationRoleEnum.parse(row.role),
-            permissions: row.permissions ? JSON.parse(row.permissions) : [],
+            permissions: [],
             time_joined: new Date(row.time_joined * 1000),
         },
     }));
@@ -357,6 +340,14 @@ export async function GetWorkspaceMembers(
 /**
  * Returns the actor's role in a workspace, or null if not a member.
  * Used by middleware and authorization checks.
+ *
+ * ADR 0011 §Step 7b.2: reads from `entity_memberships` (the D1
+ * projection of `authorization_rules.authorized_accounts` per ADR
+ * 0011 §Step 7a). The DO is authoritative; this projection is
+ * post-commit-emitted and reconciled by the alarm sweeper. The
+ * `workspaceId` arg is an entity id — same column join as
+ * `GetWorkspacesByAccountId`. `permissions` is always `[]` (legacy
+ * column unused; the projection table doesn't carry it).
  */
 export async function GetMembership(
     d1: D1Database,
@@ -365,9 +356,9 @@ export async function GetMembership(
 ): Promise<WorkspaceMember | null> {
     const row = await d1
         .prepare(
-            `SELECT account_id, role, permissions, time_joined
-            FROM AccountWorkspace
-            WHERE account_id = ? AND workspace_id = ? LIMIT 1`
+            `SELECT account_id, role, time_updated AS time_joined
+            FROM entity_memberships
+            WHERE account_id = ? AND entity_id = ? LIMIT 1`
         )
         .bind(accountId, workspaceId)
         .first();
@@ -375,9 +366,7 @@ export async function GetMembership(
     return {
         account_id: (row as any).account_id,
         role: AuthorizationRoleEnum.parse((row as any).role),
-        permissions: (row as any).permissions
-            ? JSON.parse((row as any).permissions)
-            : [],
+        permissions: [],
         time_joined: new Date((row as any).time_joined * 1000),
     };
 }

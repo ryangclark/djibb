@@ -2,10 +2,7 @@ import { OAUTH_PROVIDER } from '../auth/constants';
 import { ParseError, UnexpectedError } from '../errors';
 import { AccountSchema, type Account } from './index';
 import { newId } from '../id';
-import {
-    buildPersonalWorkspaceStatements,
-    mintPersonalWorkspaceEntity,
-} from '../workspace/service';
+import { mintPersonalWorkspaceEntity } from '../workspace/service';
 import type { DjibbList } from '../list/durable_object';
 
 /**
@@ -62,42 +59,34 @@ export async function CreateAccount(env: CreateAccountEnv, account: Account) {
             account.user_name
         );
 
-    const personal = buildPersonalWorkspaceStatements(env.DJIBB_AUTH, account);
-
     try {
-        await env.DJIBB_AUTH.batch([accountInsert, ...personal.statements]);
+        await env.DJIBB_AUTH.batch([accountInsert]);
     } catch (err) {
         console.error('`CreateAccount()` batch error:', err);
         throw new UnexpectedError();
     }
 
-    // ADR 0011 §Step 6: dual-write the personal workspace as a
-    // DjibbList entity DO. The legacy `workspaces`/`AccountWorkspace`
-    // rows above still satisfy the existing read paths (workspace_app,
-    // members API, etc.); step 7 will switch reads to this entity and
-    // step 11's cleanup migration will drop the legacy tables.
+    // ADR 0011 §Step 7b.1: the personal workspace lives entirely in
+    // the DjibbList DO + `workspace_entities` / `entity_memberships`
+    // projection. The legacy dual-write into `workspaces` +
+    // `AccountWorkspace` was removed; the DO mint is now the sole
+    // source of truth for the workspace, so its failure is fatal.
     //
-    // The entity's id matches `personal.workspace.id`, so when step 7
-    // collapses the two, the workspace_id readers already point at the
-    // right entity DO. `slot: 'personal_workspace'` tags it as the
-    // singleton; the invariant (one per account) is enforced here at
-    // the call site, not in the mutator.
-    //
-    // Non-fatal on failure: signup must not break if the entity mint
-    // races a cold DO instance. A reconciliation sweeper (ADR 0007's
-    // pattern) can backfill missing entity rows from legacy
-    // `workspaces` until step 11 drops the legacy table.
+    // The account row was already committed above. On mint failure
+    // we leave the orphan in place rather than rolling back — the
+    // account is harmless without a workspace (signup retries will
+    // converge via deterministic clientGroupID), and the alarm
+    // reconciler (ADR 0007) will not see anything to repair because
+    // there's no entity row to drift. The visible failure to the
+    // caller is what we want.
     try {
-        await mintPersonalWorkspaceEntity(env.DJIBB_LIST, {
-            accountId: account.id,
-            workspaceId: personal.workspace.id,
-            name: personal.workspace.name ?? 'Personal',
-        });
+        await mintPersonalWorkspaceEntity(env.DJIBB_LIST, account);
     } catch (err) {
         console.error(
-            '`CreateAccount()` personal workspace entity mint failed (non-fatal):',
+            '`CreateAccount()` personal workspace entity mint failed:',
             err
         );
+        throw new UnexpectedError();
     }
 
     return account;
