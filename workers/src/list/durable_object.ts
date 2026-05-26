@@ -40,7 +40,11 @@ import {
 } from './sql';
 import { Account } from '../account';
 import { Result, tryCatch, tryCatchAsync } from '../utils/trycatch';
-import { EmitEntitySnapshotToCatalog, GetEntityVersion } from './entity';
+import {
+    EmitEntityMembershipsToCatalog,
+    EmitEntitySnapshotToCatalog,
+    GetEntityVersion,
+} from './entity';
 import {
     CountInvitesByInviterSince,
     CountOutstandingInvitesByInviter,
@@ -76,9 +80,12 @@ import { newId } from '../id';
 const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
     'acceptInvitation',
     'archiveList',
+    'changeMemberRole',
     'createWorkspace',
     'initFromTemplate',
     'initList',
+    'leaveMember',
+    'removeMember',
     'renameList',
     'renameWorkspace',
     'setDescription',
@@ -1297,6 +1304,32 @@ export class DjibbList extends DurableObject {
      * fault, so retry would not help. Logged-and-returned, not
      * thrown.
      */
+    /**
+     * Count the membership rows in D1 for this entity. Used by the
+     * alarm to detect the "snapshot emit succeeded but membership emit
+     * failed" gap (ADR 0011 §Step 7). Returns 0 on read failure — the
+     * comparison upstream will treat that as drift and re-emit, which
+     * is the recoverable posture.
+     */
+    private async countD1Memberships(entityId: string): Promise<number> {
+        try {
+            const row = await (
+                this.env as { DJIBB_AUTH: D1Database }
+            ).DJIBB_AUTH.prepare(
+                `SELECT COUNT(*) AS n FROM entity_memberships WHERE entity_id = ?`
+            )
+                .bind(entityId)
+                .first<{ n: number }>();
+            return row?.n ?? 0;
+        } catch (error) {
+            console.warn(
+                `\`countD1Memberships()\` read failed for "${entityId}":`,
+                error
+            );
+            return 0;
+        }
+    }
+
     private async emitEntitySnapshot(entityId: string): Promise<void> {
         const entity = getElementById(this.sql, entityId);
         if (!entity || !isEntityRow(entity)) {
@@ -1306,30 +1339,37 @@ export class DjibbList extends DurableObject {
             return;
         }
 
-        await EmitEntitySnapshotToCatalog(
-            (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
-            {
-                id: entity.id,
-                workspace_id: entity.workspace_id,
-                type: entity.type,
-                name: entity.name,
-                description: entity.description ?? null,
-                forked_from_id: entity.forked_from_id,
-                meta: entity.meta,
-                slot: entity.slot,
-                authorization_rules: entity.authorization_rules,
-                time_created: Math.floor(
-                    entity.time_created.getTime() / 1000
-                ),
-                time_updated: Math.floor(
-                    entity.time_updated.getTime() / 1000
-                ),
-                time_deleted: entity.time_deleted
-                    ? Math.floor(entity.time_deleted.getTime() / 1000)
-                    : null,
-                version: entity.version,
-            }
-        );
+        const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
+        const timeUpdated = Math.floor(entity.time_updated.getTime() / 1000);
+        await EmitEntitySnapshotToCatalog(d1, {
+            id: entity.id,
+            workspace_id: entity.workspace_id,
+            type: entity.type,
+            name: entity.name,
+            description: entity.description ?? null,
+            forked_from_id: entity.forked_from_id,
+            meta: entity.meta,
+            slot: entity.slot,
+            authorization_rules: entity.authorization_rules,
+            time_created: Math.floor(entity.time_created.getTime() / 1000),
+            time_updated: timeUpdated,
+            time_deleted: entity.time_deleted
+                ? Math.floor(entity.time_deleted.getTime() / 1000)
+                : null,
+            version: entity.version,
+        });
+
+        // ADR 0011 §Step 7: emit the membership projection alongside
+        // the entity snapshot. Same fire-and-pray posture — failure is
+        // logged by the caller and recovered by the next emit / the
+        // reconciliation sweeper. Cheap to over-emit: even mutators
+        // that don't touch `authorization_rules` re-publish the same
+        // membership rows.
+        await EmitEntityMembershipsToCatalog(d1, {
+            entityId: entity.id,
+            authorizedAccounts: entity.authorization_rules.authorized_accounts,
+            timeUpdated,
+        });
     }
 
     /**
@@ -1535,7 +1575,27 @@ export class DjibbList extends DurableObject {
                 entityId
             );
 
-            if (d1Version !== null && d1Version === doVersion) {
+            // ADR 0011 §Step 7: also check the memberships projection
+            // for drift. The entity row + memberships are emitted as
+            // two sequential D1 writes from `emitEntitySnapshot()`; if
+            // the first succeeds and the second fails, versions match
+            // but memberships are stale and the steady-state skip
+            // below would miss it. Count-only check — same shape as
+            // the version check, cheap enough to run every alarm.
+            const expectedMembershipCount = entity && isEntityRow(entity)
+                ? Object.keys(
+                      entity.authorization_rules.authorized_accounts
+                  ).length
+                : 0;
+            const d1MembershipCount = await this.countD1Memberships(entityId);
+            const membershipsDrifted =
+                d1MembershipCount !== expectedMembershipCount;
+
+            if (
+                d1Version !== null &&
+                d1Version === doVersion &&
+                !membershipsDrifted
+            ) {
                 // Steady state — D1 already mirrors the DO. The
                 // skip path is the 99% case and what makes the
                 // alarm budget cheap. ADR 0007.

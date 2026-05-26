@@ -17,7 +17,10 @@ import * as archiveListGroup from './archiveListGroup';
 import * as archiveListGroups from './archiveListGroups';
 import * as archiveListItem from './archiveListItem';
 import * as archiveListItems from './archiveListItems';
+import * as changeMemberRole from './changeMemberRole';
 import * as createWorkspace from './createWorkspace';
+import * as leaveMember from './leaveMember';
+import * as removeMember from './removeMember';
 import * as initList from './initList';
 import * as createListItem from './createListItem';
 import * as initFromTemplate from './initFromTemplate';
@@ -76,7 +79,10 @@ export const Mutations = {
     [archiveListGroups.name]: archiveListGroups,
     [archiveListItem.name]: archiveListItem,
     [archiveListItems.name]: archiveListItems,
+    [changeMemberRole.name]: changeMemberRole,
     [createWorkspace.name]: createWorkspace,
+    [leaveMember.name]: leaveMember,
+    [removeMember.name]: removeMember,
     [initList.name]: initList,
     [createListItem.name]: createListItem,
     [initFromTemplate.name]: initFromTemplate,

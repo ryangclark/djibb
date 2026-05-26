@@ -136,6 +136,88 @@ export type EntitySnapshot = {
  * driven reconciliation that read DO version N concurrently with a
  * fresh mutation landing N+1 — from downgrading the read index.
  */
+/**
+ * Membership row as it lives in the D1 `entity_memberships` projection
+ * (ADR 0011 §Step 7). Derived from `authorization_rules.authorized_accounts`
+ * on the entity row; emitted post-commit from the DO alongside
+ * `EmitEntitySnapshotToCatalog`.
+ */
+export type MembershipRow = {
+    account_id: string;
+    entity_id: string;
+    role: string;
+};
+
+/**
+ * Emit a current-state snapshot of an entity's memberships to D1.
+ * Delete-then-insert by entity_id. Single batch so a partial failure
+ * doesn't leave stale rows.
+ *
+ * Same idempotent / fire-and-pray posture as
+ * `EmitEntitySnapshotToCatalog`. Failures are recovered by the next
+ * emit or by the reconciliation sweeper (ADR 0007), which is extended
+ * in step 7 to rebuild the projection from the rules JSON.
+ *
+ * Not version-guarded. The DO is single-writer for the rules JSON, and
+ * the rules are the source of truth; a stale concurrent emit can only
+ * overwrite with the value already in D1. (If we get to a world where
+ * two emits race with different rules versions, the same `version >=`
+ * guard the entity row uses will need to land here too — likely backed
+ * by storing `time_updated` per row and comparing.)
+ */
+export async function EmitEntityMembershipsToCatalog(
+    d1: D1Database,
+    args: {
+        entityId: string;
+        authorizedAccounts: Record<string, { role: string }>;
+        timeUpdated: number;
+    },
+): Promise<void> {
+    const statements: D1PreparedStatement[] = [
+        d1
+            .prepare(`DELETE FROM entity_memberships WHERE entity_id = ?`)
+            .bind(args.entityId),
+    ];
+    for (const [accountId, { role }] of Object.entries(
+        args.authorizedAccounts
+    )) {
+        statements.push(
+            d1
+                .prepare(
+                    `INSERT INTO entity_memberships
+                        (account_id, entity_id, role, time_updated)
+                     VALUES (?, ?, ?, ?)`
+                )
+                .bind(accountId, args.entityId, role, args.timeUpdated)
+        );
+    }
+    await d1.batch(statements);
+}
+
+/**
+ * Read the role an account holds on an entity, from the D1 membership
+ * projection. Returns null when no membership row exists. Used by the
+ * auth resolver fast path (ADR 0011 §Step 8) — D1 is a projection so a
+ * read here may briefly lag the DO; the DO mutator gates re-check the
+ * authoritative rules in the same commit, so a missed membership at the
+ * boundary can at worst skip a permitted action, never grant a denied
+ * one.
+ */
+export async function GetEntityMembershipRole(
+    d1: D1Database,
+    accountId: string,
+    entityId: string,
+): Promise<string | null> {
+    const row = await d1
+        .prepare(
+            `SELECT role FROM entity_memberships
+             WHERE account_id = ? AND entity_id = ? LIMIT 1`,
+        )
+        .bind(accountId, entityId)
+        .first<{ role: string }>();
+    return row?.role ?? null;
+}
+
 export async function EmitEntitySnapshotToCatalog(
     d1: D1Database,
     snapshot: EntitySnapshot,

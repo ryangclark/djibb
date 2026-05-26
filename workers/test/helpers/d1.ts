@@ -11,6 +11,7 @@ import migration0007 from '../../migrations/0007_entity_invitations_index.sql?ra
 import migration0008 from '../../migrations/0008_entity_slot.sql?raw';
 import migration0009 from '../../migrations/0009_workspace_roles_to_authorization_roles.sql?raw';
 import migration0010 from '../../migrations/0010_workspace_entity_meta.sql?raw';
+import migration0011 from '../../migrations/0011_entity_memberships.sql?raw';
 
 const ALL_MIGRATIONS = [
     migration0001,
@@ -23,6 +24,7 @@ const ALL_MIGRATIONS = [
     migration0008,
     migration0009,
     migration0010,
+    migration0011,
 ];
 
 function splitStatements(sql: string): string[] {
@@ -87,6 +89,7 @@ export async function withMissingEntitiesTable<T>(
 export async function resetWorkspaceData(): Promise<void> {
     await env.DJIBB_AUTH.batch([
         env.DJIBB_AUTH.prepare('DELETE FROM workspace_entities'),
+        env.DJIBB_AUTH.prepare('DELETE FROM entity_memberships'),
         env.DJIBB_AUTH.prepare('DELETE FROM AccountWorkspace'),
         env.DJIBB_AUTH.prepare('DELETE FROM workspace_invitations'),
         env.DJIBB_AUTH.prepare('DELETE FROM workspaces'),
