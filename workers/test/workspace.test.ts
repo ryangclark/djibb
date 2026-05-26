@@ -10,6 +10,7 @@ import {
     SoftDeleteWorkspace,
     UpdateWorkspace,
 } from '../src/workspace/service';
+import { GetEntity } from '../src/list/entity';
 import type { Account } from '../src/account';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
@@ -41,8 +42,7 @@ beforeEach(async () => {
 
 describe('CreateAccount auto-creates personal workspace', () => {
     it('inserts a personal workspace + owner membership', async () => {
-        const account = await CreateAccount(
-            env.DJIBB_AUTH,
+        const account = await CreateAccount(env,
             makeAccount({ display_name: 'Ada Lovelace', user_name: 'ada' })
         );
         const memberships = await GetWorkspacesByAccountId(
@@ -58,8 +58,7 @@ describe('CreateAccount auto-creates personal workspace', () => {
     });
 
     it('falls back to a generated personal- slug when user_name is missing', async () => {
-        const account = await CreateAccount(
-            env.DJIBB_AUTH,
+        const account = await CreateAccount(env,
             makeAccount({ display_name: 'No Name', user_name: null })
         );
         const memberships = await GetWorkspacesByAccountId(
@@ -68,11 +67,62 @@ describe('CreateAccount auto-creates personal workspace', () => {
         );
         expect(memberships[0]!.workspace.slug).toMatch(/^personal-/);
     });
+
+    // ADR 0011 §Step 6: dual-write — every CreateAccount also mints a
+    // workspace entity DO with slot='personal_workspace' at the same id
+    // as the legacy `workspaces` row. Step 7 will collapse the two; for
+    // now we verify the projection landed in the D1 catalog.
+    it('also mints a workspace entity DO with slot=personal_workspace', async () => {
+        const account = await CreateAccount(
+            env,
+            makeAccount({ display_name: 'Grace Hopper', user_name: 'grace' })
+        );
+        const memberships = await GetWorkspacesByAccountId(
+            env.DJIBB_AUTH,
+            account.id
+        );
+        const legacy = memberships[0]!;
+
+        const entity = await GetEntity(env.DJIBB_AUTH, legacy.workspace.id);
+        expect(entity).not.toBeNull();
+        expect(entity!.type).toBe('workspace');
+        expect(entity!.slot).toBe('personal_workspace');
+        expect(entity!.name).toBe("Grace Hopper's space");
+        expect(entity!.workspace_id).toBeNull();
+        expect(entity!.authorization_rules.authorized_accounts[account.id]?.role).toBe(
+            'owner'
+        );
+        expect(entity!.authorization_rules.default_role).toBe('restricted');
+    });
+
+    it('falls back to "Personal" entity name when the legacy name is null', async () => {
+        // No display_name → personalNameForAccount returns null → the
+        // entity mint substitutes "Personal" (createWorkspace's name is
+        // required `min(1)`; null would fail parsing).
+        // Empty display_name makes `personalNameForAccount` return null
+        // (it only builds "X's space" when there's a non-empty
+        // trimmed name); legacy workspace.name lands null, entity
+        // mint substitutes "Personal".
+        const account = await CreateAccount(
+            env,
+            makeAccount({ display_name: '', user_name: 'nobody' })
+        );
+        const memberships = await GetWorkspacesByAccountId(
+            env.DJIBB_AUTH,
+            account.id
+        );
+        const entity = await GetEntity(
+            env.DJIBB_AUTH,
+            memberships[0]!.workspace.id
+        );
+        expect(entity!.name).toBe('Personal');
+        expect(entity!.slot).toBe('personal_workspace');
+    });
 });
 
 describe('CreateWorkspace + GetWorkspaceBySlug', () => {
     it('creates a shared workspace with the actor as owner', async () => {
-        const account = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const account = await CreateAccount(env, makeAccount());
         const workspace = await CreateWorkspace(env.DJIBB_AUTH, account.id, {
             slug: 'team-rocket',
             name: 'Team Rocket 🚀',
@@ -94,7 +144,7 @@ describe('CreateWorkspace + GetWorkspaceBySlug', () => {
     });
 
     it('rejects a duplicate slug', async () => {
-        const a1 = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const a1 = await CreateAccount(env, makeAccount());
         await CreateWorkspace(env.DJIBB_AUTH, a1.id, {
             slug: 'shared-one',
             name: 'A',
@@ -108,7 +158,7 @@ describe('CreateWorkspace + GetWorkspaceBySlug', () => {
     });
 
     it('rejects reserved slugs', async () => {
-        const a1 = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const a1 = await CreateAccount(env, makeAccount());
         await expect(
             CreateWorkspace(env.DJIBB_AUTH, a1.id, {
                 slug: 'settings',
@@ -120,7 +170,7 @@ describe('CreateWorkspace + GetWorkspaceBySlug', () => {
 
 describe('LeaveWorkspace', () => {
     it('blocks the last owner from leaving', async () => {
-        const a1 = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const a1 = await CreateAccount(env, makeAccount());
         const ws = await CreateWorkspace(env.DJIBB_AUTH, a1.id, {
             slug: 'soloists',
             name: 'Soloists',
@@ -131,7 +181,7 @@ describe('LeaveWorkspace', () => {
     });
 
     it('refuses to leave a personal workspace', async () => {
-        const a1 = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const a1 = await CreateAccount(env, makeAccount());
         const memberships = await GetWorkspacesByAccountId(env.DJIBB_AUTH, a1.id);
         const personal = memberships[0]!.workspace;
         await expect(
@@ -142,7 +192,7 @@ describe('LeaveWorkspace', () => {
 
 describe('UpdateWorkspace + SoftDeleteWorkspace', () => {
     it('updates name + slug, then soft-deletes', async () => {
-        const a1 = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const a1 = await CreateAccount(env, makeAccount());
         const ws = await CreateWorkspace(env.DJIBB_AUTH, a1.id, {
             slug: 'temp-name',
             name: 'Temp',
@@ -161,7 +211,7 @@ describe('UpdateWorkspace + SoftDeleteWorkspace', () => {
     });
 
     it('refuses to delete a personal workspace', async () => {
-        const a1 = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const a1 = await CreateAccount(env, makeAccount());
         const memberships = await GetWorkspacesByAccountId(env.DJIBB_AUTH, a1.id);
         const personal = memberships[0]!.workspace;
         await expect(

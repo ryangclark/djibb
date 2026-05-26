@@ -76,11 +76,15 @@ import { newId } from '../id';
 const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
     'acceptInvitation',
     'archiveList',
+    'createWorkspace',
     'initFromTemplate',
     'initList',
     'renameList',
+    'renameWorkspace',
     'setDescription',
     'setListAuthRules',
+    'setWorkspaceImage',
+    'transferOwnership',
     'unarchiveList',
 ]);
 

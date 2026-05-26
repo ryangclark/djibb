@@ -130,6 +130,34 @@ describe('createWorkspace (DO mutator)', () => {
         expect(row.authorization_rules.default_role).toBe('restricted');
     });
 
+    it('honors the optional `slot` arg (e.g. personal_workspace)', async () => {
+        const { workspaceId, stub } = getWorkspaceStub('mkwsslot');
+        const clientGroupID = 'cg_mkws_slot';
+        const clientID = 'c_mkws_slot';
+        const ownerA = newId('account');
+
+        await stub.handlePush({
+            authorizedAccounts: [{ id: ownerA } as any],
+            authorizedRole: 'ownerless',
+            listId: workspaceId,
+            pushRequest: makePush({
+                clientGroupID,
+                clientID,
+                name: 'createWorkspace',
+                mutationId: 1,
+                accountId: ownerA,
+                body: {
+                    workspaceId,
+                    name: 'Personal',
+                    slot: 'personal_workspace',
+                },
+            }),
+        });
+
+        const row = await readRow(stub, workspaceId);
+        expect(row.slot).toBe('personal_workspace');
+    });
+
     it('is idempotent on duplicate init', async () => {
         const { workspaceId, stub } = getWorkspaceStub('mkws2');
         const clientGroupID = 'cg_mkws_2';

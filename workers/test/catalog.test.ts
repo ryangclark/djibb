@@ -74,7 +74,7 @@ beforeEach(async () => {
 
 describe('ListOwnedEntities', () => {
     it('returns owner-only entities for the account, lists and templates', async () => {
-        const me = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const me = await CreateAccount(env, makeAccount());
         const listId = await seedEntity({
             type: 'list',
             ownerId: me.id,
@@ -97,8 +97,8 @@ describe('ListOwnedEntities', () => {
     });
 
     it('excludes entities owned by other accounts', async () => {
-        const me = await CreateAccount(env.DJIBB_AUTH, makeAccount());
-        const other = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const me = await CreateAccount(env, makeAccount());
+        const other = await CreateAccount(env, makeAccount());
         await seedEntity({ type: 'list', ownerId: other.id, name: 'Theirs' });
 
         const result = await ListOwnedEntities(env.DJIBB_AUTH, me.id);
@@ -106,7 +106,7 @@ describe('ListOwnedEntities', () => {
     });
 
     it('excludes ownerless entities', async () => {
-        const me = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const me = await CreateAccount(env, makeAccount());
         await seedEntity({ type: 'list', ownerId: null, name: 'Anon' });
 
         const result = await ListOwnedEntities(env.DJIBB_AUTH, me.id);
@@ -114,7 +114,7 @@ describe('ListOwnedEntities', () => {
     });
 
     it('excludes soft-deleted entities', async () => {
-        const me = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const me = await CreateAccount(env, makeAccount());
         const id = await seedEntity({
             type: 'list',
             ownerId: me.id,
@@ -131,7 +131,7 @@ describe('ListOwnedEntities', () => {
     });
 
     it('orders by time_updated DESC', async () => {
-        const me = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const me = await CreateAccount(env, makeAccount());
         const oldId = await seedEntity({
             type: 'list',
             ownerId: me.id,

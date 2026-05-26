@@ -130,7 +130,7 @@ describe('init reconciliation: anonymous list creation', () => {
 
 describe('init reconciliation: workspace-targeted creation', () => {
     it('rejects when caller is not a workspace member', async () => {
-        const owner = await CreateAccount(env.DJIBB_AUTH, {
+        const owner = await CreateAccount(env, {
             id: '',
             display_name: 'Owner',
             email: 'owner@example.com',

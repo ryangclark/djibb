@@ -58,14 +58,14 @@ describe('username format', () => {
 
 describe('SetAccountUsername + GetAccountByUsername', () => {
     it('claims a username and looks it up', async () => {
-        const account = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const account = await CreateAccount(env, makeAccount());
         await SetAccountUsername(env.DJIBB_AUTH, account.id, 'alice');
         const found = await GetAccountByUsername(env.DJIBB_AUTH, 'alice');
         expect(found?.id).toBe(account.id);
     });
 
     it('lookup is case-insensitive', async () => {
-        const account = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const account = await CreateAccount(env, makeAccount());
         await SetAccountUsername(env.DJIBB_AUTH, account.id, 'BoB');
         const a = await GetAccountByUsername(env.DJIBB_AUTH, 'bob');
         const b = await GetAccountByUsername(env.DJIBB_AUTH, 'BOB');
@@ -74,8 +74,8 @@ describe('SetAccountUsername + GetAccountByUsername', () => {
     });
 
     it('blocks duplicate (case-insensitive) claims', async () => {
-        const a1 = await CreateAccount(env.DJIBB_AUTH, makeAccount());
-        const a2 = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const a1 = await CreateAccount(env, makeAccount());
+        const a2 = await CreateAccount(env, makeAccount());
         await SetAccountUsername(env.DJIBB_AUTH, a1.id, 'carol');
         await expect(
             SetAccountUsername(env.DJIBB_AUTH, a2.id, 'CAROL')

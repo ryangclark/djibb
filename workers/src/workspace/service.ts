@@ -20,6 +20,8 @@ import {
 import { newId } from '../id';
 import { Account } from '../account';
 import { customAlphabet } from 'nanoid';
+import type { DjibbList } from '../list/durable_object';
+import type { PushRequestV1 } from 'replicache';
 
 const slugSuffix = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 8);
 
@@ -161,6 +163,72 @@ export function buildPersonalWorkspaceStatements(
             ),
         ],
     };
+}
+
+/**
+ * ADR 0011 §Step 6: mint the personal workspace as a DjibbList entity
+ * DO with `slot: 'personal_workspace'`. Called from `CreateAccount`
+ * alongside the legacy `buildPersonalWorkspaceStatements` D1 writes
+ * (dual-write transition).
+ *
+ * Synthesizes a Replicache push containing one `createWorkspace`
+ * mutation and dispatches it through the DO's `handlePush`. The
+ * client group / client IDs are derived from the account id so retries
+ * of the same signup converge on the same Replicache state instead of
+ * accumulating ghost client rows.
+ *
+ * Authoritative role passed in is `ownerless` — the DO has no rules
+ * yet at mint time, so the resolver's default applies; createWorkspace
+ * is gated on `EDIT_ROLES` which includes ownerless.
+ *
+ * Returns nothing; failures propagate. CreateAccount catches and
+ * downgrades to a non-fatal log (see comment there).
+ */
+export async function mintPersonalWorkspaceEntity(
+    djibbList: DurableObjectNamespace<DjibbList>,
+    args: {
+        accountId: string;
+        workspaceId: string;
+        name: string;
+    }
+): Promise<void> {
+    const stub = djibbList.get(djibbList.idFromName(args.workspaceId));
+
+    const pushRequest: PushRequestV1 = {
+        profileID: 'p_signup',
+        clientGroupID: `cg_signup_${args.accountId}`,
+        pushVersion: 1,
+        schemaVersion: '1',
+        mutations: [
+            {
+                clientID: `c_signup_${args.accountId}`,
+                id: 1,
+                name: 'createWorkspace',
+                timestamp: Date.now(),
+                args: {
+                    accountId: args.accountId,
+                    timestamp_client: new Date().toISOString(),
+                    workspaceId: args.workspaceId,
+                    name: args.name,
+                    slot: 'personal_workspace',
+                } as any,
+            },
+        ],
+    };
+
+    const result = await stub.handlePush({
+        authorizedAccounts: [{ id: args.accountId } as any],
+        authorizedRole: 'ownerless',
+        listId: args.workspaceId,
+        pushRequest,
+    });
+    if (result.error) {
+        throw new Error(
+            `mintPersonalWorkspaceEntity: handlePush returned error: ${String(
+                result.error
+            )}`
+        );
+    }
 }
 
 export async function CreateWorkspace(

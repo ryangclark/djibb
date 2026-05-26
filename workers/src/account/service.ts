@@ -2,9 +2,23 @@ import { OAUTH_PROVIDER } from '../auth/constants';
 import { ParseError, UnexpectedError } from '../errors';
 import { AccountSchema, type Account } from './index';
 import { newId } from '../id';
-import { buildPersonalWorkspaceStatements } from '../workspace/service';
+import {
+    buildPersonalWorkspaceStatements,
+    mintPersonalWorkspaceEntity,
+} from '../workspace/service';
+import type { DjibbList } from '../list/durable_object';
 
-export async function CreateAccount(d1: D1Database, account: Account) {
+/**
+ * Narrow shape of the worker bindings CreateAccount actually needs.
+ * Defined locally (rather than imported from `../index`) to dodge the
+ * import cycle that would otherwise form via the auth handlers.
+ */
+export type CreateAccountEnv = {
+    DJIBB_AUTH: D1Database;
+    DJIBB_LIST: DurableObjectNamespace<DjibbList>;
+};
+
+export async function CreateAccount(env: CreateAccountEnv, account: Account) {
     const parseResult = AccountSchema.safeParse(account);
 
     if (!parseResult.success) {
@@ -18,7 +32,7 @@ export async function CreateAccount(d1: D1Database, account: Account) {
     account.time_deleted = null;
     account.time_updated = account.time_created;
 
-    const accountInsert = d1
+    const accountInsert = env.DJIBB_AUTH
         .prepare(
             `INSERT INTO accounts (
                 id,
@@ -48,13 +62,42 @@ export async function CreateAccount(d1: D1Database, account: Account) {
             account.user_name
         );
 
-    const personal = buildPersonalWorkspaceStatements(d1, account);
+    const personal = buildPersonalWorkspaceStatements(env.DJIBB_AUTH, account);
 
     try {
-        await d1.batch([accountInsert, ...personal.statements]);
+        await env.DJIBB_AUTH.batch([accountInsert, ...personal.statements]);
     } catch (err) {
         console.error('`CreateAccount()` batch error:', err);
         throw new UnexpectedError();
+    }
+
+    // ADR 0011 §Step 6: dual-write the personal workspace as a
+    // DjibbList entity DO. The legacy `workspaces`/`AccountWorkspace`
+    // rows above still satisfy the existing read paths (workspace_app,
+    // members API, etc.); step 7 will switch reads to this entity and
+    // step 11's cleanup migration will drop the legacy tables.
+    //
+    // The entity's id matches `personal.workspace.id`, so when step 7
+    // collapses the two, the workspace_id readers already point at the
+    // right entity DO. `slot: 'personal_workspace'` tags it as the
+    // singleton; the invariant (one per account) is enforced here at
+    // the call site, not in the mutator.
+    //
+    // Non-fatal on failure: signup must not break if the entity mint
+    // races a cold DO instance. A reconciliation sweeper (ADR 0007's
+    // pattern) can backfill missing entity rows from legacy
+    // `workspaces` until step 11 drops the legacy table.
+    try {
+        await mintPersonalWorkspaceEntity(env.DJIBB_LIST, {
+            accountId: account.id,
+            workspaceId: personal.workspace.id,
+            name: personal.workspace.name ?? 'Personal',
+        });
+    } catch (err) {
+        console.error(
+            '`CreateAccount()` personal workspace entity mint failed (non-fatal):',
+            err
+        );
     }
 
     return account;

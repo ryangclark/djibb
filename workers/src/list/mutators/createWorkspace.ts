@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { AuthorizationRules } from '../../auth/rules';
 import { ValidationError } from '../../errors';
 import { createElement } from '../sql';
-import { WorkspaceEntitySchema } from '..';
+import { SlotEnum, WorkspaceEntitySchema } from '..';
 import type { WorkspaceEntity } from '..';
 import { DEFAULT_LIST_TITLE } from '.';
 import {
@@ -38,6 +38,19 @@ import type { ClientMutator, Inverse, ServerMutator } from './_shared';
 export const argsSchema = z.object({
     workspaceId: WorkspaceEntitySchema.shape.id,
     name: z.string().trim().min(1).max(100),
+    /**
+     * Well-known slot to tag this workspace with. Server trusts the
+     * caller; the singleton invariant (one `personal_workspace` per
+     * account, one `inbox` per account, one `seed_pool` globally) is
+     * enforced by the call site (signup flow for `personal_workspace`),
+     * NOT by this mutator. A future "claim slot" surface with cross-DO
+     * verification will tighten this (same request/result pattern slugs
+     * will use). ADR 0011 §Step 6.
+     *
+     * Default `null` — ordinary user-driven `createWorkspace` produces
+     * a team workspace with no slot.
+     */
+    slot: SlotEnum.nullable().optional(),
 });
 
 /**
@@ -86,7 +99,7 @@ export const server: ServerMutator<Args> = (
         forked_from_id: null,
         meta: null,
         name: args.name,
-        slot: null,
+        slot: args.slot ?? null,
         time_created: ts,
         time_deleted: null,
         time_updated: ts,
@@ -127,7 +140,7 @@ export const client: ClientMutator<Args> = async (
         type: 'workspace',
         id: args.workspaceId,
         name: args.name || DEFAULT_LIST_TITLE,
-        slot: null,
+        slot: args.slot ?? null,
         time_created: ts,
         time_deleted: null,
         time_updated: ts,

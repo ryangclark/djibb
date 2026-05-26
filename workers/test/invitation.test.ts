@@ -39,7 +39,7 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
 }
 
 async function setup() {
-    const owner = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+    const owner = await CreateAccount(env, makeAccount());
     const ws = await CreateWorkspace(env.DJIBB_AUTH, owner.id, {
         slug: 'team-alpha',
         name: 'Team Alpha',
@@ -58,7 +58,7 @@ beforeEach(async () => {
 describe('CreateInvitation authorization', () => {
     it('rejects non-admins', async () => {
         const { owner, ws } = await setup();
-        const stranger = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const stranger = await CreateAccount(env, makeAccount());
         await expect(
             CreateInvitation(env.DJIBB_AUTH, stranger.id, ws.slug, {
                 type: 'email',
@@ -69,7 +69,7 @@ describe('CreateInvitation authorization', () => {
     });
 
     it('rejects invites on personal workspaces', async () => {
-        const owner = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const owner = await CreateAccount(env, makeAccount());
         const memberships = await env.DJIBB_AUTH
             .prepare(
                 `SELECT w.slug FROM workspaces w
@@ -89,8 +89,7 @@ describe('CreateInvitation authorization', () => {
     });
 
     it('rejects email type when inviter email is not verified', async () => {
-        const owner = await CreateAccount(
-            env.DJIBB_AUTH,
+        const owner = await CreateAccount(env,
             makeAccount({ email_verified: false })
         );
         const ws = await CreateWorkspace(env.DJIBB_AUTH, owner.id, {
@@ -122,7 +121,7 @@ describe('CreateInvitation per-type behavior', () => {
 
     it('username invite resolves to target_account_id', async () => {
         const { owner, ws } = await setup();
-        const target = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const target = await CreateAccount(env, makeAccount());
         await SetAccountUsername(env.DJIBB_AUTH, target.id, 'frank');
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'username',
@@ -159,8 +158,7 @@ describe('AcceptInvitation', () => {
     it('email type: matching account joins, status becomes accepted', async () => {
         const { owner, ws } = await setup();
         const inviteeEmail = 'newbie@example.com';
-        const invitee = await CreateAccount(
-            env.DJIBB_AUTH,
+        const invitee = await CreateAccount(env,
             makeAccount({ email: inviteeEmail, email_verified: true })
         );
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
@@ -181,8 +179,7 @@ describe('AcceptInvitation', () => {
 
     it('email type: rejects mismatched email', async () => {
         const { owner, ws } = await setup();
-        const wrong = await CreateAccount(
-            env.DJIBB_AUTH,
+        const wrong = await CreateAccount(env,
             makeAccount({ email: 'wrong@example.com' })
         );
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
@@ -197,8 +194,8 @@ describe('AcceptInvitation', () => {
 
     it('username type: only target account can accept', async () => {
         const { owner, ws } = await setup();
-        const target = await CreateAccount(env.DJIBB_AUTH, makeAccount());
-        const intruder = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const target = await CreateAccount(env, makeAccount());
+        const intruder = await CreateAccount(env, makeAccount());
         await SetAccountUsername(env.DJIBB_AUTH, target.id, 'gabe');
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'username',
@@ -220,9 +217,9 @@ describe('AcceptInvitation', () => {
             max_uses: 2,
             role: 'viewer',
         });
-        const j1 = await CreateAccount(env.DJIBB_AUTH, makeAccount());
-        const j2 = await CreateAccount(env.DJIBB_AUTH, makeAccount());
-        const j3 = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const j1 = await CreateAccount(env, makeAccount());
+        const j2 = await CreateAccount(env, makeAccount());
+        const j3 = await CreateAccount(env, makeAccount());
         await AcceptInvitation(env.DJIBB_AUTH, j1.id, inv.token);
         await AcceptInvitation(env.DJIBB_AUTH, j2.id, inv.token);
         await expect(
@@ -232,8 +229,7 @@ describe('AcceptInvitation', () => {
 
     it('idempotent re-accept by an existing member is a no-op', async () => {
         const { owner, ws } = await setup();
-        const invitee = await CreateAccount(
-            env.DJIBB_AUTH,
+        const invitee = await CreateAccount(env,
             makeAccount({ email: 'iden@example.com', email_verified: true })
         );
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
@@ -257,7 +253,7 @@ describe('AcceptInvitation', () => {
             role: 'viewer',
         });
         await RevokeInvitation(env.DJIBB_AUTH, owner.id, ws.slug, inv.id);
-        const j = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const j = await CreateAccount(env, makeAccount());
         await expect(
             AcceptInvitation(env.DJIBB_AUTH, j.id, inv.token)
         ).rejects.toThrow(/revoked/i);
@@ -301,7 +297,7 @@ describe('ListInvitations + Revoke', () => {
 describe('Member role + remove', () => {
     it('owner can promote and demote members', async () => {
         const { owner, ws } = await setup();
-        const m = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const m = await CreateAccount(env, makeAccount());
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'link',
             role: 'viewer',
@@ -328,7 +324,7 @@ describe('Member role + remove', () => {
 
     it('admin cannot remove an owner', async () => {
         const { owner, ws } = await setup();
-        const adminAcct = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const adminAcct = await CreateAccount(env, makeAccount());
         const inv = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'link',
             role: 'admin',
@@ -341,8 +337,8 @@ describe('Member role + remove', () => {
 
     it('admin can remove a non-owner', async () => {
         const { owner, ws } = await setup();
-        const adminAcct = await CreateAccount(env.DJIBB_AUTH, makeAccount());
-        const member = await CreateAccount(env.DJIBB_AUTH, makeAccount());
+        const adminAcct = await CreateAccount(env, makeAccount());
+        const member = await CreateAccount(env, makeAccount());
         const inv1 = await CreateInvitation(env.DJIBB_AUTH, owner.id, ws.slug, {
             type: 'link',
             role: 'admin',

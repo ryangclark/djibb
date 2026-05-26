@@ -562,7 +562,7 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
     if (!account) {
         const localPart = email.split('@')[0] ?? email;
         try {
-            account = await CreateAccount(c.env.DJIBB_AUTH, {
+            account = await CreateAccount(c.env, {
                 id: '',
                 display_name: localPart,
                 email,

@@ -395,8 +395,7 @@ describe('consumeMagicTokenRow', () => {
 
 describe('Account email-resolution and provider tag', () => {
     it('finds a Google-home Account by email, case-insensitive', async () => {
-        const created = await CreateAccount(
-            env.DJIBB_AUTH,
+        const created = await CreateAccount(env,
             makeAccount({
                 email: 'bob@example.com',
                 provider_name: 'google',
@@ -413,8 +412,7 @@ describe('Account email-resolution and provider tag', () => {
     });
 
     it('finds a djibb-home Account created via the magic-link path', async () => {
-        const created = await CreateAccount(
-            env.DJIBB_AUTH,
+        const created = await CreateAccount(env,
             makeAccount({
                 email: 'carol@example.com',
                 provider_name: 'djibb',
@@ -433,8 +431,7 @@ describe('Account email-resolution and provider tag', () => {
     });
 
     it('does not return soft-deleted accounts', async () => {
-        const created = await CreateAccount(
-            env.DJIBB_AUTH,
+        const created = await CreateAccount(env,
             makeAccount({ email: 'gone@example.com' })
         );
         await env.DJIBB_AUTH.prepare(
@@ -454,8 +451,7 @@ describe('Account email-resolution and provider tag', () => {
         // The partial UNIQUE index in migration 0005 is the schema-
         // level guarantee that magic-link-as-IdP can't accidentally
         // mint duplicate Accounts. Verify it actually bites.
-        await CreateAccount(
-            env.DJIBB_AUTH,
+        await CreateAccount(env,
             makeAccount({
                 email: 'dup@example.com',
                 provider_name: 'djibb',
@@ -464,8 +460,7 @@ describe('Account email-resolution and provider tag', () => {
         );
 
         await expect(
-            CreateAccount(
-                env.DJIBB_AUTH,
+            CreateAccount(env,
                 makeAccount({
                     email: 'dup@example.com',
                     provider_name: 'djibb',
@@ -480,8 +475,7 @@ describe('Account email-resolution and provider tag', () => {
         // a Google row with the same email is not blocked by it.
         // (Application-layer resolution converges them via email
         // match — this test is only about the index's scope.)
-        await CreateAccount(
-            env.DJIBB_AUTH,
+        await CreateAccount(env,
             makeAccount({
                 email: 'mix@example.com',
                 provider_name: 'google',
@@ -490,8 +484,7 @@ describe('Account email-resolution and provider tag', () => {
         );
 
         // Should not throw.
-        await CreateAccount(
-            env.DJIBB_AUTH,
+        await CreateAccount(env,
             makeAccount({
                 email: 'mix@example.com',
                 provider_name: 'djibb',

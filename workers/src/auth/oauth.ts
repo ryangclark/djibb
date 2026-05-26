@@ -39,7 +39,7 @@ export async function handleGetMockSession(c: Context<HonoEnv>) {
     let account;
 
     try {
-        account = await CreateAccount(c.env.DJIBB_AUTH, {
+        account = await CreateAccount(c.env, {
             id: '',
             display_name: 'Dry Dock',
             email: '',
@@ -260,7 +260,7 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
         };
 
         try {
-            account = await CreateAccount(c.env.DJIBB_AUTH, newAccount);
+            account = await CreateAccount(c.env, newAccount);
         } catch (error) {
             throw new UnexpectedError();
         }
