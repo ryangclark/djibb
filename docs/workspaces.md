@@ -10,18 +10,100 @@ A **workspace** organizes accounts into a shared space so they can collaborate o
 - Each account is a member of its personal workspace and any shared workspaces it's been added to.
 - Access to a workspace gives scoped access to every list the workspace contains.
 
+## Slots: well-known entity roles
+
+Several entities in djibb fill *well-known roles* rather than being
+arbitrary user-created content: an account's personal workspace, an
+account's notification inbox, the global Seed Pool, the future Trash
+view / Templates library / "shared with me" index. They share a
+shape — "*the* something for someone (or for everyone)" — and they
+need consistent behavior: hidden from normal catalog UI, lifecycle
+constraints (often un-deletable or auto-re-spawning), well-known
+lookup.
+
+Rather than encode each as its own boolean (`is_personal`, `system`,
+`is_seed_pool`, …) accumulating on the entity row, every entity
+carries a single nullable `slot` column — a string discriminator
+that names the well-known role the entity fills:
+
+```
+SlotEnum = z.enum([
+    'personal_workspace',  // type: 'workspace', exactly one per account
+    'inbox',               // type: 'list', exactly one per account
+    'seed_pool',           // type: 'list', exactly one globally
+    // future: 'trash_view', 'templates_library', 'shared_with_me', ...
+]).nullable();
+```
+
+`slot IS NULL` is the default — a regular user-created entity. The
+column lives on the unified entity row (DO authoritative, D1 derived
+index per ADR 0003) and applies to *every* `type` (`list`,
+`template`, `workspace`).
+
+**`slot` is purpose, not control.** The column says what the entity
+is *for*, not who manages it. A user could in principle create their
+own "secondary inbox" — same purpose, same hidden semantics, but
+user-mutated — and it would still carry `slot: 'inbox'`. Who can
+mutate the entity is determined by
+`authorization_rules.authorized_accounts`, the same way it is for
+every other entity.
+
+**Lookup pattern.** Per-account slots have a pointer column on the
+account row (`personal_workspace_id`, `inbox_entity_id`) for the
+fast path; the `slot` column on the entity row is the integrity
+guard ("the workspace this account points at really does claim to
+be its personal one"). Global slots (e.g. Seed Pool) get a small
+`system_entities` D1 table keyed on `slot`.
+
+**What collapses by introducing this:**
+
+- `is_personal: boolean` (originally proposed in the table below)
+  is dropped; "this is a personal workspace" becomes
+  `slot === 'personal_workspace'`.
+- The inbox List (forthcoming) doesn't need its own boolean; it's
+  `slot === 'inbox'`.
+- Seed Pool stops being a find-by-convention magic-ID lookup; it's
+  `slot === 'seed_pool'`.
+- UI catalog-hiding is a single predicate everywhere:
+  `slot IS NULL`.
+- Lifecycle rules ("cannot delete the personal workspace,"
+  "Start Fresh re-spawns it") become a slot-keyed dispatch table
+  instead of `if (is_personal && ...)` checks sprawling across
+  mutators.
+
+The rest of this doc continues to use the phrase **"personal
+workspace"** as user-facing language; on the schema and mutator
+side, that phrase resolves to `type === 'workspace' && slot ===
+'personal_workspace'`.
+
 ## Data model
 
-### `workspaces` (D1)
+> **Target vs transitional.** Under Workspace-as-DjibbList, the
+> *authoritative* workspace state lives on the workspace's DO sql:
+> the entity row (`name`, `slug`, `slot`, `flags`, `image`,
+> timestamps, `time_deleted`, `cascade_source`) and the workspace's
+> `authorization_rules` (which carries `authorized_accounts` —
+> membership). D1's `workspace_entities` is the derived read index
+> per ADR 0003. The standalone `AccountWorkspace` and
+> `workspace_invitations` tables described below are **transitional**
+> — preserved during the migration so the current D1-rows world keeps
+> working, retired once membership + invitations move into the DO.
 
-Extend the existing table. Changes vs. current `0001_create_user_and_session_tables.sql`:
+### `workspaces` (D1, derived index → `workspace_entities`)
+
+Today the row lives in `workspaces`; under the target architecture
+it lives in `workspace_entities` (the unified entity catalog) and the
+fields below become emit-on-mutation columns the workspace DO
+populates. Schema is otherwise as below — listed here so the
+migration target is clear. Changes vs. current
+`0001_create_user_and_session_tables.sql`:
 
 | column         | type / notes                                                             |
 |----------------|--------------------------------------------------------------------------|
 | id             | TEXT PK, prefixed nanoid (`w/...`, 22 chars)                             |
 | slug           | TEXT NOT NULL UNIQUE — **new**, URL-safe `[a-z0-9-]{3,40}`, lowercase    |
 | name           | TEXT NULL — **changed**: no longer UNIQUE, now nullable, free-text (emoji OK — SQLite TEXT is UTF-8) |
-| is_personal    | INTEGER NOT NULL DEFAULT 0 — **new**, 1 for the owner's personal workspace |
+| slot           | TEXT NULL — **new**, well-known role (see §Slots). `'personal_workspace'` marks the owner's personal workspace; NULL for ordinary user-created workspaces. |
 | flags          | TEXT NULL, JSON bag                                                      |
 | image          | TEXT NULL                                                                |
 | time_created   | INTEGER NOT NULL                                                         |
@@ -30,13 +112,20 @@ Extend the existing table. Changes vs. current `0001_create_user_and_session_tab
 
 **`slug` is the URL segment.** URLs use `/w/:slug/...`. Renames are allowed; no redirect table in v1 (old URLs 404, UI warns).
 
-**`name` is the display name.** Free text including emoji. Personal workspaces default to `"<account.display_name>'s space"` if `display_name` exists, otherwise NULL. When NULL + `is_personal=1`, the frontend picks a label ("Your Space", "Scratchpad", etc.).
+**`name` is the display name.** Free text including emoji. Personal workspaces default to `"<account.display_name>'s space"` if `display_name` exists, otherwise NULL. When NULL + `slot = 'personal_workspace'`, the frontend picks a label ("Your Space", "Scratchpad", etc.).
 
-**`is_personal=1` invariants** (enforced in service layer, not SQL): exactly one owner, never more than one member, cannot be shared, cannot be deleted, cannot receive invites.
+**`slot = 'personal_workspace'` invariants** (enforced in service layer, not SQL): exactly one per account, exactly one owner, never more than one member, cannot be shared, cannot be deleted, cannot receive invites.
 
-### `AccountWorkspace` (D1)
+### `AccountWorkspace` (D1, transitional)
 
-Existing table. One row per membership.
+Existing table; **retires when membership moves into the workspace
+DO's `authorization_rules.authorized_accounts`.** During the
+transition, this table remains the source of truth for membership
+reads; after migration, `account_authorizations` (ADR 0009) is the
+derived index queries hit, populated by the workspace DO's emit
+path.
+
+One row per membership.
 
 | column        | type / notes                                         |
 |---------------|------------------------------------------------------|
@@ -47,7 +136,21 @@ Existing table. One row per membership.
 | time_joined   | INTEGER NOT NULL — **new**                           |
 | PK            | (account_id, workspace_id)                           |
 
-### `workspace_invitations` (D1, new)
+### `workspace_invitations` (D1, transitional — superseded by ADR 0009)
+
+> **Status:** Will not be built in the shape originally specified
+> below. The unified invitation flow from ADR 0009 — pending invite
+> rows resident in the target entity's own DO, surfaced through a
+> role-gated pull keyspace — applies to Workspace the same way it
+> applies to List and Template. Once `DjibbWorkspace` exists, a
+> workspace invitation is a row in the workspace DO's
+> `pending_invites/*` keyspace, not a row in this table.
+>
+> The schema below is preserved for historical context (it informed
+> ADR 0009's design) but it should not be implemented as a new D1
+> table. The `link`-type invitation use case — "send this to your
+> team's Slack" — is captured separately as an open item against
+> ADR 0009; current ADR 0009 covers `email` + `username` targeting.
 
 Single table with discriminator. Stores pending invites server-side.
 
@@ -74,7 +177,23 @@ Already exists on the DO-stored list (nullable). Every list belongs to exactly o
 
 ## Roles and permissions
 
-Workspace roles (narrower than `AccountRoleEnum`; ontologically related but distinct):
+> **Open under Workspace-as-DjibbList:** today's `WorkspaceRoleEnum`
+> (`owner | admin | member | viewer`) is *narrower* than the entity
+> `AuthorizationRoleEnum` (`owner | editor | viewer | restricted`).
+> If membership becomes an entry in the workspace DO's
+> `authorized_accounts`, the role enum has to be the same one Lists
+> and Templates use. The natural collapse:
+> `admin → owner`, `member → editor`, `viewer → viewer`. The
+> `admin`-vs-`owner` distinction (multi-owner; admin can invite
+> but not delete-workspace) doesn't survive the collapse cleanly —
+> we either widen `AuthorizationRoleEnum` to add an `admin` tier
+> (cost: every entity-level role check has to think about it) or
+> we encode "can delete this entity" as a per-mutator capability
+> check distinct from role tier. Settling this is a prerequisite
+> for the migration and warrants a dedicated ADR slice. Original
+> 4-tier table preserved below for the legacy shape:
+
+Workspace roles (legacy 4-tier — narrower than `AccountRoleEnum`; ontologically related but distinct):
 
 | role   | can do                                                                                    |
 |--------|--------------------------------------------------------------------------------------------|
@@ -112,10 +231,10 @@ A list's `workspace_id` can be changed. Rules:
 
 Auto-created on account creation (fills the TODO in `account/service.ts::CreateAccount`).
 
-- `is_personal=1`, single owner = the account.
+- `slot = 'personal_workspace'`, single owner = the account.
 - `name`: `"<display_name>'s space"` if `display_name` exists, else NULL.
 - `slug`: generated from `user_name` if present, else from a random suffix (`personal-<8char>`). Uniqueness checked + retry on collision.
-- Cannot be deleted, cannot be renamed into a non-personal workspace, cannot receive invitations, cannot have additional members added.
+- Cannot be deleted, cannot have its `slot` value changed, cannot receive invitations, cannot have additional members added.
 - Lists live there by default until the user moves them to a shared workspace.
 
 ## Lifecycle operations
@@ -128,7 +247,7 @@ Auto-created on account creation (fills the TODO in `account/service.ts::CreateA
 ### Update workspace (name, slug, image)
 - Owner or admin.
 - Slug rename allowed; no redirect table; UI warns.
-- Personal workspaces: slug/name editable by the owner; `is_personal` is immutable.
+- Personal workspaces: slug/name editable by the owner; `slot` is immutable.
 
 ### Delete workspace (soft)
 - Owner only. Non-personal workspaces only.
@@ -163,6 +282,23 @@ Sent/managed by **owners or admins only**.
 **Link-type invitations.** Useful for "send this to your team's Slack." Carries role + expiry + max_uses + inviter_account_id. Revokable.
 
 ## Endpoints (workers)
+
+> **Under Workspace-as-DjibbList**, almost all of the rows below
+> become **Replicache mutations on the workspace DO** rather than
+> dedicated HTTP endpoints — the same way `renameList`,
+> `setListAuthRules`, `archiveList` etc. became mutations once
+> ADR 0003 landed. The only HTTP endpoints that survive are the
+> ones that can't be expressed as a mutation on a single DO: the
+> discovery/catalog query (`GET /account/:id/workspaces` reads the
+> derived D1 index) and any future cross-workspace ops. The
+> invitation rows (`POST/GET/DELETE /workspace/:slug/invitations*`
+> and `/invitations/:token*`) collapse onto the ADR 0009 unified
+> flow; see that ADR for the in-DO row + accept-banner shape.
+>
+> The table below names the *operations*; under the target each is
+> a mutator name (e.g. `createWorkspace`, `inviteWorkspaceMember`,
+> `transferWorkspaceOwnership`) registered on `DjibbWorkspace`'s
+> mutator registry.
 
 All require authed session (via `HandleSession` middleware) except where noted. Mutation handlers pull the actor's account from the session, not the request body.
 
@@ -202,65 +338,191 @@ All require authed session (via `HandleSession` middleware) except where noted. 
 - Persistence note: `currentWorkspaceId` (and eventually `currentAccountId`) will likely migrate to a Replicache Client View Record in the future — design with that in mind.
 
 ### Personal workspace label
-If `is_personal=1 && name IS NULL`, render as "Your Space" (or similar) rather than blank.
+If `slot = 'personal_workspace' && name IS NULL`, render as "Your Space" (or similar) rather than blank.
 
-## Architecture: why no `DjibbWorkspace` DO
+## Architecture: Workspace-as-DjibbList (current direction)
 
-Workspace membership, invitations, and roles are **server-rule-y and rarely-read**. Making them offline-capable via Replicache gains us nothing because the rules are authoritative on the server and change infrequently. Plain HTTP + D1 wins on simplicity.
+> **Direction change from earlier in this doc's life.** An earlier
+> revision argued *against* a `DjibbWorkspace` DO on the grounds that
+> "membership is server-rule-y and rarely-read." That position has
+> been superseded — by CONTEXT.md's "djibb uses itself" principle,
+> by ADR 0008 (cascade delete via a per-DO alarm dispatcher), and
+> by ADR 0009 (tokenless DO-resident invitations). All three want a
+> Workspace DO. The sections below describe the target shape; the
+> §Migration plan section describes how we get there from the current
+> D1-rows-only world.
 
-Lists stay in `DjibbList` DOs with Replicache sync. The `workspace_id` on each list is a pure D1 pointer that the list's auth middleware consults.
+A Workspace is **a djibb entity, same DO substrate as a List or
+Template.** `DjibbList` becomes the abstract base class (rename TBD —
+`DjibbEntity` is the candidate); `DjibbList`, `DjibbTemplate`, and
+`DjibbWorkspace` are the concrete subclasses. The top-level
+`type` discriminator (`list | template | workspace`) on the entity
+row names the variant. The base class owns: the mutation log, the
+push/pull machinery, the alarm dispatcher (ADR 0007 + ADR 0008),
+the keyspaces protocol (`workers/src/replicache/keyspaces.ts`),
+the in-DO invitation flow (ADR 0009). Subclasses override: the
+mutator registry, the keyspaces array, the entity-row schema
+extension, and any subclass-specific alarm events.
 
-**Action:** delete `workers/src/workspace/durable_object.ts` stub, remove the commented `DJIBB_WORKSPACE` binding from `workers/src/index.ts` and `workers/wrangler.toml`, drop `DjibbWorkspace` from Replicache client group assumptions.
+**Membership lives in the workspace's own
+`authorization_rules.authorized_accounts`** — the same shape Lists
+already use. `AccountWorkspace` D1 rows become a *transitional
+artifact* of the legacy model, retired once the migration completes.
+The `account_authorizations` derived D1 index (ADR 0009) is the
+cross-entity read path for "what workspaces am I a member of."
 
-If we later want a "workspace dashboard list" (shared scratchpad, channel-of-lists), it would be a normal `DjibbList` whose children are other lists. Not v1.
+**Workspace invitations collapse onto ADR 0009's unified flow.**
+The standalone `workspace_invitations` D1 table retires the same way
+`AccountWorkspace` does, replaced by an in-DO invitation row on the
+workspace DO that participates in the same role-gated pull keyspace
+as List/Template invitations. The invitee flow shipped for entity
+invites in May 2026 extends to workspaces with no new shape.
+
+**Why this is worth the cost.** The doc previously framed Workspace
+membership as "rarely-read" and therefore not worth Replicache. That
+read pattern is real, but it ignored the *write* pattern: invitations,
+role changes, member removals, ownership transfers, cascade deletes,
+and "Start Fresh" are all writes that benefit from the same uniform
+mutation pipeline that Lists use — optimistic update, offline queue,
+mutation log entry, alarm-driven side effects. ADR 0003's core
+argument ("the project's identity lives on the write side") applies
+to Workspace at least as forcefully as to List.
 
 ## Sync model
 
-- **D1 (HTTP, authoritative):** workspaces, `AccountWorkspace`, `workspace_invitations`.
-- **DjibbList DO (Replicache):** lists and their items. Auth middleware reads D1 workspace membership on each push/pull to resolve access.
-- **No workspace data in Replicache.** Frontend fetches workspace/member lists via HTTP on page load and after mutations.
+- **DjibbWorkspace DO (Replicache, authoritative):** the workspace
+  entity row, its members (`authorized_accounts`), its pending
+  invitations, and any workspace-level body content (Island hex
+  coords from ADR 0008's "Personal Workspace as Island," future
+  dashboard-like surfaces). Members and invitations live in
+  role-gated pull keyspaces; PII never leaks to non-admins
+  (`docs/handoffs/2026-05-25-invitation-flow-corners-cut.md` §6
+  applies the same way it does for Lists).
+- **D1 derived indexes (read-fast-path):** `workspace_entities`
+  carries the workspace's catalog row (name, slug, slot,
+  cascade_source, time_deleted). `account_authorizations`
+  (ADR 0009) carries `(account_id, entity_id, role)` for every
+  membership across List/Template/Workspace, enabling the "my
+  workspaces" and "shared with me" queries without instantiating
+  every DO.
+- **DjibbList / DjibbTemplate DOs:** unchanged. They carry
+  `workspace_id` on the entity row; auth middleware resolves a
+  workspace-grant for a list by consulting the workspace's
+  derived index row (fast path) and falling back to the workspace
+  DO when the rule needs to be authoritative.
+
+The pull overlay direction set by ADR 0003 holds: the DO's row is
+the answer; D1 is a denormalized cache the workers can read for
+catalog views without paying a DO instantiation per row.
 
 ## Migration plan
 
-New D1 migration `0002_workspaces.sql`:
+The migration is a refactor of a small live surface, not a data
+migration against a real userbase. Order of operations:
 
-1. Add `slug TEXT` and `is_personal INTEGER DEFAULT 0` to `workspaces`.
-2. Drop the existing `UNIQUE(name)` on `workspaces` (SQLite requires table rebuild — do it).
-3. Add `UNIQUE(slug)` on `workspaces`.
-4. Add `time_joined INTEGER` to `AccountWorkspace`.
-5. Create `workspace_invitations` table.
-6. Data backfill: for each existing account without a personal workspace, create one and move its NULL-workspace_id lists into it. (If testing data is low, we may opt to wipe instead — decide at apply time.)
+1. **Base-class extraction.** Rename `DjibbList` → `DjibbEntity` (or
+   keep `DjibbList` and have `DjibbWorkspace` extend it directly; TBD
+   when implementation starts). Pull mutator-registry plumbing,
+   push/pull machinery, alarm dispatcher, keyspaces orchestration,
+   in-DO invitation flow, and entity-row schema scaffolding up to the
+   base. The existing Template variant (`type: 'template'`) is the
+   first validation that the extraction is clean.
+2. **`DjibbWorkspace` skeleton.** New concrete subclass; mutator
+   registry includes `initWorkspace`, `renameWorkspace`,
+   `setWorkspaceSlug`, `setWorkspaceImage`, plus the invitation
+   mutators inherited from the base. Entity row carries
+   `slot`, `slug`. The `members` keyspace (role-gated:
+   admins+ see the full list; members see themselves only) is the
+   workspace-specific keyspace.
+3. **Role enum reconciliation.** Settle the `admin`-vs-`owner`
+   question above (likely a small ADR slice). Migrate
+   `AuthorizationRoleEnum` or add the per-mutator capability layer
+   accordingly.
+4. **Personal workspace on account creation.** Wire
+   `account/service.ts::CreateAccount` to instantiate a
+   `DjibbWorkspace` stub with `slot: 'personal_workspace'` and push the
+   `initWorkspace` mutator. Closes the existing TODO.
+5. **Auth resolver rewrite.** `auth/rules.ts`'s workspace-grant
+   resolution stops reading `AccountWorkspace`; it reads the
+   `account_authorizations` derived index. Reconciliation sweeper
+   (ADR 0007) backstops drift.
+6. **Membership migration.** Existing `AccountWorkspace` rows for
+   any non-trivial workspaces get emitted into the corresponding
+   workspace DO's `authorized_accounts` (one-shot script if
+   needed). Personal workspaces are re-spawned on first hit if the
+   pre-migration row didn't yet exist as a DO.
+7. **List move + workspace_id auth path.** Lists carry
+   `workspace_id` on the entity row; the workspace-grant fast path
+   in list auth middleware reads `account_authorizations` for
+   `(account_id, workspace_id)`.
+8. **Cascade dispatcher (ADR 0008).** Lands once steps 1-2 are
+   solid; the alarm dispatcher generalizes the existing ADR 0007
+   reconciliation alarm to handle multiple per-DO scheduled events.
+9. **Trash UI + Start Fresh** (ADR 0008 prerequisites for shipping
+   `deleteWorkspace`).
+10. **Workspace invitations onto ADR 0009.** `workspace_invitations`
+    table retires; existing pending rows (if any) get emitted into
+    the corresponding workspace DO's pending-invite keyspace.
+
+Surface today is small enough that we may opt to wipe rather than
+backfill — decide at apply time.
 
 ## Slicing
 
-**Phase 1 (this v1):**
-- DB migration
-- Personal workspace on account signup
-- Workspace CRUD endpoints (create/read/update/delete + leave)
-- Member role resolution in list auth middleware
-- Frontend: workspace switcher, `/w/:slug` home, `/w/:slug/settings`, `/w/:slug/members` (read-only member list)
-- Re-add `GET /account/:id/workspaces`, root nav link, `/workspace` route registration
-- Delete the `DjibbWorkspace` DO stub + binding
+**Phase 1 — Foundation.**
+- Base-class extraction (`DjibbList` → `DjibbEntity` + concrete
+  subclasses). Templates validate the extraction is clean.
+- `DjibbWorkspace` skeleton with `initWorkspace`, `renameWorkspace`.
+- Personal workspace auto-created on account signup.
+- Role enum reconciliation ADR + migration.
 
-**Phase 2: Invitations**
-- `workspace_invitations` create/list/revoke
-- Email invitations first (requires email sender — scope TBD)
-  - Please check out Cloudflare's beta email sending as part of their expanded Email Service product https://developers.cloudflare.com/email-service/llms.txt
-- Username + link invitations
-- `/invites/:token` accept flow
-- Member role change + remove endpoints
+**Phase 2 — Membership + reads.**
+- Membership moves to `authorized_accounts` on the workspace DO;
+  `account_authorizations` derived index becomes the read path.
+- Auth resolver rewrite for workspace-grant fast path.
+- Frontend: workspace switcher, `/w/:slug` home,
+  `/w/:slug/settings`, `/w/:slug/members` (read-only).
+- `GET /account/:id/workspaces` re-added against the derived index.
 
-**Phase 3: Polish**
-- Transfer-ownership UI
-- Move list between workspaces UI
-- Permission-bag usage (custom perms)
-- CVR-backed current_workspace_id / current_account_id
-- Email-based transfer confirmation
+**Phase 3 — Invitations (collapse onto ADR 0009).**
+- `inviteByIdentity` mutator on `DjibbWorkspace` (inherited from the
+  base; trivial after Phase 1).
+- Workspace accept-banner flow reuses the entity-invite UI.
+- `workspace_invitations` table retires.
+- Link-type invitations: separate ADR slice (open question against
+  ADR 0009).
+
+**Phase 4 — Cascade + Trash (ADR 0008).**
+- Alarm dispatcher generalization.
+- `deleteWorkspace` / `restoreWorkspace` / `startFresh`.
+- Trash UI surface (`time_deleted IS NOT NULL` per-account view).
+
+**Phase 5 — Polish.**
+- Transfer-ownership flow + email confirmation.
+- Move-list-between-workspaces UI.
+- Permission-bag usage (custom perms).
+- CVR-backed `current_workspace_id` / `current_account_id`.
 
 ## Open questions / TODO (not blocking v1)
 
-- Slug reserved words (`settings`, `members`, `invitations`, `api`, `admin`, etc.).
-- Min/max member count per workspace (billing implications later).
-- Workspace-level audit log.
-- Auth-by-workspace flow (Slack-style `workspace.djibb.app`) — `auth/README.md` flags this as unclear.
-- Image upload (currently `workspaces.image` is a URL — no upload path).
+- **Role enum reconciliation.** The `admin`-vs-`owner` distinction
+  (and whether to widen `AuthorizationRoleEnum` or layer a per-
+  mutator capability) is a prerequisite for Phase 1 above. Deserves
+  its own ADR slice.
+- **Link-type invitations.** ADR 0009 covers `email` + `username`.
+  Adding `link` (multi-use, public-URL) is open against that ADR —
+  not blocked on Workspace-as-DjibbList specifically.
+- **Slug reserved words** (`settings`, `members`, `invitations`,
+  `api`, `admin`, etc.). Already partially enforced in
+  `workspace/service.ts::RESERVED_SLUGS`.
+- **Min/max member count per workspace** (billing implications later).
+- **Workspace-level audit log.** Becomes mostly free once
+  invitations + cascade events are in the mutation log; surfacing
+  a UI for it is separate.
+- **Auth-by-workspace flow** (Slack-style `workspace.djibb.app`) —
+  `auth/README.md` flags this as unclear.
+- **Image upload** (currently `workspaces.image` is a URL — no
+  upload path).
+- **Email-sending integration.** Cloudflare's Email Service beta
+  is the candidate stack:
+  https://developers.cloudflare.com/email-service/llms.txt
