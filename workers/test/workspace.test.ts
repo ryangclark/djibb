@@ -2,15 +2,21 @@ import { env } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 
 import { CreateAccount } from '../src/account/service';
-import {
-    CreateWorkspace,
-    GetWorkspaceBySlug,
-    GetWorkspacesByAccountId,
-    LeaveWorkspace,
-    SoftDeleteWorkspace,
-    UpdateWorkspace,
-} from '../src/workspace/service';
+import { GetWorkspacesByAccountId } from '../src/workspace/service';
 import { GetEntity } from '../src/list/entity';
+
+// ADR 0011 §7b.4: the legacy `CreateWorkspace`, `GetWorkspaceBySlug`,
+// `LeaveWorkspace`, `SoftDeleteWorkspace`, and `UpdateWorkspace` service
+// fns were deleted. The describe blocks below that exercised them are
+// `.skip`'d with TODOs; rewriting them onto the new DO-mutator surface
+// (`createWorkspace`, `renameWorkspace`, `leaveMember`, …) is the
+// follow-up after the pages-app collapse (7b.4b). Stubs below keep the
+// .skip'd blocks parseable without pulling deleted imports back in.
+const CreateWorkspace: any = undefined;
+const GetWorkspaceBySlug: any = undefined;
+const LeaveWorkspace: any = undefined;
+const SoftDeleteWorkspace: any = undefined;
+const UpdateWorkspace: any = undefined;
 import type { Account } from '../src/account';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
@@ -115,7 +121,7 @@ describe('CreateAccount auto-creates personal workspace', () => {
     });
 });
 
-describe('CreateWorkspace + GetWorkspaceBySlug', () => {
+describe.skip('CreateWorkspace + GetWorkspaceBySlug', () => {
     // ADR 0011 §7b.4 TODO: `CreateWorkspace` still writes the legacy
     // `workspaces` + `AccountWorkspace` tables, but reads now come from
     // `entity_memberships`. So a shared workspace created this way is
@@ -169,7 +175,7 @@ describe('CreateWorkspace + GetWorkspaceBySlug', () => {
     });
 });
 
-describe('LeaveWorkspace', () => {
+describe.skip('LeaveWorkspace', () => {
     // ADR 0011 §7b.4 TODO: depends on shared-workspace entity mint and
     // on `LeaveWorkspace` reading membership from `entity_memberships`.
     // Re-enable when 7b.4 routes the slug to a DO `leaveMember` mutator.
@@ -198,7 +204,7 @@ describe('LeaveWorkspace', () => {
     });
 });
 
-describe('UpdateWorkspace + SoftDeleteWorkspace', () => {
+describe.skip('UpdateWorkspace + SoftDeleteWorkspace', () => {
     // 7b.4 TODO: depends on shared-workspace entity mint + DO-routed
     // update/soft-delete (via `renameWorkspace` mutator + slot guard).
     it.skip('updates name + slug, then soft-deletes', async () => {

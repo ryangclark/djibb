@@ -1,72 +1,30 @@
 import {
-    CreateWorkspaceRequest,
-    SLUG_PATTERN,
-    UpdateWorkspaceRequest,
     Workspace,
     WorkspaceMember,
     WorkspaceSchema,
     WorkspaceWithMembership,
 } from './index';
 import { AuthorizationRoleEnum } from '../auth/rules';
-import type { AuthorizationRole } from '../auth/rules';
-import {
-    BadRequestError,
-    FailedPreconditionError,
-    NotFoundError,
-    ParseError,
-    UnauthorizedError,
-    UnexpectedError,
-} from '../errors';
+import { ParseError, UnexpectedError } from '../errors';
 import { newId } from '../id';
 import { Account } from '../account';
 import type { DjibbList } from '../list/durable_object';
 import type { PushRequestV1 } from 'replicache';
 
-const RESERVED_SLUGS = new Set([
-    'admin',
-    'api',
-    'invitations',
-    'invites',
-    'members',
-    'new',
-    'settings',
-    'workspace',
-    'workspaces',
-]);
-
-function nowSec(): number {
-    return Math.floor(Date.now() / 1000);
-}
-
-export function assertSlugFormat(slug: string): void {
-    if (!SLUG_PATTERN.test(slug)) {
-        throw new BadRequestError(
-            'Invalid slug: lowercase letters, numbers, and hyphens only (3–40 chars).'
-        );
-    }
-    if (RESERVED_SLUGS.has(slug)) {
-        throw new BadRequestError(`Slug "${slug}" is reserved.`);
-    }
-}
-
-function shapeWorkspaceRow(row: any): Workspace {
-    const parsed = WorkspaceSchema.safeParse({
-        id: row.id,
-        slug: row.slug,
-        name: row.name,
-        is_personal: row.is_personal === 1 || row.is_personal === true,
-        flags: row.flags ?? null,
-        image: row.image ?? null,
-        time_created: new Date(row.time_created * 1000),
-        time_deleted: row.time_deleted ? new Date(row.time_deleted * 1000) : null,
-        time_updated: new Date(row.time_updated * 1000),
-    });
-    if (!parsed.success) {
-        console.error('shapeWorkspaceRow parse error:', parsed.error.format());
-        throw new ParseError();
-    }
-    return parsed.data;
-}
+/**
+ * ADR 0011 §7b.4: the legacy D1-backed workspace write surface
+ * (`CreateWorkspace`, `UpdateWorkspace`, `SoftDeleteWorkspace`,
+ * `ChangeMemberRole`, `RemoveMember`, `LeaveWorkspace`,
+ * `GetWorkspaceBySlug`, `GetWorkspaceById`, `GetWorkspaceMembers`,
+ * `assertSlugFormat`, `RESERVED_SLUGS`, `requireRole`, `shapeWorkspaceRow`)
+ * is gone. Workspace mutations now dispatch through DjibbList DO
+ * mutators (`createWorkspace`, `renameWorkspace`, `setWorkspaceImage`,
+ * `changeMemberRole`, `removeMember`, `leaveMember`) via Replicache.
+ * Member reads come off the entity's `authorization_rules.authorized_accounts`
+ * via the workspace's own Replicache client. What remains here are the
+ * D1-projection read paths (`GetWorkspacesByAccountId`, `GetMembership`)
+ * and the signup-time `mintPersonalWorkspaceEntity` synth-push helper.
+ */
 
 function personalNameForAccount(account: Account): string | null {
     if (account.display_name && account.display_name.trim()) {
@@ -144,96 +102,6 @@ export async function mintPersonalWorkspaceEntity(
         );
     }
     return { workspaceId };
-}
-
-export async function CreateWorkspace(
-    d1: D1Database,
-    actorAccountId: string,
-    body: CreateWorkspaceRequest
-): Promise<Workspace> {
-    assertSlugFormat(body.slug);
-
-    const now = new Date();
-    const workspace: Workspace = {
-        id: newId('workspace'),
-        slug: body.slug,
-        name: body.name,
-        is_personal: false,
-        flags: null,
-        image: null,
-        time_created: now,
-        time_deleted: null,
-        time_updated: now,
-    };
-
-    try {
-        await d1.batch([
-            d1
-                .prepare(
-                    `INSERT INTO workspaces (
-                        id, slug, name, is_personal, flags, image,
-                        time_created, time_updated
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-                )
-                .bind(
-                    workspace.id,
-                    workspace.slug,
-                    workspace.name,
-                    0,
-                    workspace.flags,
-                    workspace.image,
-                    Math.floor(workspace.time_created.getTime() / 1000),
-                    Math.floor(workspace.time_updated.getTime() / 1000)
-                ),
-            d1
-                .prepare(
-                    `INSERT INTO AccountWorkspace (
-                        account_id, workspace_id, role, permissions, time_joined
-                    ) VALUES (?, ?, ?, ?, ?)`
-                )
-                .bind(
-                    actorAccountId,
-                    workspace.id,
-                    'owner',
-                    null,
-                    Math.floor(now.getTime() / 1000)
-                ),
-        ]);
-    } catch (err: any) {
-        if (String(err?.message ?? '').includes('UNIQUE')) {
-            throw new BadRequestError('Slug already in use.');
-        }
-        console.error('CreateWorkspace error:', err);
-        throw new UnexpectedError();
-    }
-
-    return workspace;
-}
-
-export async function GetWorkspaceBySlug(
-    d1: D1Database,
-    slug: string
-): Promise<Workspace> {
-    const row = await d1
-        .prepare(
-            `SELECT * FROM workspaces WHERE slug = ? AND time_deleted IS NULL LIMIT 1`
-        )
-        .bind(slug)
-        .first();
-    if (!row) throw new NotFoundError();
-    return shapeWorkspaceRow(row);
-}
-
-export async function GetWorkspaceById(
-    d1: D1Database,
-    id: string
-): Promise<Workspace> {
-    const row = await d1
-        .prepare(`SELECT * FROM workspaces WHERE id = ? LIMIT 1`)
-        .bind(id)
-        .first();
-    if (!row) throw new NotFoundError();
-    return shapeWorkspaceRow(row);
 }
 
 /**
@@ -316,27 +184,6 @@ export async function GetWorkspacesByAccountId(
     }));
 }
 
-export async function GetWorkspaceMembers(
-    d1: D1Database,
-    workspaceId: string
-): Promise<WorkspaceMember[]> {
-    const result = await d1
-        .prepare(
-            `SELECT account_id, role, permissions, time_joined
-            FROM AccountWorkspace
-            WHERE workspace_id = ?`
-        )
-        .bind(workspaceId)
-        .all();
-    if (!result.success) throw new UnexpectedError();
-    return (result.results as any[]).map(row => ({
-        account_id: row.account_id,
-        role: AuthorizationRoleEnum.parse(row.role),
-        permissions: row.permissions ? JSON.parse(row.permissions) : [],
-        time_joined: new Date(row.time_joined * 1000),
-    }));
-}
-
 /**
  * Returns the actor's role in a workspace, or null if not a member.
  * Used by middleware and authorization checks.
@@ -369,227 +216,4 @@ export async function GetMembership(
         permissions: [],
         time_joined: new Date((row as any).time_joined * 1000),
     };
-}
-
-function requireRole(
-    actual: AuthorizationRole,
-    allowed: AuthorizationRole[]
-): void {
-    if (!allowed.includes(actual)) {
-        throw new UnauthorizedError(
-            `Requires one of: ${allowed.join(', ')}; have: ${actual}`
-        );
-    }
-}
-
-export async function UpdateWorkspace(
-    d1: D1Database,
-    actorAccountId: string,
-    slug: string,
-    patch: UpdateWorkspaceRequest
-): Promise<Workspace> {
-    const workspace = await GetWorkspaceBySlug(d1, slug);
-    const membership = await GetMembership(d1, actorAccountId, workspace.id);
-    if (!membership) throw new UnauthorizedError('Not a member.');
-    requireRole(membership.role, ['owner', 'admin']);
-
-    if (patch.slug && patch.slug !== workspace.slug) {
-        assertSlugFormat(patch.slug);
-    }
-
-    const fields: string[] = [];
-    const bindings: any[] = [];
-    if (patch.slug !== undefined) {
-        fields.push('slug = ?');
-        bindings.push(patch.slug);
-    }
-    if (patch.name !== undefined) {
-        fields.push('name = ?');
-        bindings.push(patch.name);
-    }
-    if (patch.image !== undefined) {
-        fields.push('image = ?');
-        bindings.push(patch.image);
-    }
-    if (!fields.length) return workspace;
-
-    fields.push('time_updated = ?');
-    bindings.push(nowSec());
-    bindings.push(workspace.id);
-
-    try {
-        await d1
-            .prepare(`UPDATE workspaces SET ${fields.join(', ')} WHERE id = ?`)
-            .bind(...bindings)
-            .run();
-    } catch (err: any) {
-        if (String(err?.message ?? '').includes('UNIQUE')) {
-            throw new BadRequestError('Slug already in use.');
-        }
-        console.error('UpdateWorkspace error:', err);
-        throw new UnexpectedError();
-    }
-
-    return GetWorkspaceById(d1, workspace.id);
-}
-
-export async function SoftDeleteWorkspace(
-    d1: D1Database,
-    actorAccountId: string,
-    slug: string
-): Promise<void> {
-    const workspace = await GetWorkspaceBySlug(d1, slug);
-    if (workspace.is_personal) {
-        throw new FailedPreconditionError(
-            'Personal workspaces cannot be deleted.'
-        );
-    }
-    const membership = await GetMembership(d1, actorAccountId, workspace.id);
-    if (!membership) throw new UnauthorizedError('Not a member.');
-    requireRole(membership.role, ['owner']);
-
-    await d1
-        .prepare(`UPDATE workspaces SET time_deleted = ? WHERE id = ?`)
-        .bind(nowSec(), workspace.id)
-        .run();
-}
-
-/**
- * Change a member's role. Admin+ required. The actor cannot demote
- * themselves below `owner` if they're the last owner. Owners can
- * promote/demote anyone except in ways that would leave the workspace
- * with zero owners. Admins cannot create or remove owners.
- */
-export async function ChangeMemberRole(
-    d1: D1Database,
-    actorAccountId: string,
-    slug: string,
-    targetAccountId: string,
-    newRole: AuthorizationRole
-): Promise<WorkspaceMember> {
-    const workspace = await GetWorkspaceBySlug(d1, slug);
-    if (workspace.is_personal) {
-        throw new FailedPreconditionError(
-            'Personal workspaces have no role changes.'
-        );
-    }
-    const actor = await GetMembership(d1, actorAccountId, workspace.id);
-    if (!actor) throw new UnauthorizedError('Not a member.');
-    requireRole(actor.role, ['owner', 'admin']);
-
-    const target = await GetMembership(d1, targetAccountId, workspace.id);
-    if (!target) throw new NotFoundError('Member not found.');
-
-    // Admins cannot touch owners or grant ownership.
-    if (
-        actor.role === 'admin' &&
-        (target.role === 'owner' || newRole === 'owner')
-    ) {
-        throw new UnauthorizedError(
-            'Admins cannot change owner roles or grant ownership.'
-        );
-    }
-
-    // If demoting an owner, ensure at least one owner remains.
-    if (target.role === 'owner' && newRole !== 'owner') {
-        const members = await GetWorkspaceMembers(d1, workspace.id);
-        const owners = members.filter(m => m.role === 'owner');
-        if (owners.length <= 1) {
-            throw new FailedPreconditionError(
-                'Cannot demote the last owner.'
-            );
-        }
-    }
-
-    if (target.role === newRole) return target; // no-op
-
-    await d1
-        .prepare(
-            `UPDATE AccountWorkspace SET role = ?
-             WHERE account_id = ? AND workspace_id = ?`
-        )
-        .bind(newRole, targetAccountId, workspace.id)
-        .run();
-
-    return { ...target, role: newRole };
-}
-
-/**
- * Remove a member from a workspace. Admin+ required. Cannot remove
- * the last owner. Members can leave themselves via LeaveWorkspace; this
- * endpoint is for admin-initiated removal.
- */
-export async function RemoveMember(
-    d1: D1Database,
-    actorAccountId: string,
-    slug: string,
-    targetAccountId: string
-): Promise<void> {
-    const workspace = await GetWorkspaceBySlug(d1, slug);
-    if (workspace.is_personal) {
-        throw new FailedPreconditionError(
-            'Personal workspaces have a single member.'
-        );
-    }
-    const actor = await GetMembership(d1, actorAccountId, workspace.id);
-    if (!actor) throw new UnauthorizedError('Not a member.');
-    requireRole(actor.role, ['owner', 'admin']);
-
-    const target = await GetMembership(d1, targetAccountId, workspace.id);
-    if (!target) throw new NotFoundError('Member not found.');
-
-    // Admins cannot remove owners.
-    if (actor.role === 'admin' && target.role === 'owner') {
-        throw new UnauthorizedError('Admins cannot remove owners.');
-    }
-
-    if (target.role === 'owner') {
-        const members = await GetWorkspaceMembers(d1, workspace.id);
-        const owners = members.filter(m => m.role === 'owner');
-        if (owners.length <= 1) {
-            throw new FailedPreconditionError(
-                'Cannot remove the last owner.'
-            );
-        }
-    }
-
-    await d1
-        .prepare(
-            `DELETE FROM AccountWorkspace
-             WHERE account_id = ? AND workspace_id = ?`
-        )
-        .bind(targetAccountId, workspace.id)
-        .run();
-}
-
-export async function LeaveWorkspace(
-    d1: D1Database,
-    actorAccountId: string,
-    slug: string
-): Promise<void> {
-    const workspace = await GetWorkspaceBySlug(d1, slug);
-    if (workspace.is_personal) {
-        throw new FailedPreconditionError(
-            'Personal workspaces cannot be left.'
-        );
-    }
-    const membership = await GetMembership(d1, actorAccountId, workspace.id);
-    if (!membership) throw new NotFoundError('Not a member.');
-
-    if (membership.role === 'owner') {
-        const members = await GetWorkspaceMembers(d1, workspace.id);
-        const owners = members.filter(m => m.role === 'owner');
-        if (owners.length <= 1) {
-            throw new FailedPreconditionError(
-                'You are the last owner. Transfer ownership before leaving.'
-            );
-        }
-    }
-
-    await d1
-        .prepare(
-            `DELETE FROM AccountWorkspace WHERE account_id = ? AND workspace_id = ?`
-        )
-        .bind(actorAccountId, workspace.id)
-        .run();
 }

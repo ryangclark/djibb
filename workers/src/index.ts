@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import { User, verifyRequestOrigin } from 'lucia';
 
 import { CatalogApp } from './catalog/fetch';
-import { list_app, template_app } from './list/fetch';
+import { list_app, template_app, workspace_app } from './list/fetch';
 import { AuthorizationRole } from './auth/rules';
 import { EntityRow } from './list/entity';
 import { Session } from './auth/session';
@@ -11,7 +11,6 @@ import { Auth_App } from './auth/fetch';
 import { DjibbError } from './errors';
 import { DjibbList } from './list/durable_object';
 import { AccountApp, UserApp } from './account/fetch';
-import { WorkspaceApp } from './workspace/fetch';
 
 /**
  * Associate bindings declared in wrangler.toml with TypeScript types.
@@ -152,7 +151,16 @@ app.route('/entities', CatalogApp);
 app.route('/list', list_app);
 app.route('/template', template_app);
 app.route('/u', UserApp);
-app.route('/workspace', WorkspaceApp);
+// ADR 0011 §7b.4: `/workspace/*` is now the Replicache + websocket
+// entity surface (push/pull/websocket on a workspace DjibbList). The
+// legacy HTTP write surface (POST `/`, GET `/:slug`, PATCH `/:slug`,
+// DELETE `/:slug`, POST `/:slug/leave`, /:slug/members/*) is gone —
+// workspace create/update/leave/role-change/remove now dispatch through
+// DO mutators (`createWorkspace`, `renameWorkspace`, `setWorkspaceImage`,
+// `changeMemberRole`, `removeMember`, `leaveMember`) which the pages
+// app fires via Replicache on a per-workspace client. Reads come from
+// the `entity_memberships` projection via `/a/<id>/workspaces`.
+app.route('/workspace', workspace_app);
 
 app.onError(err => {
     if (err instanceof DjibbError) {

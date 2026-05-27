@@ -66,22 +66,12 @@ export type WorkspaceWithMembership = z.TypeOf<
     typeof WorkspaceWithMembershipSchema
 >;
 
-export const CreateWorkspaceRequestSchema = z.object({
-    slug: z.string().regex(SLUG_PATTERN),
-    name: z.string().trim().min(1).max(100),
-});
-export type CreateWorkspaceRequest = z.TypeOf<
-    typeof CreateWorkspaceRequestSchema
->;
-
-export const UpdateWorkspaceRequestSchema = z.object({
-    slug: z.string().regex(SLUG_PATTERN).optional(),
-    name: z.string().trim().min(1).max(100).nullable().optional(),
-    image: z.string().nullable().optional(),
-});
-export type UpdateWorkspaceRequest = z.TypeOf<
-    typeof UpdateWorkspaceRequestSchema
->;
+// ADR 0011 §7b.4: `CreateWorkspaceRequestSchema` and
+// `UpdateWorkspaceRequestSchema` (HTTP boundary schemas for the legacy
+// `POST /workspace` and `PATCH /workspace/:slug` endpoints) are gone.
+// Workspace create/rename/image are now Replicache mutator dispatches
+// (`createWorkspace`, `renameWorkspace`, `setWorkspaceImage`) whose args
+// live in `workers/src/list/mutators/{createWorkspace,renameWorkspace,setWorkspaceImage}.ts`.
 
 // ADR 0011 §7b.3: the legacy token-based `WorkspaceInvitation` system
 // (multi-type: email, username, link) was deleted. Invitations now live
