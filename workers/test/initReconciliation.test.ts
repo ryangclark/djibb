@@ -9,11 +9,10 @@ import type { PushRequestV1 } from 'replicache';
 import worker from '../src/index';
 import { CreateAccount } from '../src/account/service';
 import { ID_LENGTH, IdTypes, newId } from '../src/id';
-// ADR 0011 §7b.4: legacy `CreateWorkspace` was deleted. The
-// `workspace-targeted creation` describe below is `.skip`'d until it
-// gets ported to the DO `createWorkspace` mutator path. Local stub
-// keeps the body parseable.
-const CreateWorkspace: any = undefined;
+import {
+    GetWorkspacesByAccountId,
+    mintPersonalWorkspaceEntity,
+} from '../src/workspace/service';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 const ORIGIN = 'http://localhost:5173';
@@ -132,8 +131,14 @@ describe('init reconciliation: anonymous list creation', () => {
     });
 });
 
-describe.skip('init reconciliation: workspace-targeted creation', () => {
-    it('rejects when caller is not a workspace member', async () => {
+describe('init reconciliation: workspace-targeted creation', () => {
+    it('rejects when caller cannot claim the accountId (no session)', async () => {
+        // ADR 0011 §7b.4: ported off the deleted `CreateWorkspace`
+        // service fn. The workspace here is `mintPersonalWorkspaceEntity`'s
+        // output — same DO-mutator path the signup flow uses. The
+        // invariant is the same: an init push that claims an accountId
+        // the session doesn't own is rejected before workspace
+        // membership is even consulted.
         const owner = await CreateAccount(env, {
             id: '',
             display_name: 'Owner',
@@ -148,10 +153,11 @@ describe.skip('init reconciliation: workspace-targeted creation', () => {
             time_deleted: null,
             time_updated: new Date(),
         } as any);
-        const ws = await CreateWorkspace(env.DJIBB_AUTH, owner.id, {
-            slug: 'team-' + Math.random().toString(36).slice(2, 8),
-            name: 'Team',
-        });
+        const memberships = await GetWorkspacesByAccountId(
+            env.DJIBB_AUTH,
+            owner.id,
+        );
+        const workspaceId = memberships[0]!.workspace.id;
 
         const listId = makeListId();
         // No session attached → caller can't claim accountId.
@@ -160,7 +166,7 @@ describe.skip('init reconciliation: workspace-targeted creation', () => {
             makeInitListPush({
                 listId,
                 accountId: owner.id,
-                workspaceId: ws.id,
+                workspaceId,
             }),
         );
         expect(res.status).toBe(403);

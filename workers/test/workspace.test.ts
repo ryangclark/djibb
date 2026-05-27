@@ -4,21 +4,18 @@ import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { CreateAccount } from '../src/account/service';
 import { GetWorkspacesByAccountId } from '../src/workspace/service';
 import { GetEntity } from '../src/list/entity';
-
-// ADR 0011 §7b.4: the legacy `CreateWorkspace`, `GetWorkspaceBySlug`,
-// `LeaveWorkspace`, `SoftDeleteWorkspace`, and `UpdateWorkspace` service
-// fns were deleted. The describe blocks below that exercised them are
-// `.skip`'d with TODOs; rewriting them onto the new DO-mutator surface
-// (`createWorkspace`, `renameWorkspace`, `leaveMember`, …) is the
-// follow-up after the pages-app collapse (7b.4b). Stubs below keep the
-// .skip'd blocks parseable without pulling deleted imports back in.
-const CreateWorkspace: any = undefined;
-const GetWorkspaceBySlug: any = undefined;
-const LeaveWorkspace: any = undefined;
-const SoftDeleteWorkspace: any = undefined;
-const UpdateWorkspace: any = undefined;
 import type { Account } from '../src/account';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
+
+// ADR 0011 §7b.4: the legacy `CreateWorkspace`, `UpdateWorkspace`,
+// `SoftDeleteWorkspace`, `LeaveWorkspace`, `GetWorkspaceBySlug`
+// describes that lived here have been deleted. The DO mutators that
+// replaced them (`createWorkspace`, `renameWorkspace`,
+// `setWorkspaceImage`) are covered by `workspaceMutators.test.ts`;
+// `changeMemberRole` / `removeMember` / `leaveMember` ship without
+// dedicated worker-side test coverage yet — that gap is tracked
+// separately. What remains here is the personal-workspace mint path
+// (CreateAccount → mintPersonalWorkspaceEntity → entity_memberships).
 
 function makeAccount(overrides: Partial<Account> = {}): Account {
     return {
@@ -121,122 +118,3 @@ describe('CreateAccount auto-creates personal workspace', () => {
     });
 });
 
-describe.skip('CreateWorkspace + GetWorkspaceBySlug', () => {
-    // ADR 0011 §7b.4 TODO: `CreateWorkspace` still writes the legacy
-    // `workspaces` + `AccountWorkspace` tables, but reads now come from
-    // `entity_memberships`. So a shared workspace created this way is
-    // invisible to `GetWorkspacesByAccountId`. The shared-workspace
-    // path becomes a DjibbList entity mint in 7b.4 (mirrors
-    // `mintPersonalWorkspaceEntity`); this test comes back then.
-    it.skip('creates a shared workspace with the actor as owner', async () => {
-        const account = await CreateAccount(env, makeAccount());
-        const workspace = await CreateWorkspace(env.DJIBB_AUTH, account.id, {
-            slug: 'team-rocket',
-            name: 'Team Rocket 🚀',
-        });
-        expect(workspace.is_personal).toBe(false);
-
-        const fetched = await GetWorkspaceBySlug(env.DJIBB_AUTH, 'team-rocket');
-        expect(fetched.id).toBe(workspace.id);
-        expect(fetched.name).toBe('Team Rocket 🚀');
-
-        const memberships = await GetWorkspacesByAccountId(
-            env.DJIBB_AUTH,
-            account.id
-        );
-        // personal + shared = 2
-        expect(memberships).toHaveLength(2);
-        const shared = memberships.find(m => !m.workspace.is_personal)!;
-        expect(shared.membership.role).toBe('owner');
-    });
-
-    it('rejects a duplicate slug', async () => {
-        const a1 = await CreateAccount(env, makeAccount());
-        await CreateWorkspace(env.DJIBB_AUTH, a1.id, {
-            slug: 'shared-one',
-            name: 'A',
-        });
-        await expect(
-            CreateWorkspace(env.DJIBB_AUTH, a1.id, {
-                slug: 'shared-one',
-                name: 'B',
-            })
-        ).rejects.toThrow(/already in use/i);
-    });
-
-    it('rejects reserved slugs', async () => {
-        const a1 = await CreateAccount(env, makeAccount());
-        await expect(
-            CreateWorkspace(env.DJIBB_AUTH, a1.id, {
-                slug: 'settings',
-                name: 'X',
-            })
-        ).rejects.toThrow(/reserved/i);
-    });
-});
-
-describe.skip('LeaveWorkspace', () => {
-    // ADR 0011 §7b.4 TODO: depends on shared-workspace entity mint and
-    // on `LeaveWorkspace` reading membership from `entity_memberships`.
-    // Re-enable when 7b.4 routes the slug to a DO `leaveMember` mutator.
-    it.skip('blocks the last owner from leaving', async () => {
-        const a1 = await CreateAccount(env, makeAccount());
-        const ws = await CreateWorkspace(env.DJIBB_AUTH, a1.id, {
-            slug: 'soloists',
-            name: 'Soloists',
-        });
-        await expect(
-            LeaveWorkspace(env.DJIBB_AUTH, a1.id, ws.slug)
-        ).rejects.toThrow(/last owner/i);
-    });
-
-    // 7b.4 TODO: same as above — the personal-workspace block lives
-    // in the `leaveMember` DO mutator (it checks `slot='personal_workspace'`
-    // on the entity row). The HTTP layer either routes through that
-    // mutator or this function becomes a thin wrapper.
-    it.skip('refuses to leave a personal workspace', async () => {
-        const a1 = await CreateAccount(env, makeAccount());
-        const memberships = await GetWorkspacesByAccountId(env.DJIBB_AUTH, a1.id);
-        const personal = memberships[0]!.workspace;
-        await expect(
-            LeaveWorkspace(env.DJIBB_AUTH, a1.id, personal.slug)
-        ).rejects.toThrow(/personal/i);
-    });
-});
-
-describe.skip('UpdateWorkspace + SoftDeleteWorkspace', () => {
-    // 7b.4 TODO: depends on shared-workspace entity mint + DO-routed
-    // update/soft-delete (via `renameWorkspace` mutator + slot guard).
-    it.skip('updates name + slug, then soft-deletes', async () => {
-        const a1 = await CreateAccount(env, makeAccount());
-        const ws = await CreateWorkspace(env.DJIBB_AUTH, a1.id, {
-            slug: 'temp-name',
-            name: 'Temp',
-        });
-        const updated = await UpdateWorkspace(env.DJIBB_AUTH, a1.id, ws.slug, {
-            slug: 'forever-name',
-            name: 'Forever',
-        });
-        expect(updated.slug).toBe('forever-name');
-        expect(updated.name).toBe('Forever');
-
-        await SoftDeleteWorkspace(env.DJIBB_AUTH, a1.id, 'forever-name');
-        await expect(
-            GetWorkspaceBySlug(env.DJIBB_AUTH, 'forever-name')
-        ).rejects.toThrow();
-    });
-
-    // 7b.4 TODO: SoftDeleteWorkspace currently reads `workspaces` by
-    // slug; the personal-workspace slug now comes from the entity
-    // projection (id suffix), which doesn't match anything in the
-    // legacy table. Move to DO `softDeleteWorkspace` mutator + slot
-    // guard.
-    it.skip('refuses to delete a personal workspace', async () => {
-        const a1 = await CreateAccount(env, makeAccount());
-        const memberships = await GetWorkspacesByAccountId(env.DJIBB_AUTH, a1.id);
-        const personal = memberships[0]!.workspace;
-        await expect(
-            SoftDeleteWorkspace(env.DJIBB_AUTH, a1.id, personal.slug)
-        ).rejects.toThrow(/personal/i);
-    });
-});
