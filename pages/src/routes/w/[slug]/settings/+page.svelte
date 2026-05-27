@@ -1,48 +1,67 @@
 <script>
-	import { getSessionState } from '$lib/session.svelte';
-	import { updateWorkspace, deleteWorkspace, leaveWorkspace } from '$lib/api/workspace';
-	import { page } from '$app/state';
+	import { getContext } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { getSessionState } from '$lib/session.svelte';
+	import { WORKSPACE_REPLICACHE_KEY } from '../_context.js';
+
+	// ADR 0011 §7b.4: settings dispatches through DO mutators
+	// (`renameWorkspace`, `setWorkspaceImage`, `leaveMember`). Slug
+	// editing is dropped — slugs are postponed (§7b.5). Workspace
+	// delete is dropped too: no `archiveWorkspace`/`softDeleteWorkspace`
+	// mutator exists yet (that lands with the cascade-delete dispatcher
+	// in ADR 0011 §Step 10). The legacy `updateWorkspace`/
+	// `deleteWorkspace`/`leaveWorkspace` HTTP helpers are gone.
 
 	const session = getSessionState();
-	const slug = $derived(page.params.slug);
-	const current = $derived(
-		session.workspaces.find(w => w.workspace.slug === slug)
-	);
+	const ctx = getContext(WORKSPACE_REPLICACHE_KEY);
+
+	const workspace = $derived(ctx?.workspace ?? null);
+	const sessionWorkspace = $derived(ctx?.sessionWorkspace ?? null);
+	const workspaceId = $derived(ctx?.workspaceId ?? null);
 
 	let nameDraft = $state('');
-	let slugDraft = $state('');
+	let imageDraft = $state('');
 	let saving = $state(false);
+	let leaving = $state(false);
 	let error = $state('');
 
+	let synced = $state(false);
 	$effect(() => {
-		if (current) {
-			nameDraft = current.workspace.name ?? '';
-			slugDraft = current.workspace.slug;
-		}
+		// Seed drafts from the live entity row once it lands. Re-seed
+		// whenever the underlying ID changes (slug navigation between
+		// workspaces) so we don't carry drafts across.
+		if (!workspace || !workspaceId) return;
+		if (synced) return;
+		nameDraft = workspace.name ?? '';
+		const meta = workspace.meta ?? null;
+		imageDraft = meta?.image_url ?? '';
+		synced = true;
+	});
+	$effect(() => {
+		// Reset synced flag if we navigate to a different workspace.
+		void workspaceId;
+		synced = false;
 	});
 
 	async function save() {
-		if (!current) return;
-		// Capture before any await — the `current` derived can be torn
-		// down once we navigate to the new slug, which would trigger
-		// Svelte's `derived_inert` warning if we read it after the await.
-		const oldSlug = current.workspace.slug;
-		const newSlug = slugDraft;
-		const accountId = current.membership.account_id;
-
+		if (!ctx?.mutate || !workspaceId) return;
 		saving = true;
 		error = '';
 		try {
-			await updateWorkspace(
-				oldSlug,
-				{ name: nameDraft || null, slug: newSlug },
-				accountId
-			);
-			await session.refreshWorkspaces();
-			if (newSlug !== oldSlug) {
-				await goto(`/w/${newSlug}/settings`);
-				return; // page is unmounting, don't touch local state
+			const trimmedName = nameDraft.trim();
+			if (trimmedName && trimmedName !== (workspace?.name ?? '')) {
+				await ctx.mutate.renameWorkspace({
+					workspaceId,
+					name: trimmedName
+				});
+			}
+			const trimmedImage = imageDraft.trim();
+			const currentImage = workspace?.meta?.image_url ?? '';
+			if (trimmedImage !== currentImage) {
+				await ctx.mutate.setWorkspaceImage({
+					workspaceId,
+					image: trimmedImage || null
+				});
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -50,71 +69,66 @@
 		saving = false;
 	}
 
-	async function onDelete() {
-		if (!current) return;
-		// TODO: replace this with a 30-day soft-delete trash before hard delete.
-		if (!confirm('Delete this workspace?')) return;
-		const slug = current.workspace.slug;
-		const accountId = current.membership.account_id;
-		try {
-			await deleteWorkspace(slug, accountId);
-			await session.refreshWorkspaces();
-			await goto('/workspaces');
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
-		}
-	}
-
 	async function onLeave() {
-		if (!current) return;
+		if (!ctx?.mutate || !workspaceId) return;
 		if (!confirm('Leave this workspace?')) return;
-		const slug = current.workspace.slug;
-		const accountId = current.membership.account_id;
+		leaving = true;
+		error = '';
 		try {
-			await leaveWorkspace(slug, accountId);
+			await ctx.mutate.leaveMember({ listId: workspaceId });
 			await session.refreshWorkspaces();
 			await goto('/workspaces');
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
+			leaving = false;
 		}
 	}
 </script>
 
-{#if current}
+{#if sessionWorkspace}
 	<h2 class="text-lg mb-2">Settings</h2>
-	<form onsubmit={e => { e.preventDefault(); save(); }}>
-		<label class="block mb-2 text-sm">
-			Name
-			<input class="border px-2 py-1 ml-2" bind:value={nameDraft} />
-		</label>
-		<label class="block mb-2 text-sm">
-			Slug
-			<input class="border px-2 py-1 ml-2" bind:value={slugDraft} />
-		</label>
-		<button class="border px-3 py-1" disabled={saving}>
-			{saving ? 'Saving…' : 'Save'}
-		</button>
-	</form>
+	{#if !workspace}
+		<p class="text-sm text-stone-500">Loading…</p>
+	{:else}
+		<form onsubmit={(e) => { e.preventDefault(); save(); }}>
+			<label class="block mb-2 text-sm">
+				Name
+				<input class="border px-2 py-1 ml-2" bind:value={nameDraft} />
+			</label>
+			<label class="block mb-2 text-sm">
+				Image URL
+				<input
+					class="border px-2 py-1 ml-2"
+					bind:value={imageDraft}
+					placeholder="https://…"
+				/>
+			</label>
+			<button class="border px-3 py-1" disabled={saving}>
+				{saving ? 'Saving…' : 'Save'}
+			</button>
+		</form>
 
-	<div class="mt-6 flex gap-3">
-		{#if !current.workspace.is_personal}
-			<button class="border px-3 py-1 text-sm" onclick={onLeave}>Leave</button>
-			{#if current.membership.role === 'owner'}
+		<div class="mt-6 flex gap-3">
+			{#if !sessionWorkspace.workspace.is_personal}
 				<button
-					class="border px-3 py-1 text-sm text-red-600"
-					onclick={onDelete}
+					class="border px-3 py-1 text-sm"
+					onclick={onLeave}
+					disabled={leaving}
 				>
-					Delete
+					{leaving ? 'Leaving…' : 'Leave'}
 				</button>
+				<!-- ADR 0011 §7b.4: delete is dropped until the workspace
+				     cascade-delete dispatcher lands (Step 10). The legacy
+				     `softDeleteWorkspace` HTTP path is gone. -->
+			{:else}
+				<p class="text-sm text-stone-500">
+					Personal workspaces cannot be deleted or left.
+				</p>
 			{/if}
-		{:else}
-			<p class="text-sm text-stone-500">
-				Personal workspaces cannot be deleted or left.
-			</p>
-		{/if}
-	</div>
+		</div>
 
-	{#if error}
-		<p class="text-red-600 text-sm mt-2">{error}</p>
+		{#if error}
+			<p class="text-red-600 text-sm mt-2">{error}</p>
+		{/if}
 	{/if}
 {/if}

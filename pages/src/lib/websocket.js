@@ -17,7 +17,9 @@ import { WS_QUERY_CLIENT_ID } from '$djibb/websocket/constants';
 export function initialize(entity_id, client_id) {
 	const path = entity_id.startsWith(`${IdTypes.template}/`)
 		? 'template'
-		: 'list';
+		: entity_id.startsWith(`${IdTypes.workspace}/`)
+			? 'workspace'
+			: 'list';
 	const params = new URLSearchParams({ l: entity_id });
 	if (client_id) params.set(WS_QUERY_CLIENT_ID, client_id);
 	const url = `ws${dev ? '' : 's'}://${

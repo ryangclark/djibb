@@ -15,6 +15,7 @@ import { createUndoRuntime } from './withUndo.svelte.js';
  */
 function entityPath(entityId) {
 	if (entityId.startsWith(`${IdTypes.template}/`)) return 'template';
+	if (entityId.startsWith(`${IdTypes.workspace}/`)) return 'workspace';
 	return 'list';
 }
 

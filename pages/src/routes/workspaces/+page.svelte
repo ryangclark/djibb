@@ -1,10 +1,17 @@
 <script>
+	import { goto } from '$app/navigation';
 	import { getSessionState } from '$lib/session.svelte';
-	import { createWorkspace } from '$lib/api/workspace';
+	import { initList } from '$lib/replicache/index.svelte.js';
+	import { newId } from '$djibb/id';
+
+	// ADR 0011 §7b.4: workspace create is now a client-side mint:
+	// generate a `w/<nanoid>` id, open a Replicache client at that
+	// id, dispatch `createWorkspace`, force a push, then refresh and
+	// navigate. The legacy `POST /workspace` HTTP path is gone.
+	// Slugs are postponed (§7b.5) — only `name` here.
 
 	const session = getSessionState();
 
-	let newSlug = $state('');
 	let newName = $state('');
 	let actorAccountId = $state('');
 	let creating = $state(false);
@@ -20,13 +27,30 @@
 		error = '';
 		creating = true;
 		try {
-			await createWorkspace(
-				{ slug: newSlug.trim(), name: newName.trim() },
-				actorAccountId
-			);
-			newSlug = '';
-			newName = '';
+			const workspaceId = newId('workspace');
+			const rep = initList({
+				accountId: actorAccountId,
+				listId: workspaceId,
+				skipClientInit: true
+			});
+			try {
+				await rep.mutate.createWorkspace({
+					workspaceId,
+					name: newName.trim()
+				});
+				// Wait for the optimistic push to round-trip so the
+				// entity row + projection are in D1 before we navigate
+				// (the destination layout's /pull would 404 otherwise).
+				await rep.client.push?.();
+			} finally {
+				await rep.client.close();
+			}
 			await session.refreshWorkspaces();
+			newName = '';
+			// URL uses the id suffix (slugs postponed). Slug field in
+			// the projection mirrors the suffix.
+			const suffix = workspaceId.split('/', 2)[1] ?? workspaceId;
+			await goto(`/w/${suffix}`);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		}
@@ -57,16 +81,7 @@
 
 	<section class="border-t pt-4">
 		<h2 class="text-lg mb-2">New workspace</h2>
-		<form onsubmit={e => { e.preventDefault(); submit(); }}>
-			<label class="block mb-1 text-sm">
-				Slug
-				<input
-					class="border px-2 py-1 ml-2"
-					bind:value={newSlug}
-					placeholder="my-team"
-					required
-				/>
-			</label>
+		<form onsubmit={(e) => { e.preventDefault(); submit(); }}>
 			<label class="block mb-1 text-sm">
 				Name
 				<input

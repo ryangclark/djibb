@@ -1,17 +1,16 @@
 <script>
-	import { getSessionState } from '$lib/session.svelte';
-	import { page } from '$app/state';
+	import { getContext } from 'svelte';
+	import { WORKSPACE_REPLICACHE_KEY } from './_context.js';
 
-	const session = getSessionState();
-	const slug = $derived(page.params.slug);
-	const current = $derived(
-		session.workspaces.find(w => w.workspace.slug === slug)
-	);
+	// ADR 0011 §7b.4: role display reads from the session projection
+	// (membership.role) since the live entity row may briefly be empty
+	// during pull. Lists in this workspace come in a follow-up.
+	const ctx = getContext(WORKSPACE_REPLICACHE_KEY);
 </script>
 
-{#if current}
+{#if ctx?.sessionWorkspace}
 	<p class="text-sm text-stone-500">
-		You are <strong>{current.membership.role}</strong> in this workspace.
+		You are <strong>{ctx.sessionWorkspace.membership.role}</strong> in this workspace.
 	</p>
 	<p class="mt-4"><i>Lists in this workspace will appear here. (Phase 1: skeleton only.)</i></p>
 {/if}
