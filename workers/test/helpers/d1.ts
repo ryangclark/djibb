@@ -12,6 +12,7 @@ import migration0008 from '../../migrations/0008_entity_slot.sql?raw';
 import migration0009 from '../../migrations/0009_workspace_roles_to_authorization_roles.sql?raw';
 import migration0010 from '../../migrations/0010_workspace_entity_meta.sql?raw';
 import migration0011 from '../../migrations/0011_entity_memberships.sql?raw';
+import migration0012 from '../../migrations/0012_entity_slug.sql?raw';
 
 const ALL_MIGRATIONS = [
     migration0001,
@@ -25,6 +26,7 @@ const ALL_MIGRATIONS = [
     migration0009,
     migration0010,
     migration0011,
+    migration0012,
 ];
 
 function splitStatements(sql: string): string[] {
@@ -80,6 +82,12 @@ export async function withMissingEntitiesTable<T>(
             await env.DJIBB_AUTH.exec(stmt.replace(/\n/g, ' '));
         }
         for (const stmt of splitStatements(migration0010)) {
+            await env.DJIBB_AUTH.exec(stmt.replace(/\n/g, ' '));
+        }
+        // 0012 adds the `slug` column + UNIQUE(type, slug) index. Same
+        // reasoning as 0008/0010 above: EmitEntitySnapshotToCatalog
+        // binds the slug, so the test schema needs it.
+        for (const stmt of splitStatements(migration0012)) {
             await env.DJIBB_AUTH.exec(stmt.replace(/\n/g, ' '));
         }
     }

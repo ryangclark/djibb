@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AuthorizationRules } from '../../auth/rules';
 import { ValidationError } from '../../errors';
 import { createElement } from '../sql';
+import { defaultSlugForId } from '../entity';
 import { SlotEnum, WorkspaceEntitySchema } from '..';
 import type { WorkspaceEntity } from '..';
 import { DEFAULT_LIST_TITLE } from '.';
@@ -29,11 +30,13 @@ import type { ClientMutator, Inverse, ServerMutator } from './_shared';
  * concern of step 6's signup flow; ordinary `createWorkspace` mints
  * a team workspace with no slot assignment.
  *
- * **Slug is deferred** (see the step-5 thread). URLs use the workspace
- * ID's type prefix (`/w/<suffix>/...`) for now. When slugs come back,
- * they'll arrive as a request/result mutation-log pattern that lets a
- * D1-aware handler enforce the cross-DO uniqueness invariant a
- * single-DO server mutator cannot.
+ * **Slug** defaults to the workspace ID's suffix (the nanoid that
+ * already lives after the `w/` prefix). The default needs no UNIQUE
+ * arbitration — the suffix is a fresh nanoid and cannot collide with
+ * an existing workspace. User-customized slugs ride on top via
+ * `setWorkspaceSlug`, which runs an in-DO preflight against the D1
+ * `UNIQUE(type, slug)` index before its synchronous mutator commits
+ * (ADR 0011 §Step 7b.5).
  */
 export const argsSchema = z.object({
     workspaceId: WorkspaceEntitySchema.shape.id,
@@ -99,6 +102,7 @@ export const server: ServerMutator<Args> = (
         forked_from_id: null,
         meta: null,
         name: args.name,
+        slug: defaultSlugForId(args.workspaceId),
         slot: args.slot ?? null,
         time_created: ts,
         time_deleted: null,
@@ -140,6 +144,7 @@ export const client: ClientMutator<Args> = async (
         type: 'workspace',
         id: args.workspaceId,
         name: args.name || DEFAULT_LIST_TITLE,
+        slug: defaultSlugForId(args.workspaceId),
         slot: args.slot ?? null,
         time_created: ts,
         time_deleted: null,

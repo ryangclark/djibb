@@ -1349,6 +1349,10 @@ export class DjibbList extends DurableObject {
             description: entity.description ?? null,
             forked_from_id: entity.forked_from_id,
             meta: entity.meta,
+            // ADR 0011 §Step 7b.5: slug is optional on the DO entity
+            // row (lists/templates currently leave it unset); the
+            // projection writer defaults to the id suffix when absent.
+            slug: (entity as { slug?: string }).slug,
             slot: entity.slot,
             authorization_rules: entity.authorization_rules,
             time_created: Math.floor(entity.time_created.getTime() / 1000),

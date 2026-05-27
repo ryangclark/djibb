@@ -106,10 +106,10 @@ export async function mintPersonalWorkspaceEntity(
 
 /**
  * Synthesize a `Workspace` view from a `workspace_entities` row +
- * `entity_memberships` join. Slugs are postponed (ADR 0011 §7b notes);
- * for now the slug field carries the id suffix so existing slug-based
- * routes still return a stable token per entity. Image / flags come
- * from the `meta` JSON blob.
+ * `entity_memberships` join. Slug comes from the real D1 column (ADR
+ * 0011 §Step 7b.5); it equals the id suffix for un-customized
+ * workspaces and a user-chosen string after `setWorkspaceSlug`.
+ * Image / flags come from the `meta` JSON blob.
  */
 function shapeEntityWorkspaceRow(row: any): Workspace {
     let meta: any = null;
@@ -121,10 +121,9 @@ function shapeEntityWorkspaceRow(row: any): Workspace {
         }
     }
     const id = String(row.id);
-    const suffix = id.includes('/') ? id.slice(id.indexOf('/') + 1) : id;
     const parsed = WorkspaceSchema.safeParse({
         id,
-        slug: suffix,
+        slug: String(row.slug),
         name: row.name ?? null,
         is_personal: row.slot === 'personal_workspace',
         flags: null,
@@ -155,7 +154,7 @@ export async function GetWorkspacesByAccountId(
     const result = await d1
         .prepare(
             `SELECT
-                we.id, we.name, we.slot, we.meta,
+                we.id, we.name, we.slug, we.slot, we.meta,
                 we.time_created, we.time_deleted, we.time_updated,
                 em.role, em.time_updated AS time_joined
             FROM entity_memberships em

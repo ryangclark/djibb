@@ -21,6 +21,14 @@ export const EntityRowSchema = z.object({
     description: z.string().nullable(),
     forked_from_id: z.string().nullable(),
     meta: z.record(z.string(), z.unknown()).nullable(),
+    /**
+     * Per-type-namespaced routing alias (ADR 0011 §Step 7b.5). Always
+     * present in the D1 catalog (`NOT NULL` on the column, defaulted
+     * to the id suffix at emit time for entities that haven't set
+     * one). UNIQUE(type, slug) lets `/w/myteam` and `/l/myteam` live
+     * side-by-side.
+     */
+    slug: z.string(),
     slot: SlotEnum.nullable(),
     authorization_rules: AuthorizationRulesSchema,
     time_created: z.number(),
@@ -48,6 +56,7 @@ function parseRow(row: any): EntityRow {
         description: row.description ?? null,
         forked_from_id: row.forked_from_id ?? null,
         meta,
+        slug: row.slug,
         slot: row.slot ?? null,
         authorization_rules: rules,
         time_created: row.time_created,
@@ -90,8 +99,8 @@ export async function GetEntity(
     const row = await d1
         .prepare(
             `SELECT id, workspace_id, type, name, description, forked_from_id,
-                    meta, slot, authorization_rules, time_created, time_updated,
-                    time_deleted, version
+                    meta, slug, slot, authorization_rules, time_created,
+                    time_updated, time_deleted, version
              FROM workspace_entities WHERE id = ? LIMIT 1`,
         )
         .bind(id)
@@ -108,6 +117,14 @@ export type EntitySnapshot = {
     description: string | null;
     forked_from_id: string | null;
     meta: Record<string, unknown> | null;
+    /**
+     * Optional on the DO-side snapshot (ADR 0011 §Step 7b.5). When
+     * absent, the projection writer defaults to the id suffix — the
+     * nanoid that already lives after the type prefix — so the D1 NOT
+     * NULL constraint is satisfied for every entity, even those whose
+     * mutators don't carry a slug field yet (lists, templates).
+     */
+    slug?: string;
     slot: Slot | null;
     authorization_rules: AuthorizationRules;
     time_created: number;
@@ -115,6 +132,18 @@ export type EntitySnapshot = {
     time_deleted: number | null;
     version: number;
 };
+
+/**
+ * Default slug for an entity that didn't carry one on its DO row.
+ * The id is shaped `<type>/<suffix>` (e.g. `w/abc123`) and the suffix
+ * — a fresh nanoid — already satisfies SLUG_PATTERN by construction.
+ * Used by `EmitEntitySnapshotToCatalog` as the auto-default and by
+ * any test fixture that needs to mirror that behavior.
+ */
+export function defaultSlugForId(id: string): string {
+    const i = id.indexOf('/');
+    return i === -1 ? id : id.slice(i + 1);
+}
 
 /**
  * Emit a current-state snapshot of an entity to the D1 read index. Per
@@ -222,13 +251,25 @@ export async function EmitEntitySnapshotToCatalog(
     d1: D1Database,
     snapshot: EntitySnapshot,
 ): Promise<void> {
+    // ADR 0011 §Step 7b.5: slug is auto-defaulted to the id suffix
+    // when the DO didn't carry one. The slug column itself is NOT
+    // NULL; the UNIQUE(type, slug) index does the cross-DO arbitration
+    // for any future write that re-emits a different slug for the same
+    // entity (the only path that re-emits is `setWorkspaceSlug`, which
+    // runs an in-DO preflight against this same catalog before writing
+    // — so a UNIQUE conflict here would be an invariant violation, not
+    // a normal race). The ON CONFLICT UPDATE does NOT update slug —
+    // slug changes go through the preflighted mutator, not snapshot
+    // emit. This keeps a stale emit (e.g. alarm-driven reconciliation)
+    // from clobbering a freshly-claimed slug.
+    const slug = snapshot.slug ?? defaultSlugForId(snapshot.id);
     await d1
         .prepare(
             `INSERT INTO workspace_entities (
                 id, workspace_id, type, name, description, forked_from_id,
-                meta, slot, authorization_rules, time_created, time_updated,
-                time_deleted, version
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                meta, slug, slot, authorization_rules, time_created,
+                time_updated, time_deleted, version
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
                 name = excluded.name,
@@ -250,6 +291,7 @@ export async function EmitEntitySnapshotToCatalog(
             snapshot.description,
             snapshot.forked_from_id,
             snapshot.meta ? JSON.stringify(snapshot.meta) : null,
+            slug,
             snapshot.slot,
             JSON.stringify(snapshot.authorization_rules),
             snapshot.time_created,

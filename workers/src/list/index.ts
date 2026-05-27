@@ -59,6 +59,23 @@ const entityBaseFields = {
     meta: z.record(z.string(), z.unknown()).nullable(),
     name: z.string(),
     /**
+     * URL-routing alias for this entity, per-type-namespaced via the D1
+     * `UNIQUE(type, slug)` index (ADR 0011 §Step 7b.5). The D1 column
+     * is NOT NULL; the projection writer auto-defaults to the id suffix
+     * (the nanoid after the type prefix) when an entity emits without
+     * a DO-resident slug. Workspaces opt in via the `slug` field on
+     * their entity row and `setWorkspaceSlug` (with an in-DO preflight
+     * holding the cross-DO UNIQUE check before the mutator commits);
+     * lists / templates currently leave it unset, accepting the
+     * id-suffix default.
+     *
+     * Optional in the DO schema so existing entity-creation paths
+     * (initList, mintTemplate, …) keep working without per-entity slug
+     * arguments. Length cap mirrors the legacy `SLUG_PATTERN` (40
+     * chars).
+     */
+    slug: z.string().min(1).max(40).optional(),
+    /**
      * Well-known slot this entity fills, if any. See `SlotEnum` and
      * ADR 0011. `null` for ordinary user-created entities.
      */
