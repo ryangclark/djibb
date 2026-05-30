@@ -38,6 +38,7 @@ import * as setItemsAtomic from './setItemsAtomic';
 import * as setItemQuantity from './setItemQuantity';
 import * as setListAuthRules from './setListAuthRules';
 import * as setWorkspaceImage from './setWorkspaceImage';
+import * as setWorkspaceSlug from './setWorkspaceSlug';
 import * as transferOwnership from './transferOwnership';
 import * as unarchiveList from './unarchiveList';
 import * as unarchiveListGroup from './unarchiveListGroup';
@@ -100,6 +101,7 @@ export const Mutations = {
     [setItemQuantity.name]: setItemQuantity,
     [setListAuthRules.name]: setListAuthRules,
     [setWorkspaceImage.name]: setWorkspaceImage,
+    [setWorkspaceSlug.name]: setWorkspaceSlug,
     [transferOwnership.name]: transferOwnership,
     [unarchiveList.name]: unarchiveList,
     [unarchiveListGroup.name]: unarchiveListGroup,

@@ -8,6 +8,7 @@ import {
     MutationStatus,
     parseMutationEnvelope,
 } from './mutators';
+import { OWNER_ROLES } from './mutators/_shared';
 
 import { AuthorizationRole } from '../auth/rules';
 import {
@@ -61,6 +62,7 @@ import {
     type InvitationIdentityKind,
     type InvitePreflightFailureReason,
 } from './invitations';
+import { tryClaimSlug } from './slug';
 import { GetAccountByEmail } from '../account/service';
 import { sendEntityInvitationEmail } from '../email';
 import { LIST_PULL_KEYSPACES } from './pull';
@@ -91,6 +93,7 @@ const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
     'setDescription',
     'setListAuthRules',
     'setWorkspaceImage',
+    'setWorkspaceSlug',
     'transferOwnership',
     'unarchiveList',
 ]);
@@ -118,7 +121,28 @@ const INVITATION_MUTATORS: ReadonlySet<string> = new Set([
 const PREFLIGHTED_MUTATORS: ReadonlySet<string> = new Set([
     'acceptInvitation',
     'inviteByIdentity',
+    'setWorkspaceSlug',
 ]);
+
+/**
+ * Map a `setWorkspaceSlug` preflight failure code to the wire-level
+ * `MutationOutcomeStatus`. Slug claim failures are all preconditions
+ * from the client's perspective — the request was well-formed and
+ * the caller was authorized, the state of the world just doesn't
+ * allow it (slug taken / reserved / invalid / target gone).
+ */
+function slugReasonToOutcomeStatus(
+    reason: import('./slug').SlugClaimFailureReason,
+): MutationOutcomeStatus {
+    switch (reason) {
+        case 'entity_missing':
+            return 'gone';
+        case 'slug_invalid':
+        case 'slug_reserved':
+        case 'slug_taken':
+            return 'precondition';
+    }
+}
 
 /**
  * Map an `inviteByIdentity` preflight failure code to the wire-level
@@ -467,14 +491,14 @@ export class DjibbList extends DurableObject {
     }
 
     /**
-     * Async preflight for invitation-family mutators (ADR 0009).
-     *
-     * The single-entity DO has no synchronous SQL access to D1, but
-     * `_handlePush` is async — so cross-target gates (per-inviter
-     * rate limit, outstanding-cap) and identity resolution
-     * (email → account, "already a member", self-invite, identity
-     * ownership for accept) live HERE, inside the DO, just before
-     * the synchronous mutator runs. Previously the preflight lived
+     * Async preflight for mutators that need cross-DO / cross-entity
+     * D1 state to make their decision (ADR 0009 Slice 3; ADR 0011
+     * §Step 7b.5 for `setWorkspaceSlug`). The single-entity DO has
+     * no synchronous SQL access to D1, but `_handlePush` is async —
+     * so checks that need D1 (invitation rate limits, identity
+     * resolution, slug uniqueness across other workspaces) live
+     * HERE, inside the DO, just before the synchronous mutator
+     * runs. Previously the preflight lived
      * at the HTTP `/push` boundary and rejected the whole push with
      * a structured 4xx; that wedged Replicache's retry loop on
      * permanent failures (no client-side API drops a pending
@@ -491,9 +515,10 @@ export class DjibbList extends DurableObject {
      *     identity / session failures, `gone` for target-missing,
      *     `precondition` for everything else).
      */
-    private async runInvitationPreflight(
+    private async runMutationPreflight(
         mutation: MutationV1,
-        authorizedAccounts: Readonly<Account[]>
+        authorizedAccounts: Readonly<Account[]>,
+        authorizedRole: AuthorizationRole
     ): Promise<
         | { ok: true }
         | {
@@ -555,6 +580,56 @@ export class DjibbList extends DurableObject {
             return {
                 ok: false,
                 status: inviteReasonToOutcomeStatus(result.reason),
+                reason: result.reason,
+                message: result.message,
+            };
+        }
+
+        if (mutation.name === 'setWorkspaceSlug') {
+            // ADR 0011 §Step 7b.5: the preflight is the actual D1
+            // write — `tryClaimSlug` runs an atomic guarded UPDATE
+            // against the `UNIQUE(type, slug)` index, so by the time
+            // the synchronous mutator runs the slug column on the D1
+            // catalog has already swapped (or the mutation gets
+            // skip-and-ack'd here with a structured outcome). The
+            // mutator's role is purely to bump version + time_updated
+            // on the DO entity row so the post-commit snapshot emit
+            // fires.
+            //
+            // The role gate has to be replicated here. The
+            // synchronous mutator dispatcher (`handleMutation`)
+            // checks `requiredRole` AFTER the preflight has already
+            // run, so without this guard a non-admin caller could
+            // vandalize the slug (the mutator's own write would be
+            // rejected but the preflight's D1 UPDATE already
+            // committed). Same pattern the invitation preflight uses
+            // for its session check.
+            if (!OWNER_ROLES.includes(authorizedRole)) {
+                return {
+                    ok: false,
+                    status: 'auth',
+                    reason: 'unauthorized_role',
+                    message: `Role "${authorizedRole}" cannot change a workspace slug; admin or owner required.`,
+                };
+            }
+            const workspaceId =
+                typeof args.workspaceId === 'string' ? args.workspaceId : '';
+            const newSlug =
+                typeof args.slug === 'string' ? args.slug : '';
+            if (!workspaceId || !newSlug) {
+                // Malformed args; let the mutator's argsSchema reject.
+                return { ok: true };
+            }
+            const result = await tryClaimSlug(
+                d1,
+                workspaceId,
+                'workspace',
+                newSlug,
+            );
+            if (result.ok) return { ok: true };
+            return {
+                ok: false,
+                status: slugReasonToOutcomeStatus(result.reason),
                 reason: result.reason,
                 message: result.message,
             };
@@ -803,8 +878,9 @@ export class DjibbList extends DurableObject {
             // per-client mutation ID.
             const nextVersion = listVersion + 1;
 
-            // Async preflight for invitation-family mutators
-            // (ADR 0009 Slice 3). On failure: skip-and-ack the
+            // Async preflight for mutators that depend on D1 state
+            // (invitation-family per ADR 0009 Slice 3, setWorkspaceSlug
+            // per ADR 0011 §Step 7b.5). On failure: skip-and-ack the
             // mutation, emit a structured outcome with the reason
             // string + human-readable message, persist a 'skipped'
             // log row, and continue. The lastMutationID advances so
@@ -814,9 +890,10 @@ export class DjibbList extends DurableObject {
                 expectedMutationId === mutation.id &&
                 PREFLIGHTED_MUTATORS.has(mutation.name)
             ) {
-                const preflight = await this.runInvitationPreflight(
+                const preflight = await this.runMutationPreflight(
                     mutation,
-                    authorizedAccounts
+                    authorizedAccounts,
+                    authorizedRole
                 );
                 if (!preflight.ok) {
                     this.emitMutationOutcome(

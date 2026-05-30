@@ -855,6 +855,40 @@ export function renameWorkspaceEntity(
 }
 
 /**
+ * Bump the version + time_updated on a workspace entity row without
+ * changing any of its content fields. Used by `setWorkspaceSlug`
+ * (ADR 0011 §Step 7b.5) — the slug itself lives D1-side only, but
+ * the snapshot emit downstream of a successful claim still needs a
+ * version bump so the projection writer's `excluded.version >= …`
+ * guard lets the row update through (refreshing time_updated, etc).
+ *
+ * Type-narrowed to `workspace` rows so a misrouted call against a
+ * list/template id surfaces as `NotFoundError`. Returns nothing on
+ * success.
+ */
+export function bumpWorkspaceVersion(
+    sql: SqlStorage,
+    { workspaceId, version }: { workspaceId: string; version: number },
+): void {
+    const cursor = sql.exec(
+        `UPDATE list_elements
+        SET
+            version = ?,
+            time_updated = CURRENT_TIMESTAMP
+        WHERE id = ?
+            AND type = 'workspace'
+            AND time_deleted IS NULL;`,
+        version,
+        workspaceId,
+    );
+    if (cursor.rowsWritten !== 1) {
+        throw new NotFoundError(
+            `\`bumpWorkspaceVersion()\` workspace "${workspaceId}" not found (rowsWritten=${cursor.rowsWritten})`,
+        );
+    }
+}
+
+/**
  * Update an entity row's description. Used by `setDescription`. An
  * empty string clears the description (the column defaults to ""; we
  * don't distinguish unset from empty).
