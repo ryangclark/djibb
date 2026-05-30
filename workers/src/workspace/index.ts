@@ -41,11 +41,10 @@ export type WorkspaceMember = z.TypeOf<typeof WorkspaceMemberSchema>;
 
 export const WorkspaceSchema = z.object({
     id: z.string().min(3),
-    // ADR 0011 §7b.2: slugs are postponed (decision held with user). The
-    // entity-projection path synthesizes a stable id-derived token here
-    // so existing slug-keyed reads keep returning something. The strict
-    // `SLUG_PATTERN` check still gates user-supplied slugs at the HTTP
-    // boundary via `CreateWorkspaceRequestSchema`/`assertSlugFormat`.
+    // ADR 0011 §7b.5: slug is a real column on `workspace_entities`,
+    // defaulting to the id suffix at create time and rename-able through
+    // `setWorkspaceSlug` (in-DO preflight arbitrates uniqueness against
+    // the D1 `UNIQUE(type, slug)` index). See `workers/src/list/slug.ts`.
     slug: z.string().min(1),
     // Free text including emoji. Personal workspaces may have NULL.
     name: z.string().trim().min(1).nullable(),

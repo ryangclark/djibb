@@ -13,6 +13,7 @@ import migration0009 from '../../migrations/0009_workspace_roles_to_authorizatio
 import migration0010 from '../../migrations/0010_workspace_entity_meta.sql?raw';
 import migration0011 from '../../migrations/0011_entity_memberships.sql?raw';
 import migration0012 from '../../migrations/0012_entity_slug.sql?raw';
+import migration0013 from '../../migrations/0013_drop_legacy_workspace_tables.sql?raw';
 
 const ALL_MIGRATIONS = [
     migration0001,
@@ -27,6 +28,7 @@ const ALL_MIGRATIONS = [
     migration0010,
     migration0011,
     migration0012,
+    migration0013,
 ];
 
 function splitStatements(sql: string): string[] {
@@ -90,6 +92,16 @@ export async function withMissingEntitiesTable<T>(
         for (const stmt of splitStatements(migration0012)) {
             await env.DJIBB_AUTH.exec(stmt.replace(/\n/g, ' '));
         }
+        // 0013 rebuilds workspace_entities to strip the legacy FK to
+        // `workspaces` (table is gone) and drops the three legacy
+        // workspace tables. Without replaying it here, the recreated
+        // table from 0004 carries the dangling FK and every subsequent
+        // write trips "no such table: workspaces". The IF EXISTS guards
+        // inside 0013 make the legacy-table drops a no-op when they're
+        // already gone (the common case for this helper).
+        for (const stmt of splitStatements(migration0013)) {
+            await env.DJIBB_AUTH.exec(stmt.replace(/\n/g, ' '));
+        }
     }
 }
 
@@ -98,9 +110,6 @@ export async function resetWorkspaceData(): Promise<void> {
     await env.DJIBB_AUTH.batch([
         env.DJIBB_AUTH.prepare('DELETE FROM workspace_entities'),
         env.DJIBB_AUTH.prepare('DELETE FROM entity_memberships'),
-        env.DJIBB_AUTH.prepare('DELETE FROM AccountWorkspace'),
-        env.DJIBB_AUTH.prepare('DELETE FROM workspace_invitations'),
-        env.DJIBB_AUTH.prepare('DELETE FROM workspaces'),
         env.DJIBB_AUTH.prepare('DELETE FROM AccountSession'),
         env.DJIBB_AUTH.prepare('DELETE FROM sessions'),
         env.DJIBB_AUTH.prepare('DELETE FROM AccountList'),

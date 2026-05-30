@@ -123,9 +123,9 @@ export const WorkspaceEntitySchema = z.object({
 /**
  * A Workspace as a DjibbList-substrate entity (ADR 0011). Identical
  * machinery to List/Template — only the `type` discriminator and ID
- * prefix differ. The legacy `workers/src/workspace/index.ts`
- * `WorkspaceSchema` (D1 `workspaces` table row) is what this replaces
- * once the membership/auth migration in steps 7–8 lands.
+ * prefix differ. The legacy `workspaces` D1 table that previously
+ * carried this row was dropped in §7b.6; the entity row in
+ * `workspace_entities` is now the sole D1 projection.
  */
 export type WorkspaceEntity = z.TypeOf<typeof WorkspaceEntitySchema>;
 

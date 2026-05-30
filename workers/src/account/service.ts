@@ -68,9 +68,9 @@ export async function CreateAccount(env: CreateAccountEnv, account: Account) {
 
     // ADR 0011 §Step 7b.1: the personal workspace lives entirely in
     // the DjibbList DO + `workspace_entities` / `entity_memberships`
-    // projection. The legacy dual-write into `workspaces` +
-    // `AccountWorkspace` was removed; the DO mint is now the sole
-    // source of truth for the workspace, so its failure is fatal.
+    // projection. The legacy `workspaces` + `AccountWorkspace` tables
+    // were dropped in §7b.6; the DO mint is now the sole source of
+    // truth for the workspace, so its failure is fatal.
     //
     // The account row was already committed above. On mint failure
     // we leave the orphan in place rather than rolling back — the

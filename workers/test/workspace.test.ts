@@ -45,10 +45,10 @@ beforeEach(async () => {
 
 describe('CreateAccount auto-creates personal workspace', () => {
     it('creates a personal workspace entity with the actor as owner', async () => {
-        // ADR 0011 §7b.1: legacy `workspaces`/`AccountWorkspace`
-        // dual-write was removed; the personal workspace lives entirely
-        // as a DjibbList entity DO + projection rows. Membership reads
-        // now come from `entity_memberships`.
+        // ADR 0011 §7b.1: the personal workspace lives entirely as a
+        // DjibbList entity DO + projection rows (the `workspaces` /
+        // `AccountWorkspace` tables it used to occupy were dropped in
+        // §7b.6). Membership reads come from `entity_memberships`.
         const account = await CreateAccount(env,
             makeAccount({ display_name: 'Ada Lovelace', user_name: 'ada' })
         );

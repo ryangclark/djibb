@@ -35,9 +35,9 @@ function personalNameForAccount(account: Account): string | null {
 
 /**
  * ADR 0011 §Step 7b.1: mint the personal workspace as a DjibbList entity
- * DO with `slot: 'personal_workspace'`. The DO is now the sole source
- * of truth — the legacy `workspaces` + `AccountWorkspace` dual-write
- * was removed in 7b.1, so this call is fatal-on-failure from
+ * DO with `slot: 'personal_workspace'`. The DO is the sole source of
+ * truth for the workspace (the legacy `workspaces` + `AccountWorkspace`
+ * tables were dropped in §7b.6), so this call is fatal-on-failure from
  * `CreateAccount`'s perspective.
  *
  * Synthesizes a Replicache push containing one `createWorkspace`
@@ -50,9 +50,9 @@ function personalNameForAccount(account: Account): string | null {
  * yet at mint time, so the resolver's default applies; createWorkspace
  * is gated on `EDIT_ROLES` which includes ownerless.
  *
- * Slugs are postponed (see workspace/index.ts SLUG_PATTERN comment):
- * the entity is created with no slug; URL access goes via the id-suffix
- * route until slug support returns on the entity row.
+ * Slug is the id suffix at mint (the `defaultSlugForId` default written
+ * by `createWorkspace`); owners can rename it later via `setWorkspaceSlug`
+ * — see ADR 0011 §Step 7b.5.
  *
  * Returns the synthesized `workspaceId` so the caller can wire up
  * defaults (active-account, session.lastWorkspaceId, etc.) without
@@ -149,8 +149,9 @@ export async function GetWorkspacesByAccountId(
     accountId: string
 ): Promise<WorkspaceWithMembership[]> {
     // ADR 0011 §Step 7b.2: read from the entity-resident membership
-    // projection (`entity_memberships`) joined with `workspace_entities`
-    // instead of the legacy `workspaces` + `AccountWorkspace` tables.
+    // projection (`entity_memberships`) joined with `workspace_entities`.
+    // The legacy `workspaces` + `AccountWorkspace` tables this query
+    // replaced were dropped in §7b.6.
     const result = await d1
         .prepare(
             `SELECT

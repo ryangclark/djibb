@@ -13,9 +13,8 @@ export type CatalogEntity = {
  * lists/templates picker, which surfaces *contents* of a workspace,
  * not the workspaces themselves. The workspace switcher (ADR 0011
  * §Step 9) will get its own endpoint that lists workspace entities
- * the account is a member of. ADR 0011 §Step 6 introduced workspace
- * entities into this table via personal-workspace dual-write; this
- * filter is what keeps that out of the picker.
+ * the account is a member of; the type filter here keeps those out
+ * of the picker.
  *
  * Uses `json_each` to match the account by key rather than interpolating
  * the ID into the JSON path expression — account IDs contain `/`, which
