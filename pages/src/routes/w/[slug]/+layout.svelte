@@ -40,6 +40,15 @@
 	/** @type {any} */
 	let mutate = $state.raw();
 
+	// ADR 0011 §Step 7b.5: surface mutation_outcome frames to child
+	// pages via context. Settings reads this to render slug-claim
+	// failures (slug_taken / slug_reserved / slug_invalid /
+	// unauthorized_role) — the only flow on this layout that needs
+	// structured server-side error feedback. Reset to null when
+	// consumed so a settings-page re-attempt doesn't see stale state.
+	/** @type {null | {mutationID: number, status: string, reason?: string, message?: string}} */
+	let lastOutcome = $state(null);
+
 	$effect(() => {
 		if (!session.hasLoaded || !workspaceId) return;
 
@@ -56,6 +65,14 @@
 			const msg = decodeWSMessage(event.data);
 			if (!msg) return;
 			if (msg.type === 'poke') rep.client.pull();
+			else if (msg.type === 'mutation_outcome') {
+				lastOutcome = {
+					mutationID: msg.mutationID,
+					status: msg.status,
+					reason: msg.reason,
+					message: msg.message
+				};
+			}
 		});
 
 		return () => {
@@ -84,6 +101,12 @@
 			// authorization_rules; this is what surfaces session-level
 			// projections like `membership.role` for header/nav UI.
 			return current ?? null;
+		},
+		get lastOutcome() {
+			return lastOutcome;
+		},
+		clearOutcome() {
+			lastOutcome = null;
 		}
 	});
 </script>

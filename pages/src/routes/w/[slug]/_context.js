@@ -10,5 +10,10 @@
  *   workspaceId      — current entity id, e.g. "w/abc..."
  *   sessionWorkspace — {workspace, membership} projection from session
  *                       (slug, is_personal, projected role)
+ *   lastOutcome      — most-recent `mutation_outcome` WS frame
+ *                       ({mutationID, status, reason?, message?}) or null.
+ *                       Settings reads this to surface slug-claim
+ *                       failures (slug_taken, slug_reserved, etc.) per
+ *                       ADR 0011 §Step 7b.5; nulled out when consumed.
  */
 export const WORKSPACE_REPLICACHE_KEY = Symbol('workspaceReplicache');
