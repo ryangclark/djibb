@@ -14,6 +14,7 @@ import migration0010 from '../../migrations/0010_workspace_entity_meta.sql?raw';
 import migration0011 from '../../migrations/0011_entity_memberships.sql?raw';
 import migration0012 from '../../migrations/0012_entity_slug.sql?raw';
 import migration0013 from '../../migrations/0013_drop_legacy_workspace_tables.sql?raw';
+import migration0014 from '../../migrations/0014_entity_cascade_source.sql?raw';
 
 const ALL_MIGRATIONS = [
     migration0001,
@@ -29,6 +30,7 @@ const ALL_MIGRATIONS = [
     migration0011,
     migration0012,
     migration0013,
+    migration0014,
 ];
 
 function splitStatements(sql: string): string[] {
@@ -100,6 +102,14 @@ export async function withMissingEntitiesTable<T>(
         // inside 0013 make the legacy-table drops a no-op when they're
         // already gone (the common case for this helper).
         for (const stmt of splitStatements(migration0013)) {
+            await env.DJIBB_AUTH.exec(stmt.replace(/\n/g, ' '));
+        }
+        // 0014 adds the `cascade_source` column + partial index.
+        // EmitEntitySnapshotToCatalog binds this column on every emit
+        // (defaulting NULL for non-cascade mutations), so the recreated
+        // table needs it before any test can run a push that triggers
+        // a snapshot emit.
+        for (const stmt of splitStatements(migration0014)) {
             await env.DJIBB_AUTH.exec(stmt.replace(/\n/g, ' '));
         }
     }

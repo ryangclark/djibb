@@ -30,6 +30,14 @@ export const EntityRowSchema = z.object({
      */
     slug: z.string(),
     slot: SlotEnum.nullable(),
+    /**
+     * The workspace whose `softDeleteWorkspace` cascade-archived this
+     * entity (ADR 0008, ADR 0011 §Step 10a). NULL on every entity that
+     * hasn't been cascade-archived — which is every entity at rest. Set
+     * by cascade-archive mutations; cleared by `restoreWorkspace` via
+     * direct catalog UPDATE.
+     */
+    cascade_source: z.string().nullable(),
     authorization_rules: AuthorizationRulesSchema,
     time_created: z.number(),
     time_updated: z.number(),
@@ -58,6 +66,7 @@ function parseRow(row: any): EntityRow {
         meta,
         slug: row.slug,
         slot: row.slot ?? null,
+        cascade_source: row.cascade_source ?? null,
         authorization_rules: rules,
         time_created: row.time_created,
         time_updated: row.time_updated,
@@ -99,8 +108,8 @@ export async function GetEntity(
     const row = await d1
         .prepare(
             `SELECT id, workspace_id, type, name, description, forked_from_id,
-                    meta, slug, slot, authorization_rules, time_created,
-                    time_updated, time_deleted, version
+                    meta, slug, slot, cascade_source, authorization_rules,
+                    time_created, time_updated, time_deleted, version
              FROM workspace_entities WHERE id = ? LIMIT 1`,
         )
         .bind(id)
@@ -126,6 +135,16 @@ export type EntitySnapshot = {
      */
     slug?: string;
     slot: Slot | null;
+    /**
+     * Optional on the DO-side snapshot (ADR 0011 §Step 10a / ADR 0008).
+     * Only cascade-archive mutations carry a value; ordinary mutators
+     * omit it. When absent, INSERT writes NULL and ON CONFLICT UPDATE
+     * COALESCEs to the existing value — so non-cascade emits never
+     * clobber a previously-set cascade_source. Clearing is done by
+     * `restoreWorkspace` via direct catalog UPDATE, not through the
+     * snapshot path.
+     */
+    cascade_source?: string | null;
     authorization_rules: AuthorizationRules;
     time_created: number;
     time_updated: number;
@@ -263,13 +282,26 @@ export async function EmitEntitySnapshotToCatalog(
     // emit. This keeps a stale emit (e.g. alarm-driven reconciliation)
     // from clobbering a freshly-claimed slug.
     const slug = snapshot.slug ?? defaultSlugForId(snapshot.id);
+    // ADR 0011 §Step 10a.1 / ADR 0008: cascade_source rides through here
+    // because cascade-archive mutations set it on the child entity row
+    // and re-emit the snapshot. Non-cascade emits leave it undefined →
+    // bound as null. ON CONFLICT UPDATE uses COALESCE to preserve a
+    // previously-set cascade_source against a stale reconcile emit that
+    // happens to fire between the cascade mutation and a future
+    // unrelated mutation — same hazard the slug column dodged by being
+    // excluded from UPDATE entirely. The shapes differ because
+    // cascade_source DOES need to flow back through future emits (the
+    // child DO persists it locally), but a null incoming value should
+    // not be treated as "clear this." `restoreWorkspace` clears via
+    // direct catalog UPDATE, not through snapshot emit.
+    const cascadeSource = snapshot.cascade_source ?? null;
     await d1
         .prepare(
             `INSERT INTO workspace_entities (
                 id, workspace_id, type, name, description, forked_from_id,
-                meta, slug, slot, authorization_rules, time_created,
-                time_updated, time_deleted, version
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                meta, slug, slot, cascade_source, authorization_rules,
+                time_created, time_updated, time_deleted, version
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
                 name = excluded.name,
@@ -277,6 +309,10 @@ export async function EmitEntitySnapshotToCatalog(
                 forked_from_id = excluded.forked_from_id,
                 meta = excluded.meta,
                 slot = excluded.slot,
+                cascade_source = COALESCE(
+                    excluded.cascade_source,
+                    workspace_entities.cascade_source
+                ),
                 authorization_rules = excluded.authorization_rules,
                 time_updated = excluded.time_updated,
                 time_deleted = excluded.time_deleted,
@@ -293,6 +329,7 @@ export async function EmitEntitySnapshotToCatalog(
             snapshot.meta ? JSON.stringify(snapshot.meta) : null,
             slug,
             snapshot.slot,
+            cascadeSource,
             JSON.stringify(snapshot.authorization_rules),
             snapshot.time_created,
             snapshot.time_updated,
