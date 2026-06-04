@@ -324,6 +324,21 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
             console.log('/push throw unauth — bad role!');
             throw new UnauthorizedError();
         }
+        // ADR 0011 §Step 10a.3: `'system'` is structurally unreachable
+        // from any session-driven resolver path today (it's excluded
+        // from `AccountRoleEnum`, `DefaultRoleEnum`, and the explicit-
+        // grant schema), so this branch should be dead. Kept as a
+        // belt-and-suspenders gate: if a future resolver change ever
+        // produced `'system'` from session state, the HTTP boundary
+        // would refuse to forward it, preserving the invariant that
+        // cascade and other system-only mutations can only originate
+        // from DO-stub-to-DO-stub RPC.
+        if (requestRole === 'system') {
+            console.error(
+                '/push refused: resolver produced `system` role from HTTP path'
+            );
+            throw new UnauthorizedError();
+        }
 
         const listId = c.get('list').name ?? c.get('entity_id');
         if (!listId) throw new UnexpectedError('invalid listId');

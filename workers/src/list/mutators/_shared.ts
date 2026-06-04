@@ -37,6 +37,24 @@ export const OWNER_ROLES: readonly AuthorizationRole[] = [
 ] as const;
 
 /**
+ * Roles permitted to invoke a system-only mutation — i.e. one driven
+ * by another DO inside the cluster rather than by a human session.
+ * The only member is `'system'` (ADR 0011 §Step 10a.3 / ADR 0008).
+ *
+ * The cascade-archive / cascade-restore mutators that land in 10a.4
+ * and 10a.5 declare `requiredRole: SYSTEM_ROLES`. Because `'system'`
+ * is structurally unreachable from any HTTP-session resolution path
+ * (it's not in `AccountRoleEnum`, `DefaultRoleEnum`, or the explicit
+ * `authorized_accounts` grant schema), gating on it means the
+ * mutator can only fire when the caller of `handlePush` explicitly
+ * passed `authorizedRole: 'system'` — which only DO-stub-to-DO-stub
+ * RPC can do. Even a workspace owner cannot forge a cascade.
+ */
+export const SYSTEM_ROLES: readonly AuthorizationRole[] = [
+    AuthorizationRoleEnum.enum.system,
+] as const;
+
+/**
  * Wire-level envelope fields carried alongside every mutation's body
  * args. Replicache forces our metadata into `args`, so on the wire
  * `accountId` and `timestamp_client` ride inside `args`. Dispatch

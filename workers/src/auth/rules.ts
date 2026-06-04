@@ -12,6 +12,19 @@ export const AuthorizationRoleEnum = z.enum([
     'ownerless',
     'restricted',
     'viewer',
+    // ADR 0011 §Step 10a.3 / ADR 0008: identity for mutations
+    // originated by another DO inside the cluster (cascade-archive,
+    // cascade-restore). Deliberately omitted from `AccountRoleEnum`
+    // and `DefaultRoleEnum` so a session lookup, an explicit
+    // `authorized_accounts` grant, or a default-role fall-through
+    // can never produce it — `'system'` is structurally only
+    // reachable from a direct DO-stub call that passes
+    // `authorizedRole: 'system'`. Cascade mutators gate on
+    // `SYSTEM_ROLES` (`workers/src/list/mutators/_shared.ts`); the
+    // HTTP boundary additionally rejects this value defensively in
+    // `workers/src/list/fetch.ts` even though no current resolver
+    // path can produce it.
+    'system',
 ]);
 
 export type AuthorizationRole = z.infer<typeof AuthorizationRoleEnum>;

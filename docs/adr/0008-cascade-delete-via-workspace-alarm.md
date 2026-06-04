@@ -83,12 +83,12 @@ No cap on workspace size. A 500-List workspace takes a minute or so
 to fully cascade in the background; the user's click returns
 instantly regardless.
 
-### Cascade-archive invocation: synthetic-client push, system-flagged
+### Cascade-archive invocation: synthetic-client push at the `system` role
 
 The Workspace DO invokes cascade-archives by calling each target
-DO's existing `_handlePush` entry point with `system: true`. The
-push payload uses the standard Replicache mutation envelope. The
-clientID is synthetic and encodes the deletion epoch:
+DO's existing `handlePush` entry point with `authorizedRole:
+'system'`. The push payload uses the standard Replicache mutation
+envelope. The clientID is synthetic and encodes the deletion epoch:
 
     cascade:w/<id>:<deletionTimestampMs>
 
@@ -98,10 +98,17 @@ delete → restore → delete cycles never reuse a clientID and the
 Workspace DO doesn't have to persist mutationID counters across
 campaigns.
 
-The `system: true` flag bypasses the user-auth check in
-`_handlePush` (no `authorizedAccounts` required for system-
-originated mutations). External HTTP requests cannot set the flag
-— it's only reachable from DO-stub-to-DO-stub invocation.
+The `'system'` role (ADR 0011 §Step 10a.3) carries the auth
+semantics that earlier drafts of this ADR proposed as a side-
+channel `{system: true}` flag. There is no flag. `'system'` is a
+real `AuthorizationRole` value alongside `owner`, `admin`, etc.;
+cascade mutators gate on `requiredRole: SYSTEM_ROLES` and refuse
+any other caller. `'system'` is structurally unreachable from any
+HTTP-session resolution path (it is omitted from `AccountRoleEnum`,
+`DefaultRoleEnum`, and the explicit-grant schema), so only direct
+DO-stub-to-DO-stub calls can pass it. The HTTP boundary
+additionally refuses to forward a `'system'` role as a
+belt-and-suspenders gate (see `workers/src/list/fetch.ts`).
 
 The args carry `cascade_source: w/<id>`. The mutator persists this
 onto the child's entity row (and into the emitted catalog
