@@ -11,8 +11,14 @@ import {
 } from './helpers/d1';
 
 // ADR 0007: D1 reconciliation sweeper via DO alarms. Verifies the
-// per-DO alarm() handler (skip-when-matched, emit-on-drift) and the
-// bootstrap that schedules the first alarm on push.
+// per-DO `handleReconcile()` handler (skip-when-matched, emit-on-
+// drift) and the bootstrap that schedules the first alarm on push.
+//
+// ADR 0011 §Step 10a.2: `alarm()` is now a multi-event dispatcher
+// that routes due events to handlers. Reconcile-handler tests call
+// `handleReconcile()` directly so they exercise the handler without
+// having to satisfy the dispatcher's "is this event past-due?"
+// filter; dispatcher-level routing has its own describe block.
 
 function getListStub(suffix: string) {
     const prefixed = `${IdTypes.list}/${suffix.padEnd(21, 'a').slice(0, 21)}`;
@@ -202,7 +208,7 @@ describe('reconciliation alarm handler', () => {
         await new Promise(r => setTimeout(r, 1100));
 
         const beforeAlarm = Date.now();
-        await runInDurableObject(stub, (instance, _state) => instance.alarm());
+        await runInDurableObject(stub, (instance, _state) => instance.handleReconcile());
         const afterAlarm = Date.now();
 
         const after = await env.DJIBB_AUTH.prepare(
@@ -248,7 +254,7 @@ describe('reconciliation alarm handler', () => {
             .run();
         expect(await readD1Version(listId)).toBeNull();
 
-        await runInDurableObject(stub, (instance, _state) => instance.alarm());
+        await runInDurableObject(stub, (instance, _state) => instance.handleReconcile());
 
         const { version: doVersion } = await readDoVersion(stub, listId);
         expect(await readD1Version(listId)).toBe(doVersion);
@@ -278,7 +284,7 @@ describe('reconciliation alarm handler', () => {
         expect(await readD1Version(listId)).toBe(0);
         expect(await readD1Name(listId)).toBe('stale-name');
 
-        await runInDurableObject(stub, (instance, _state) => instance.alarm());
+        await runInDurableObject(stub, (instance, _state) => instance.handleReconcile());
 
         const { version: doVersion } = await readDoVersion(stub, listId);
         expect(await readD1Version(listId)).toBe(doVersion);
@@ -314,7 +320,7 @@ describe('reconciliation alarm handler', () => {
 
         await withMissingEntitiesTable(async () => {
             await runInDurableObject(stub, (instance, _state) =>
-                instance.alarm(),
+                instance.handleReconcile(),
             );
         });
 
@@ -361,11 +367,120 @@ describe('reconciliation alarm handler', () => {
             state.storage.put(DjibbList.RECONCILE_RETRY_KEY, 999_999),
         );
 
-        await runInDurableObject(stub, (instance, _state) => instance.alarm());
+        await runInDurableObject(stub, (instance, _state) => instance.handleReconcile());
 
         const stillThere = await runInDurableObject(stub, (_i, state) =>
             state.storage.get<number>(DjibbList.RECONCILE_RETRY_KEY),
         );
         expect(stillThere).toBeUndefined();
+    });
+});
+
+// ADR 0011 §Step 10a.2: multi-event alarm dispatcher. Routes any
+// `alarm:<name>:at` storage key whose due time has passed to its
+// handler, then leaves the alarm armed at the next earliest pending
+// event. The "no pending events" branch falls back to running
+// reconcile so a DO scheduled before the dispatcher refactor still
+// gets reconcile coverage on its first post-deploy fire.
+describe('alarm dispatcher (multi-event)', () => {
+    it('fires reconcile when its event is past-due', async () => {
+        const { listId, stub } = getListStub('disp1');
+        await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'ownerless',
+            listId,
+            pushRequest: makeInitListPush({
+                clientGroupID: 'cg_disp_1',
+                clientID: 'c_disp_1',
+                listId,
+            }),
+        });
+
+        // Force the reconcile event into the past so the dispatcher
+        // fires it. Drift the catalog so the handler actually emits
+        // (gives us a side effect to assert on).
+        await env.DJIBB_AUTH.prepare(
+            'UPDATE workspace_entities SET version = 0 WHERE id = ?',
+        )
+            .bind(listId)
+            .run();
+        await runInDurableObject(stub, (_i, state) =>
+            state.storage.put('alarm:reconcile:at', Date.now() - 1),
+        );
+
+        await runInDurableObject(stub, (instance, _state) => instance.alarm());
+
+        const { version: doVersion } = await readDoVersion(stub, listId);
+        expect(await readD1Version(listId)).toBe(doVersion);
+    });
+
+    it('skips events whose due time has not yet arrived', async () => {
+        const { listId, stub } = getListStub('disp2');
+        await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'ownerless',
+            listId,
+            pushRequest: makeInitListPush({
+                clientGroupID: 'cg_disp_2',
+                clientID: 'c_disp_2',
+                listId,
+            }),
+        });
+
+        // Drift the catalog so reconcile WOULD emit if it ran.
+        await env.DJIBB_AUTH.prepare(
+            'UPDATE workspace_entities SET version = 0 WHERE id = ?',
+        )
+            .bind(listId)
+            .run();
+        const before = await readD1Version(listId);
+        expect(before).toBe(0);
+
+        // ensureReconcileAlarm scheduled at +24h, comfortably future.
+        await runInDurableObject(stub, (instance, _state) => instance.alarm());
+
+        // Reconcile did not run — D1 still stale.
+        expect(await readD1Version(listId)).toBe(0);
+    });
+
+    it('legacy-fire fallback (no pending events) runs reconcile', async () => {
+        // Simulates a pre-refactor DO: a Cloudflare alarm is set but
+        // no `alarm:*:at` storage keys exist. Dispatcher's
+        // empty-pending branch should treat the fire as reconcile so
+        // ADR 0007 coverage is not lost at deploy time.
+        const { listId, stub } = getListStub('disp3');
+        await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'ownerless',
+            listId,
+            pushRequest: makeInitListPush({
+                clientGroupID: 'cg_disp_3',
+                clientID: 'c_disp_3',
+                listId,
+            }),
+        });
+
+        // Strip the reconcile event key so the dispatcher sees an
+        // empty pending list — mirrors the pre-refactor state.
+        await runInDurableObject(stub, (_i, state) =>
+            state.storage.delete('alarm:reconcile:at'),
+        );
+        await env.DJIBB_AUTH.prepare(
+            'UPDATE workspace_entities SET version = 0 WHERE id = ?',
+        )
+            .bind(listId)
+            .run();
+
+        await runInDurableObject(stub, (instance, _state) => instance.alarm());
+
+        const { version: doVersion } = await readDoVersion(stub, listId);
+        expect(await readD1Version(listId)).toBe(doVersion);
+
+        // Reconcile re-scheduled itself, so the dispatcher is back
+        // into normal state.
+        const armed = await runInDurableObject(stub, (_i, state) =>
+            state.storage.get<number>('alarm:reconcile:at'),
+        );
+        expect(armed).toBeGreaterThan(Date.now());
     });
 });

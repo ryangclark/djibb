@@ -185,6 +185,27 @@ function acceptReasonToOutcomeStatus(
 }
 
 /**
+ * Multi-event alarm dispatcher event names (ADR 0011 §Step 10a.2 /
+ * ADR 0008). One per kind of scheduled work the DO does:
+ *
+ *   - reconcile        : ADR 0007 D1 drift check (every DO, every day)
+ *   - cascade-archive  : Workspace DO sweeps children on
+ *                        `softDeleteWorkspace` (10a.4)
+ *   - cascade-restore  : Workspace DO sweeps children on
+ *                        `restoreWorkspace` (10a.5)
+ *   - harddelete       : per-DO self-destruct 30d after soft delete
+ *                        (10a.6 / 10b)
+ *
+ * Adding a new event: extend this union, register a case in
+ * `runAlarmEvent`, schedule via `scheduleEvent(name, dueAt)`.
+ */
+export type AlarmEventName =
+    | 'reconcile'
+    | 'cascade-archive'
+    | 'cascade-restore'
+    | 'harddelete';
+
+/**
  * TODO:
  * [] update to SQL - Look for `this.ctx.storage.get` and similar method calls.
  * [] top-level handlers should not throw
@@ -1595,32 +1616,176 @@ export class DjibbList extends DurableObject {
      *  failed alarm-driven emit. Absent ⇒ last run succeeded. */
     static readonly RECONCILE_RETRY_KEY = 'reconcile:nextRetryMs';
 
+    // ADR 0011 §Step 10a.2 / ADR 0008 §"Hard-delete: per-DO
+    // self-destruct via the alarm dispatcher": multi-event alarm
+    // dispatcher. The DO has one Cloudflare alarm slot; the dispatcher
+    // tracks any number of independent timed events via prefixed
+    // storage keys and arms the slot to fire at the earliest pending
+    // due time.
+    //
+    // Event identity → handler is wired in `runAlarmEvent` below. The
+    // events that exist today / will exist:
+    //   - reconcile        (ADR 0007; here from day one)
+    //   - cascade-archive  (ADR 0008, lands in 10a.4 on the Workspace DO)
+    //   - cascade-restore  (ADR 0008, lands in 10a.5)
+    //   - harddelete       (ADR 0008, lands in 10a.6/10b on every DO)
+    //
+    // Storage shape: `alarm:<name>:at` → number (ms epoch). Reconcile-
+    // specific retry-state (`RECONCILE_RETRY_KEY`) is handler-internal
+    // and lives outside the `alarm:` prefix.
+    static readonly ALARM_EVENT_KEY_PREFIX = 'alarm:';
+
+    private alarmEventKey(name: AlarmEventName): string {
+        return `${DjibbList.ALARM_EVENT_KEY_PREFIX}${name}:at`;
+    }
+
+    /**
+     * Schedule (or reschedule) an event for `dueAt` ms epoch. Idempotent
+     * across re-arming — overwrites any prior due time for the same
+     * event. Re-arms the Cloudflare alarm to the earliest pending event
+     * after the write.
+     */
+    private async scheduleEvent(
+        name: AlarmEventName,
+        dueAt: number
+    ): Promise<void> {
+        await this.ctx.storage.put(this.alarmEventKey(name), dueAt);
+        await this.rearmAlarm();
+    }
+
+    /**
+     * Cancel a pending event. Re-arms the Cloudflare alarm to the next
+     * earliest remaining event (or clears it entirely if none remain).
+     */
+    private async cancelEvent(name: AlarmEventName): Promise<void> {
+        await this.ctx.storage.delete(this.alarmEventKey(name));
+        await this.rearmAlarm();
+    }
+
+    /**
+     * Read every pending event → due-time. Returns an empty Map when
+     * nothing is scheduled (the legacy-fire fallback case in `alarm()`
+     * relies on this).
+     */
+    private async readPendingAlarmEvents(): Promise<
+        Map<AlarmEventName, number>
+    > {
+        const entries = await this.ctx.storage.list({
+            prefix: DjibbList.ALARM_EVENT_KEY_PREFIX,
+        });
+        const result = new Map<AlarmEventName, number>();
+        for (const [key, dueAt] of entries) {
+            const match = key.match(/^alarm:(.+):at$/);
+            if (!match || typeof dueAt !== 'number') continue;
+            result.set(match[1] as AlarmEventName, dueAt);
+        }
+        return result;
+    }
+
+    /**
+     * Set the Cloudflare alarm to the earliest pending event's due
+     * time. If nothing is pending, clear the alarm. The dispatcher
+     * calls this after every event-list mutation; handlers usually
+     * don't need to call it directly (they `scheduleEvent` or
+     * `cancelEvent`, which call this internally).
+     */
+    private async rearmAlarm(): Promise<void> {
+        const pending = await this.readPendingAlarmEvents();
+        if (pending.size === 0) {
+            await this.ctx.storage.deleteAlarm();
+            return;
+        }
+        const earliest = Math.min(...pending.values());
+        await this.ctx.storage.setAlarm(earliest);
+    }
+
     /**
      * Schedule the first reconciliation alarm if one isn't already
-     * set. Called at the tail of every successful push so a freshly-
-     * created DO picks up the schedule on its first interaction; a
-     * pre-existing DO that came up before ADR 0007 also picks it up
-     * on its next push. Idempotent — `getAlarm()` returns the
-     * scheduled time, not a count, so we only set when there's no
-     * pending alarm.
+     * scheduled. Called at the tail of every successful push so a
+     * freshly-created DO picks up the schedule on its first
+     * interaction; a pre-existing DO that came up before ADR 0007
+     * also picks it up on its next push. Idempotent — checks the
+     * reconcile event key, not the bare Cloudflare alarm, so the
+     * presence of an unrelated event (cascade-archive, harddelete)
+     * does not suppress reconcile scheduling.
      */
     private async ensureReconcileAlarm(): Promise<void> {
-        const existing = await this.ctx.storage.getAlarm();
-        if (existing !== null) return;
-        await this.ctx.storage.setAlarm(
+        const existing = await this.ctx.storage.get<number>(
+            this.alarmEventKey('reconcile')
+        );
+        if (existing !== undefined) return;
+        await this.scheduleEvent(
+            'reconcile',
             Date.now() + DjibbList.RECONCILE_HEALTHY_MS
         );
     }
 
     /**
-     * Reconciliation handler invoked by Cloudflare on the scheduled
-     * alarm. Per ADR 0007:
+     * Alarm dispatcher (ADR 0011 §Step 10a.2 / ADR 0008). Cloudflare
+     * fires this on the single per-DO alarm slot; we route to whatever
+     * events are due, then re-arm to the next earliest.
+     *
+     * Legacy-fire fallback: a pre-existing DO whose alarm was scheduled
+     * before this refactor has a Cloudflare alarm but no `alarm:*:at`
+     * storage keys. We treat that empty-state fire as a reconcile so
+     * reconcile coverage is preserved at deploy time. `handleReconcile`
+     * writes its next-fire key, so subsequent fires go through the
+     * normal dispatcher path.
+     *
+     * Handlers are responsible for re-scheduling themselves (or
+     * canceling, in the terminal case). The dispatcher does not
+     * re-arm a handler after firing it — calling `scheduleEvent` /
+     * `cancelEvent` inside the handler does that.
+     */
+    async alarm(): Promise<void> {
+        const now = Date.now();
+        const pending = await this.readPendingAlarmEvents();
+
+        if (pending.size === 0) {
+            console.warn(
+                '`alarm()` legacy fire (no pending events); running reconcile'
+            );
+            await this.handleReconcile();
+            return;
+        }
+
+        for (const [name, dueAt] of pending) {
+            if (dueAt > now) continue;
+            await this.runAlarmEvent(name);
+        }
+    }
+
+    /**
+     * Route a single due event to its handler. Stubs for cascade-archive
+     * / cascade-restore / harddelete cancel-and-warn for now; the real
+     * handlers arrive in 10a.4 / 10a.5 / 10a.6. Cancellation prevents a
+     * misconfigured DO from getting stuck firing an unimplemented event.
+     */
+    private async runAlarmEvent(name: AlarmEventName): Promise<void> {
+        switch (name) {
+            case 'reconcile':
+                await this.handleReconcile();
+                return;
+            case 'cascade-archive':
+            case 'cascade-restore':
+            case 'harddelete':
+                console.warn(
+                    `\`alarm()\` event "${name}" has no handler yet; canceling`
+                );
+                await this.cancelEvent(name);
+                return;
+        }
+    }
+
+    /**
+     * Reconciliation handler. Per ADR 0007:
      *
      *   1. Look up this DO's entity ID. If there isn't one, the DO
      *      was scheduled before it owned an entity (shouldn't
-     *      happen, but defensive); skip and re-arm.
-     *   2. Read D1's current version. If it matches the DO's,
-     *      nothing to do — re-arm at the healthy cadence.
+     *      happen, but defensive); skip and re-arm at healthy.
+     *   2. Read D1's current version. If it matches the DO's (and
+     *      membership counts match too — §7), nothing to do —
+     *      re-arm at the healthy cadence.
      *   3. Otherwise (drift or missing row) call the same
      *      `emitEntitySnapshot()` the push path uses. The version-
      *      guarded upsert handles concurrent writers.
@@ -1628,16 +1793,31 @@ export class DjibbList extends DurableObject {
      *      On failure: re-arm at the retry interval (exp backoff
      *      capped at healthy) so a transient outage doesn't stick.
      *
-     * The alarm is the only writer of `RECONCILE_RETRY_KEY`. Push
+     * The handler is the only writer of `RECONCILE_RETRY_KEY`. Push
      * handlers don't touch retry state — a fresh successful push
      * implicitly proves D1 is reachable, but we wait until the next
      * alarm to observe that rather than racing it.
+     *
+     * Re-schedules itself via `scheduleEvent('reconcile', ...)` at
+     * the tail. Pre-refactor (10a.2) this method was the entire
+     * `alarm()`; it's now invoked by the dispatcher above.
+     *
+     * Not marked `private` so reconcile-specific tests can invoke it
+     * directly — testing `alarm()` itself would require scheduling
+     * reconcile at a past dueAt to satisfy the dispatcher's
+     * `if (dueAt > now) continue` filter, which conflates handler
+     * semantics with dispatcher semantics. Dispatcher-routing tests
+     * go through `alarm()`; reconcile-internal tests go through
+     * `handleReconcile()`.
      */
-    async alarm(): Promise<void> {
+    async handleReconcile(): Promise<void> {
         const entityId = getEntityId(this.sql);
         if (!entityId) {
-            console.warn('`alarm()` no entity row; re-arming at healthy');
-            await this.ctx.storage.setAlarm(
+            console.warn(
+                '`handleReconcile()` no entity row; re-arming at healthy'
+            );
+            await this.scheduleEvent(
+                'reconcile',
                 Date.now() + DjibbList.RECONCILE_HEALTHY_MS
             );
             return;
@@ -1681,11 +1861,11 @@ export class DjibbList extends DurableObject {
                 // skip path is the 99% case and what makes the
                 // alarm budget cheap. ADR 0007.
                 console.log(
-                    `\`alarm()\` no drift (v=${doVersion}); skipping emit`
+                    `\`handleReconcile()\` no drift (v=${doVersion}); skipping emit`
                 );
             } else {
                 console.log(
-                    `\`alarm()\` drift: do=${doVersion} d1=${d1Version}; emitting`
+                    `\`handleReconcile()\` drift: do=${doVersion} d1=${d1Version}; emitting`
                 );
                 await this.emitEntitySnapshot(entityId);
                 // emitEntitySnapshot throws on D1 failure; the throw
@@ -1697,7 +1877,7 @@ export class DjibbList extends DurableObject {
 
             await this.ctx.storage.delete(DjibbList.RECONCILE_RETRY_KEY);
         } catch (error) {
-            console.error('`alarm()` reconciliation threw:', error);
+            console.error('`handleReconcile()` threw:', error);
             // First failure: store the initial interval. Subsequent
             // consecutive failures: double the previous, capped at
             // the healthy cadence. Matches ADR 0007's "starting at
@@ -1715,7 +1895,7 @@ export class DjibbList extends DurableObject {
             );
         }
 
-        await this.ctx.storage.setAlarm(Date.now() + nextDelayMs);
+        await this.scheduleEvent('reconcile', Date.now() + nextDelayMs);
     }
 
     /**
