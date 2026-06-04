@@ -338,7 +338,12 @@ against `docs/workspaces.md` §Migration plan):
    the workspace DO's `authorized_accounts`. `account_authorizations`
    derived index (ADR 0009) becomes the read path.
 8. **Auth resolver rewrite.** `auth/rules.ts`'s workspace-grant
-   resolution reads `account_authorizations`, not `AccountWorkspace`.
+   resolution reads the entity-membership projection, not
+   `AccountWorkspace`. *(Shipped implicitly with §7b.2 — the projection
+   landed as `entity_memberships` rather than the originally-planned
+   `account_authorizations` name, and `GetMembership` was ported in
+   the same commit, so `auth/resolver.ts` switched data sources without
+   needing a follow-up. Audit confirmed in §7b.6 close-out.)*
 9. **Frontend.** Workspace switcher, `/w/:slug` home, settings,
    members.
 10. Cascade dispatcher (ADR 0008), Trash UI, "Start Fresh,"

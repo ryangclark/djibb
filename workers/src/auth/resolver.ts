@@ -18,6 +18,10 @@ export type Session = { account_id: string } | null;
  * `restricted` on a sensitive entity.
  *
  * Pure: no I/O. Callers fetch rules and workspace_role and pass them in.
+ * The canonical workspace_role lookup is `GetMembership` in
+ * `workers/src/workspace/service.ts`, which reads `entity_memberships`
+ * (the projection that landed in ADR 0011 §Step 7b.2 in place of the
+ * ADR's originally-named `account_authorizations`).
  */
 export function resolveRole(
     session: Session,
