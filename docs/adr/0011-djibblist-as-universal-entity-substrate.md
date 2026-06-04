@@ -345,7 +345,13 @@ against `docs/workspaces.md` §Migration plan):
    the same commit, so `auth/resolver.ts` switched data sources without
    needing a follow-up. Audit confirmed in §7b.6 close-out.)*
 9. **Frontend.** Workspace switcher, `/w/:slug` home, settings,
-   members.
+   members. *(Switcher / settings / members shipped in §7b.x; the
+   `/w/:slug` home is the workspace's Island view per ADR 0002 — a
+   multi-slice effort tracked separately, not closed by this ADR.
+   The page currently surfaces the role indicator with a forwarding
+   pointer to ADR 0002 so the surrounding chrome is usable without
+   implying a list-of-lists picker, which ADR 0002 explicitly
+   rejects as the primary view.)*
 10. Cascade dispatcher (ADR 0008), Trash UI, "Start Fresh,"
     invitations collapse onto ADR 0009 — all gated on steps 1–6
     landing first.
