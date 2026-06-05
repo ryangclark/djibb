@@ -654,6 +654,43 @@ export function unarchiveEntity(
 }
 
 /**
+ * Restore a soft-deleted workspace entity and demote its `slot` to
+ * NULL. Used by `unarchiveList` per ADR 0008 §"Restoring a previously-
+ * personal Workspace" / ADR 0011 §Step 10c — restoring a personal
+ * workspace from Trash promotes the other current personal workspace
+ * (minted by `startFresh`) and turns the restored one into an ordinary
+ * team workspace. The "at most one personal workspace per account"
+ * invariant is preserved automatically.
+ *
+ * Type-narrowed to `workspace` rows: misrouting against a list/template
+ * id throws `NotFoundError`. Same shape as `unarchiveEntity` otherwise
+ * (clears `time_deleted` + `cascade_source`, bumps version).
+ */
+export function unarchiveEntityAndClearSlot(
+    sql: SqlStorage,
+    { entityId, version }: { entityId: string; version: number }
+): void {
+    const cursor = sql.exec(
+        `UPDATE list_elements
+        SET
+            time_deleted = NULL,
+            cascade_source = NULL,
+            slot = NULL,
+            version = ?,
+            time_updated = CURRENT_TIMESTAMP
+        WHERE id = ?
+            AND type = 'workspace';`,
+        version,
+        entityId
+    );
+    if (cursor.rowsWritten !== 1) {
+        throw new NotFoundError(
+            `\`unarchiveEntityAndClearSlot()\` workspace "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+        );
+    }
+}
+
+/**
  * Soft-delete a single item row. Idempotent — re-archiving an
  * already-deleted row just refreshes `time_deleted` and bumps
  * `version`, mirroring `archiveEntity`'s policy. Missing rows are a

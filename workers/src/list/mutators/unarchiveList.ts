@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { ListSchema } from '..';
-import { unarchiveEntity } from '../sql';
+import { unarchiveEntity, unarchiveEntityAndClearSlot } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     ClientMutator,
@@ -34,6 +34,29 @@ export const server: ServerMutator<Args> = (
     { listId },
     { sql, nextVersion }
 ) => {
+    // ADR 0008 / ADR 0011 §Step 10c: restoring a workspace that was
+    // `slot='personal_workspace'` demotes it to an ordinary team
+    // workspace. By the time anything in Trash can be restored,
+    // `startFresh` has already minted a replacement personal workspace
+    // for the actor; preserving the slot here would violate the
+    // "exactly one current personal workspace per account" invariant.
+    // The user keeps their data; they lose only the "this is THE
+    // personal workspace" identity, which the freshly-minted one now
+    // holds.
+    const row = sql
+        .exec(
+            `SELECT type, slot FROM list_elements
+             WHERE id = ? LIMIT 1`,
+            listId
+        )
+        .toArray()[0] as { type?: string; slot?: string | null } | undefined;
+    if (row?.type === 'workspace' && row?.slot === 'personal_workspace') {
+        unarchiveEntityAndClearSlot(sql, {
+            entityId: listId,
+            version: nextVersion,
+        });
+        return;
+    }
     unarchiveEntity(sql, { entityId: listId, version: nextVersion });
 };
 

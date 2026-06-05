@@ -64,6 +64,7 @@ import {
 } from './invitations';
 import { tryClaimSlug } from './slug';
 import { GetAccountByEmail } from '../account/service';
+import { mintPersonalWorkspaceEntity } from '../workspace/service';
 import { sendEntityInvitationEmail } from '../email';
 import { LIST_PULL_KEYSPACES } from './pull';
 import {
@@ -96,6 +97,7 @@ const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
     'setListAuthRules',
     'setWorkspaceImage',
     'setWorkspaceSlug',
+    'startFresh',
     'transferOwnership',
     'unarchiveList',
 ]);
@@ -852,6 +854,18 @@ export class DjibbList extends DurableObject {
         // clock against its own row regardless of whether the user or a
         // parent workspace's sweep is the proximate cause.
         let harddeleteArmed: 'arm' | 'clear' | null = null;
+        // Tracks whether this push ran a `startFresh` on the DO's own
+        // personal workspace. Carries the display_name the actor
+        // wants for the freshly-minted personal workspace (so the
+        // post-commit mint can format `<display_name>'s space`).
+        // ADR 0008 §"Personal Workspace: 'Start Fresh,' not Delete",
+        // ADR 0011 §Step 10c. The mint runs in the post-commit tail
+        // because it requires a cross-DO synth push, which the
+        // synchronous server-mutator surface cannot do.
+        let startFreshDisplayName: {
+            accountId: string;
+            displayName: string | null;
+        } | null = null;
         // Tracks whether any mutation in this push touched the DO's
         // `pending_invites` table. Triggers the post-commit
         // reconciliation emit to `entity_invitations_index` (ADR 0009).
@@ -1010,10 +1024,34 @@ export class DjibbList extends DurableObject {
                 // function param and matches this DO's entity id (the
                 // mutator's `args.listId` is required to equal it).
                 if (
-                    mutation.name === 'archiveList' &&
+                    (mutation.name === 'archiveList' ||
+                        mutation.name === 'startFresh') &&
                     listId.startsWith('w/')
                 ) {
                     cascadeArchiveTriggered = true;
+                }
+                // Capture startFresh args at trigger time so the
+                // post-commit tail can mint the new personal workspace
+                // with the actor's display name. We avoid re-reading
+                // args downstream — the mutation envelope is already
+                // parsed and validated here.
+                if (
+                    mutation.name === 'startFresh' &&
+                    listId.startsWith('w/')
+                ) {
+                    const rawArgs = (mutation.args ?? {}) as Record<
+                        string,
+                        unknown
+                    >;
+                    const dn = rawArgs.accountDisplayName;
+                    const actor = rawArgs.accountId;
+                    if (typeof actor === 'string') {
+                        startFreshDisplayName = {
+                            accountId: actor,
+                            displayName:
+                                typeof dn === 'string' ? dn : null,
+                        };
+                    }
                 }
                 // ADR 0008 §"Restore": symmetric trigger. An
                 // unarchive against the workspace's own id flips the
@@ -1038,7 +1076,8 @@ export class DjibbList extends DurableObject {
                 // landed.
                 if (
                     mutation.name === 'archiveList' ||
-                    mutation.name === 'cascadeArchiveList'
+                    mutation.name === 'cascadeArchiveList' ||
+                    mutation.name === 'startFresh'
                 ) {
                     harddeleteArmed = 'arm';
                 }
@@ -1232,6 +1271,33 @@ export class DjibbList extends DurableObject {
             } catch (error) {
                 console.error(
                     `\`scheduleEvent('cascade-restore')\` failed for "${listId}":`,
+                    error
+                );
+            }
+        }
+
+        // ADR 0008 §"Personal Workspace: 'Start Fresh,' not Delete" /
+        // ADR 0011 §Step 10c: mint a fresh personal workspace for the
+        // actor immediately after their old one got archived by
+        // `startFresh`. Cross-DO synth push, so it has to live in the
+        // post-commit tail (the mutator surface is synchronous).
+        //
+        // Failures here are logged-but-swallowed. The cascade-archive
+        // and harddelete clock on the old workspace have already been
+        // scheduled above; if the mint fails, the user lands in a
+        // weird zero-personal-workspaces state until the next signin
+        // (or until a manual recovery path is built). Worth
+        // reconsidering if this proves flaky in production.
+        if (startFreshDisplayName) {
+            try {
+                const env = this.env as Bindings;
+                await mintPersonalWorkspaceEntity(env.DJIBB_LIST, {
+                    id: startFreshDisplayName.accountId,
+                    display_name: startFreshDisplayName.displayName,
+                } as Account);
+            } catch (error) {
+                console.error(
+                    `\`startFresh\` mint failed for actor "${startFreshDisplayName.accountId}":`,
                     error
                 );
             }

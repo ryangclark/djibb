@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { NotFoundError } from '../../errors';
+import { BadMutationError, NotFoundError } from '../../errors';
 import { ListSchema } from '..';
 import { archiveEntity } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
@@ -37,6 +37,26 @@ export const server: ServerMutator<Args> = (
     { listId },
     { sql, nextVersion }
 ) => {
+    // ADR 0008 / ADR 0011 §Step 10c: personal workspaces cannot be
+    // archived directly. The Settings UI swaps Delete for Start Fresh
+    // when `is_personal`, and the `startFresh` mutator is the only
+    // path that can archive a personal workspace (it mints a
+    // replacement in the same flow). Reject any direct attempt to
+    // bypass that route so the "exactly one current personal
+    // workspace per account" invariant cannot be broken from any
+    // surface that doesn't know to call `startFresh`.
+    const row = sql
+        .exec(
+            `SELECT type, slot FROM list_elements
+             WHERE id = ? LIMIT 1`,
+            listId
+        )
+        .toArray()[0] as { type?: string; slot?: string | null } | undefined;
+    if (row?.type === 'workspace' && row?.slot === 'personal_workspace') {
+        throw new BadMutationError(
+            `\`archiveList\` cannot archive a personal workspace; use \`startFresh\` instead`
+        );
+    }
     archiveEntity(sql, { entityId: listId, version: nextVersion });
 };
 

@@ -56,6 +56,22 @@
 			(workspace?.name ?? '').trim().length > 0
 	);
 
+	// ADR 0008 / ADR 0011 §Step 10c: Personal workspaces use the
+	// "Start Fresh" verb instead of Delete. Same backend cascade —
+	// the old workspace + everything in it lands in Trash with a 30d
+	// clock — plus an atomic mint of a fresh personal workspace so
+	// the user always has exactly one current personal. Same friction
+	// posture: type the literal string "Start Fresh" to confirm,
+	// matching the case-insensitive pattern Delete uses.
+	const START_FRESH_PHRASE = 'Start Fresh';
+	let startFreshModalOpen = $state(false);
+	let startFreshConfirmText = $state('');
+	let startingFresh = $state(false);
+	const startFreshConfirmMatches = $derived(
+		startFreshConfirmText.trim().toLowerCase() ===
+			START_FRESH_PHRASE.toLowerCase()
+	);
+
 	let synced = $state(false);
 	$effect(() => {
 		// Seed drafts from the live entity row once it lands. Re-seed
@@ -197,6 +213,53 @@
 		deleteModalOpen = false;
 	}
 
+	function openStartFreshModal() {
+		startFreshConfirmText = '';
+		error = '';
+		startFreshModalOpen = true;
+	}
+
+	function closeStartFreshModal() {
+		if (startingFresh) return;
+		startFreshModalOpen = false;
+	}
+
+	async function onConfirmStartFresh() {
+		if (!ctx?.mutate || !workspaceId) return;
+		if (!startFreshConfirmMatches) return;
+		startingFresh = true;
+		error = '';
+		try {
+			// startFresh against the workspace's own id soft-deletes the
+			// current personal workspace (cascade-archives its contents
+			// to Trash + arms the 30d harddelete clock) AND mints a
+			// fresh new personal workspace for the actor in the DO's
+			// post-commit tail. Pass the actor's display name so the
+			// new workspace gets the same `<name>'s space` title used
+			// at signup.
+			const actorAccountId =
+				sessionWorkspace?.membership?.account_id ?? null;
+			const displayName =
+				session.accounts.find((a) => a.id === actorAccountId)
+					?.display_name ?? null;
+			await ctx.mutate.startFresh({
+				workspaceId,
+				accountDisplayName: displayName
+			});
+			// Refresh workspaces so the freshly-minted personal
+			// workspace appears in the switcher; the old one drops out
+			// (it's now soft-deleted, excluded by the projection
+			// filter). Then navigate to /workspaces so the user lands
+			// somewhere live — the personal workspace they came from
+			// no longer resolves at /w/<old-slug>.
+			await session.refreshWorkspaces();
+			await goto('/workspaces');
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+			startingFresh = false;
+		}
+	}
+
 	async function onConfirmDelete() {
 		if (!ctx?.mutate || !workspaceId) return;
 		if (!deleteConfirmMatches) return;
@@ -273,9 +336,13 @@
 					Delete workspace…
 				</button>
 			{:else}
-				<p class="text-sm text-stone-500">
-					Personal workspaces cannot be deleted or left.
-				</p>
+				<button
+					class="border border-red-600 text-red-700 px-3 py-1 text-sm"
+					onclick={openStartFreshModal}
+					disabled={startingFresh}
+				>
+					Start Fresh…
+				</button>
 			{/if}
 		</div>
 
@@ -283,6 +350,50 @@
 			<p class="text-red-600 text-sm mt-2">{error}</p>
 		{/if}
 	{/if}
+{/if}
+
+{#if startFreshModalOpen && workspace}
+	<div class="modal-backdrop" role="dialog" aria-modal="true">
+		<div class="modal">
+			<h3>Start Fresh?</h3>
+			<p>
+				Everything in your personal workspace will be moved to the
+				trash. You'll have <strong>30 days</strong> to restore any of it
+				before it's permanently deleted.
+			</p>
+			<p>
+				A fresh empty personal workspace will be created for you
+				right after.
+			</p>
+			<label class="block mt-3 text-sm">
+				Type <strong>{START_FRESH_PHRASE}</strong> to confirm:
+				<input
+					class="border px-2 py-1 mt-1 block w-full"
+					bind:value={startFreshConfirmText}
+					placeholder={START_FRESH_PHRASE}
+					disabled={startingFresh}
+					autocomplete="off"
+				/>
+			</label>
+			<div class="modal-actions">
+				<button
+					type="button"
+					onclick={closeStartFreshModal}
+					disabled={startingFresh}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					class="danger"
+					onclick={onConfirmStartFresh}
+					disabled={!startFreshConfirmMatches || startingFresh}
+				>
+					{startingFresh ? 'Starting…' : 'Start Fresh'}
+				</button>
+			</div>
+		</div>
+	</div>
 {/if}
 
 {#if deleteModalOpen && workspace}
