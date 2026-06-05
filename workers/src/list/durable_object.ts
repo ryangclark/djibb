@@ -820,6 +820,15 @@ export class DjibbList extends DurableObject {
         // entity-mutating mutator is `initList`; renameList / archive /
         // setListAuthRules will join this list as they land.
         let entityMetadataMutated = false;
+        // Tracks whether this push just soft-deleted a Workspace entity.
+        // ADR 0008: a workspace's own `archiveList` is the trigger for
+        // the cascade-archive sweep — the post-commit tail enqueues a
+        // `cascade-archive` alarm event, which the dispatcher then
+        // drives in N=10 batches against the workspace's children
+        // (lists + templates). The cascade fan-out is async by design
+        // so the user's click returns instantly regardless of how many
+        // children the workspace owns.
+        let cascadeArchiveTriggered = false;
         // Tracks whether any mutation in this push touched the DO's
         // `pending_invites` table. Triggers the post-commit
         // reconciliation emit to `entity_invitations_index` (ADR 0009).
@@ -970,6 +979,19 @@ export class DjibbList extends DurableObject {
                 if (ENTITY_METADATA_MUTATORS.has(mutation.name)) {
                     entityMetadataMutated = true;
                 }
+                // ADR 0008 §"Trigger": a successful `archiveList`
+                // mutation against this DO's own workspace entity is
+                // the cascade-archive trigger. The ID-prefix check
+                // narrows to workspace entities — list and template
+                // archives stay self-contained. `listId` is the outer
+                // function param and matches this DO's entity id (the
+                // mutator's `args.listId` is required to equal it).
+                if (
+                    mutation.name === 'archiveList' &&
+                    listId.startsWith('w/')
+                ) {
+                    cascadeArchiveTriggered = true;
+                }
                 if (INVITATION_MUTATORS.has(mutation.name)) {
                     invitationsMutated = true;
                 }
@@ -1112,6 +1134,29 @@ export class DjibbList extends DurableObject {
                 sentInvites,
                 authorizedAccounts
             );
+        }
+
+        // ADR 0008 §"Trigger": enqueue the cascade-archive event for
+        // immediate fire. The handler reads this workspace's child
+        // catalog and fans out `cascadeArchiveList` pushes in N=10
+        // batches; if more children remain after a batch it re-arms
+        // itself. Idempotent re-scheduling: scheduling the same event
+        // again (e.g. a retry archive on an already-deleted workspace)
+        // just resets the dueAt to "now," which is harmless. We
+        // schedule AFTER `emitEntitySnapshot` so the workspace's own
+        // `time_deleted` is already in the catalog before any child
+        // begins its sweep — useful for the read paths (Trash UI,
+        // future "this list is in a deleted workspace" hint) that
+        // consult both rows.
+        if (cascadeArchiveTriggered) {
+            try {
+                await this.scheduleEvent('cascade-archive', Date.now());
+            } catch (error) {
+                console.error(
+                    `\`scheduleEvent('cascade-archive')\` failed for "${listId}":`,
+                    error
+                );
+            }
         }
 
         // Bootstrap the reconciliation alarm per ADR 0007. Idempotent;
@@ -1763,10 +1808,10 @@ export class DjibbList extends DurableObject {
     }
 
     /**
-     * Route a single due event to its handler. Stubs for cascade-archive
-     * / cascade-restore / harddelete cancel-and-warn for now; the real
-     * handlers arrive in 10a.4 / 10a.5 / 10a.6. Cancellation prevents a
-     * misconfigured DO from getting stuck firing an unimplemented event.
+     * Route a single due event to its handler. Stubs for cascade-restore
+     * / harddelete cancel-and-warn for now; the real handlers arrive in
+     * 10a.5 / 10b. Cancellation prevents a misconfigured DO from
+     * getting stuck firing an unimplemented event.
      */
     private async runAlarmEvent(name: AlarmEventName): Promise<void> {
         switch (name) {
@@ -1774,6 +1819,8 @@ export class DjibbList extends DurableObject {
                 await this.handleReconcile();
                 return;
             case 'cascade-archive':
+                await this.handleCascadeArchive();
+                return;
             case 'cascade-restore':
             case 'harddelete':
                 console.warn(
@@ -1817,6 +1864,180 @@ export class DjibbList extends DurableObject {
      * go through `alarm()`; reconcile-internal tests go through
      * `handleReconcile()`.
      */
+    /**
+     * Workspace cascade-archive sweep (ADR 0008, ADR 0011 §Step 10a.4b).
+     *
+     * Runs only on workspace-typed DOs: the trigger in `_handlePush`
+     * only enqueues this event when an `archiveList` against a
+     * workspace-prefix id commits. The handler reads this workspace's
+     * child entities from the D1 catalog
+     * (`workspace_entities WHERE workspace_id = self AND time_deleted
+     * IS NULL AND cascade_source IS NULL`) in batches of N=10 and
+     * dispatches a `cascadeArchiveList` push to each child's DO via
+     * synthetic-client RPC (`cascade:<workspaceId>:<deletionTsMs>`
+     * clientID per ADR 0008).
+     *
+     * Self-progressing without an explicit cursor: each successful
+     * cascade-archive sets the child's `time_deleted` and
+     * `cascade_source`, removing it from the next batch's SELECT.
+     * A failed cascade leaves the child visible to the next tick,
+     * which re-tries on the next alarm — at-least-once delivery.
+     *
+     * State-driven mid-sweep restore (ADR 0008 §"Restore"): if the
+     * workspace's own `time_deleted` is null when the handler fires
+     * (a `restoreWorkspace` raced in between the user's Delete and
+     * this tick), the sweep aborts. 10a.5 turns that abort into the
+     * inverse sweep.
+     *
+     * Re-arms itself for "immediate" (`Date.now()`) when a batch was
+     * non-empty, so subsequent ticks continue draining. Cancels the
+     * event when the catalog query returns empty — the campaign is
+     * either complete or the workspace was restored.
+     */
+    static readonly CASCADE_ARCHIVE_BATCH_SIZE = 10;
+
+    async handleCascadeArchive(): Promise<void> {
+        const entityId = getEntityId(this.sql);
+        if (!entityId || !entityId.startsWith('w/')) {
+            // Not a workspace DO. Should never reach the handler given
+            // the trigger guard in `_handlePush`, but a misconfigured
+            // event key shouldn't loop forever.
+            console.warn(
+                `\`handleCascadeArchive()\` not a workspace entity (id="${entityId}"); canceling`
+            );
+            await this.cancelEvent('cascade-archive');
+            return;
+        }
+
+        // Read this workspace's own time_deleted to use as the
+        // deletion-timestamp portion of the synthetic clientID. Also
+        // doubles as the abort check: if the user restored the
+        // workspace before this tick, time_deleted is null and we
+        // bail (10a.5 turns this into the inverse sweep).
+        const own = this.sql
+            .exec(
+                `SELECT time_deleted FROM list_elements WHERE id = ?;`,
+                entityId
+            )
+            .one();
+        const ownTimeDeletedRaw = own?.time_deleted as number | null;
+        if (ownTimeDeletedRaw == null) {
+            console.log(
+                `\`handleCascadeArchive()\` workspace "${entityId}" not deleted; canceling`
+            );
+            await this.cancelEvent('cascade-archive');
+            return;
+        }
+        // time_deleted is unix seconds in the DO row (`getElementById`
+        // multiplies by 1000); raw column read is seconds. Convert to
+        // ms for the clientID — keeps the cascade campaign id stable
+        // across restarts even though the wall clock has moved.
+        const deletionTsMs = ownTimeDeletedRaw * 1000;
+
+        const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
+        const batchResult = await d1
+            .prepare(
+                `SELECT id FROM workspace_entities
+                 WHERE workspace_id = ?
+                   AND time_deleted IS NULL
+                   AND cascade_source IS NULL
+                 ORDER BY id
+                 LIMIT ?`
+            )
+            .bind(entityId, DjibbList.CASCADE_ARCHIVE_BATCH_SIZE)
+            .all<{ id: string }>();
+
+        const rows = batchResult.results ?? [];
+        if (rows.length === 0) {
+            // Drained. Per ADR 0008 the next workspace-side event is
+            // the 30d hard-delete clock (10b); we don't set it here
+            // because the trigger landed it at archive time. Just
+            // clear the cascade-archive key.
+            await this.cancelEvent('cascade-archive');
+            return;
+        }
+
+        for (const { id: childId } of rows) {
+            try {
+                await this.cascadeArchiveChild(
+                    childId,
+                    entityId,
+                    deletionTsMs
+                );
+            } catch (error) {
+                console.error(
+                    `\`handleCascadeArchive()\` child push failed for "${childId}":`,
+                    error
+                );
+                // Leave the child unarchived; next batch re-selects it
+                // (its time_deleted didn't get set). Retries are
+                // bounded by progress on the rest of the batch.
+            }
+        }
+
+        // Re-arm for "immediate" — the dispatcher will run us again
+        // when Cloudflare's alarm fires next. A batch < N children
+        // doesn't mean we're done (a write could have raced); keep
+        // looping until the SELECT comes back empty.
+        await this.scheduleEvent('cascade-archive', Date.now());
+    }
+
+    /**
+     * Cascade-archive a single child entity (List or Template) via
+     * a synthetic-client push to its DO. ADR 0008 §"Cascade-archive
+     * invocation":
+     *
+     *   - clientID = `cascade:<workspaceId>:<deletionTimestampMs>`
+     *     — campaign-scoped; a fresh deletion mints a fresh clientID,
+     *     so delete→restore→delete cycles never reuse one.
+     *   - mutationId = 1 — child DOs each maintain their own
+     *     `replicache_clients` table, so this clientID is new to every
+     *     child the first time we push to it; mutationId=1 works
+     *     uniformly across all children of one campaign. Retries on
+     *     the same child are idempotent: Replicache recognizes
+     *     mutationId=1 as already-processed and no-ops.
+     *   - authorizedRole = 'system' — gates on the cascade mutator's
+     *     SYSTEM_ROLES requiredRole (ADR 0011 §Step 10a.3).
+     */
+    private async cascadeArchiveChild(
+        childId: string,
+        workspaceId: string,
+        deletionTsMs: number
+    ): Promise<void> {
+        const env = this.env as { DJIBB_LIST: DurableObjectNamespace };
+        const stubId = env.DJIBB_LIST.idFromName(childId);
+        const stub = env.DJIBB_LIST.get(
+            stubId
+        ) as unknown as DurableObjectStub<DjibbList>;
+        const clientID = `cascade:${workspaceId}:${deletionTsMs}`;
+
+        await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'system',
+            listId: childId,
+            pushRequest: {
+                profileID: 'p_cascade',
+                clientGroupID: `cg_cascade:${workspaceId}`,
+                pushVersion: 1,
+                schemaVersion: '1',
+                mutations: [
+                    {
+                        clientID,
+                        id: 1,
+                        name: 'cascadeArchiveList',
+                        timestamp: Date.now(),
+                        args: {
+                            accountId: null,
+                            timestamp_client: new Date().toISOString(),
+                            listId: childId,
+                            cascade_source: workspaceId,
+                        },
+                    },
+                ],
+            },
+        });
+    }
+
     async handleReconcile(): Promise<void> {
         const entityId = getEntityId(this.sql);
         if (!entityId) {
