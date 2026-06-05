@@ -838,6 +838,20 @@ export class DjibbList extends DurableObject {
         // Restore inside seconds) doesn't leave the dispatcher
         // chasing the older direction.
         let cascadeRestoreTriggered = false;
+        // Tracks whether this push transitioned this DO's own entity row
+        // into (or out of) the soft-deleted state. ADR 0008's hard-delete
+        // clock (10b): when the row goes soft-deleted, arm a 30d
+        // `harddelete` alarm event; when it comes back, clear it. Last
+        // write wins across the push (a single push containing both an
+        // archive and an unarchive should reflect the final state).
+        //
+        // Both the user-driven (`archiveList` / `unarchiveList`) and
+        // system-driven cascade variants (`cascadeArchiveList` /
+        // `cascadeRestoreList`) flow through this tracker, so every
+        // DjibbList — workspaces, lists, templates — runs the same
+        // clock against its own row regardless of whether the user or a
+        // parent workspace's sweep is the proximate cause.
+        let harddeleteArmed: 'arm' | 'clear' | null = null;
         // Tracks whether any mutation in this push touched the DO's
         // `pending_invites` table. Triggers the post-commit
         // reconciliation emit to `entity_invitations_index` (ADR 0009).
@@ -1013,6 +1027,26 @@ export class DjibbList extends DurableObject {
                     listId.startsWith('w/')
                 ) {
                     cascadeRestoreTriggered = true;
+                }
+                // ADR 0008 hard-delete clock arm/clear. Mutator names
+                // are the signal: a successful archive of any flavor
+                // means this DO's entity row is now soft-deleted; a
+                // successful restore means it's live again. We don't
+                // re-read the row because the mutator's own SQL helper
+                // (`archiveEntity` / `unarchiveEntity`) already enforces
+                // the transition or throws — `didMutate` proves it
+                // landed.
+                if (
+                    mutation.name === 'archiveList' ||
+                    mutation.name === 'cascadeArchiveList'
+                ) {
+                    harddeleteArmed = 'arm';
+                }
+                if (
+                    mutation.name === 'unarchiveList' ||
+                    mutation.name === 'cascadeRestoreList'
+                ) {
+                    harddeleteArmed = 'clear';
                 }
                 if (INVITATION_MUTATORS.has(mutation.name)) {
                     invitationsMutated = true;
@@ -1198,6 +1232,46 @@ export class DjibbList extends DurableObject {
             } catch (error) {
                 console.error(
                     `\`scheduleEvent('cascade-restore')\` failed for "${listId}":`,
+                    error
+                );
+            }
+        }
+
+        // ADR 0008 hard-delete clock (10b). Armed when this push
+        // soft-deleted the DO's own entity row; cleared when restored.
+        // 30d from now (override via `HARD_DELETE_DELAY_MS` for tests).
+        //
+        // Scheduled here, AFTER any cascade-archive/restore trigger,
+        // so the clock arm is the last event-store write in the push.
+        // That ordering is unimportant for correctness (the dispatcher
+        // picks the minimum due time across all pending events), but
+        // keeps the test reading order predictable: by the time
+        // `_handlePush` returns, both events for an archive flow
+        // (cascade-archive at `now`, harddelete at `now + 30d`) are
+        // present in storage.
+        //
+        // The handler's safety net (re-reads `time_deleted` before
+        // destroying anything) means a missed `clear` won't hard-delete
+        // a restored entity — but we still clear here so the alarm
+        // doesn't fire pointlessly 30d later.
+        if (harddeleteArmed === 'arm') {
+            try {
+                await this.scheduleEvent(
+                    'harddelete',
+                    Date.now() + DjibbList.HARD_DELETE_DELAY_MS
+                );
+            } catch (error) {
+                console.error(
+                    `\`scheduleEvent('harddelete')\` failed for "${listId}":`,
+                    error
+                );
+            }
+        } else if (harddeleteArmed === 'clear') {
+            try {
+                await this.cancelEvent('harddelete');
+            } catch (error) {
+                console.error(
+                    `\`cancelEvent('harddelete')\` failed for "${listId}":`,
                     error
                 );
             }
@@ -1852,10 +1926,9 @@ export class DjibbList extends DurableObject {
     }
 
     /**
-     * Route a single due event to its handler. Stub for harddelete
-     * cancels-and-warns; the real handler arrives in 10b.
-     * Cancellation prevents a misconfigured DO from getting stuck
-     * firing an unimplemented event.
+     * Route a single due event to its handler. Every `AlarmEventName`
+     * has a concrete handler as of ADR 0011 §Step 10b-clock; the
+     * switch is exhaustive (TypeScript enforces it).
      */
     private async runAlarmEvent(name: AlarmEventName): Promise<void> {
         switch (name) {
@@ -1869,10 +1942,7 @@ export class DjibbList extends DurableObject {
                 await this.handleCascadeRestore();
                 return;
             case 'harddelete':
-                console.warn(
-                    `\`alarm()\` event "${name}" has no handler yet; canceling`
-                );
-                await this.cancelEvent(name);
+                await this.handleHardDelete();
                 return;
         }
     }
@@ -2237,6 +2307,111 @@ export class DjibbList extends DurableObject {
                 ],
             },
         });
+    }
+
+    /**
+     * Hard-delete delay per ADR 0008 / ADR 0011 §Step 10b. 30 days from
+     * the soft-delete event. Exposed as a `static` so tests can monkey-
+     * patch it down to milliseconds without faking timers — every
+     * `scheduleEvent('harddelete', ...)` reads it fresh from the class.
+     */
+    static HARD_DELETE_DELAY_MS = 30 * 24 * 60 * 60 * 1000;
+
+    /**
+     * Hard-delete handler (ADR 0008 §"Hard-delete: per-DO self-destruct
+     * via the alarm dispatcher", ADR 0011 §Step 10b-clock). Fires 30d
+     * after the entity was soft-deleted. Self-destructs the DO:
+     *
+     *   1. Re-read the entity's `time_deleted`. If null, the entity was
+     *      restored between the unarchive's `cancelEvent('harddelete')`
+     *      write and this alarm tick — safety net, cancel and return.
+     *      (`cancelEvent` is idempotent against a missing key; we still
+     *      call it explicitly to clean up the `alarm:harddelete:at`
+     *      storage row this fire originated from, which Cloudflare's
+     *      alarm dispatch does not auto-clear.)
+     *   2. Purge the D1 catalog row (`workspace_entities` per ADR 0003).
+     *      This is the read index every list/picker/Trash UI consults;
+     *      once gone, the entity stops appearing anywhere.
+     *   3. `ctx.storage.deleteAll()` — wipes the DO's SQLite + KV
+     *      storage including the alarm-event keys and the Cloudflare
+     *      alarm itself. No further re-scheduling.
+     *
+     * If the D1 delete fails, we re-arm at a short backoff rather than
+     * call `deleteAll`. A vanished DO with a live catalog row would
+     * be worse than a soft-deleted entity sitting in limbo a little
+     * longer.
+     *
+     * Workspace vs. child entity: same handler. The 10a cascade-archive
+     * sweep arms each child's own `harddelete` clock (because
+     * `cascadeArchiveList` runs through the same _handlePush trigger
+     * path as `archiveList`), so every cascaded child self-destructs
+     * 30d after the workspace was deleted, independently of the
+     * workspace's own self-destruct. The workspace DO's own clock
+     * fires at the same time (give or take async drift in the cascade
+     * fan-out), so the whole tree drains together.
+     */
+    async handleHardDelete(): Promise<void> {
+        const entityId = getEntityId(this.sql);
+        if (!entityId) {
+            // No entity row in this DO — either never initialized, or
+            // already hard-deleted by a prior tick. Defensive cancel so
+            // a stuck alarm-event key doesn't loop.
+            console.warn(
+                '`handleHardDelete()` no entity row; canceling'
+            );
+            await this.cancelEvent('harddelete');
+            return;
+        }
+
+        const own = this.sql
+            .exec(
+                `SELECT time_deleted FROM list_elements WHERE id = ?;`,
+                entityId
+            )
+            .one();
+        const ownTimeDeleted = own?.time_deleted as number | null;
+        if (ownTimeDeleted == null) {
+            // Restored mid-flight. The unarchive's `cancelEvent` should
+            // have dropped this event from storage, but races happen —
+            // the safety net catches them. Cancel and return.
+            console.log(
+                `\`handleHardDelete()\` entity "${entityId}" not deleted; canceling`
+            );
+            await this.cancelEvent('harddelete');
+            return;
+        }
+
+        // Purge the catalog row first. If this fails the DO survives —
+        // a vanished DO with a live catalog row is worse than the
+        // current limbo state.
+        try {
+            const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
+            await d1
+                .prepare(`DELETE FROM workspace_entities WHERE id = ?;`)
+                .bind(entityId)
+                .run();
+        } catch (error) {
+            console.error(
+                `\`handleHardDelete()\` D1 purge failed for "${entityId}":`,
+                error
+            );
+            // Re-arm at a short backoff so the next tick retries the
+            // purge. The entity is still soft-deleted, so the safety
+            // net stays valid against an intervening restore.
+            await this.scheduleEvent(
+                'harddelete',
+                Date.now() + 60 * 1000
+            );
+            return;
+        }
+
+        // DO storage gone. Per ADR 0008: no further alarm scheduling.
+        // `deleteAll()` removes the SQLite + KV state (including the
+        // `alarm:*:at` event keys) and clears the Cloudflare alarm.
+        // After this call the DO has nothing left to do; subsequent
+        // pushes (if any stale ones arrive) hit an uninitialized DO
+        // and either fail or re-bootstrap empty — both safe.
+        await this.ctx.storage.deleteAll();
     }
 
     async handleReconcile(): Promise<void> {
