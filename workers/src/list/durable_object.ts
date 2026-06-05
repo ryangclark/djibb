@@ -83,6 +83,7 @@ const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
     'acceptInvitation',
     'archiveList',
     'cascadeArchiveList',
+    'cascadeRestoreList',
     'changeMemberRole',
     'createWorkspace',
     'initFromTemplate',
@@ -829,6 +830,14 @@ export class DjibbList extends DurableObject {
         // so the user's click returns instantly regardless of how many
         // children the workspace owns.
         let cascadeArchiveTriggered = false;
+        // Tracks whether this push just restored a Workspace entity.
+        // ADR 0008 §"Restore" mirrors the archive path: an
+        // `unarchiveList` against the workspace's own id enqueues the
+        // `cascade-restore` event. The two triggers cancel each
+        // other's pending events so a mid-sweep flip (Delete then
+        // Restore inside seconds) doesn't leave the dispatcher
+        // chasing the older direction.
+        let cascadeRestoreTriggered = false;
         // Tracks whether any mutation in this push touched the DO's
         // `pending_invites` table. Triggers the post-commit
         // reconciliation emit to `entity_invitations_index` (ADR 0009).
@@ -992,6 +1001,19 @@ export class DjibbList extends DurableObject {
                 ) {
                     cascadeArchiveTriggered = true;
                 }
+                // ADR 0008 §"Restore": symmetric trigger. An
+                // unarchive against the workspace's own id flips the
+                // dispatcher into restore mode. The cascade-archive
+                // event (if any pending from a prior delete) gets
+                // canceled in the post-commit tail, so the dispatcher
+                // doesn't keep archiving children that are about to
+                // be restored.
+                if (
+                    mutation.name === 'unarchiveList' &&
+                    listId.startsWith('w/')
+                ) {
+                    cascadeRestoreTriggered = true;
+                }
                 if (INVITATION_MUTATORS.has(mutation.name)) {
                     invitationsMutated = true;
                 }
@@ -1148,12 +1170,34 @@ export class DjibbList extends DurableObject {
         // begins its sweep — useful for the read paths (Trash UI,
         // future "this list is in a deleted workspace" hint) that
         // consult both rows.
+        //
+        // Mid-restore re-archive: also cancel any pending
+        // cascade-restore event. The dispatcher would self-abort on
+        // the next tick (the handler checks the workspace's own
+        // `time_deleted`), but canceling here drops the storage key
+        // immediately and avoids a pointless alarm fire.
         if (cascadeArchiveTriggered) {
             try {
+                await this.cancelEvent('cascade-restore');
                 await this.scheduleEvent('cascade-archive', Date.now());
             } catch (error) {
                 console.error(
                     `\`scheduleEvent('cascade-archive')\` failed for "${listId}":`,
+                    error
+                );
+            }
+        }
+
+        // ADR 0008 §"Restore": symmetric to the archive trigger.
+        // Cancels any pending cascade-archive (mid-sweep flip) and
+        // enqueues cascade-restore for immediate fire.
+        if (cascadeRestoreTriggered) {
+            try {
+                await this.cancelEvent('cascade-archive');
+                await this.scheduleEvent('cascade-restore', Date.now());
+            } catch (error) {
+                console.error(
+                    `\`scheduleEvent('cascade-restore')\` failed for "${listId}":`,
                     error
                 );
             }
@@ -1808,10 +1852,10 @@ export class DjibbList extends DurableObject {
     }
 
     /**
-     * Route a single due event to its handler. Stubs for cascade-restore
-     * / harddelete cancel-and-warn for now; the real handlers arrive in
-     * 10a.5 / 10b. Cancellation prevents a misconfigured DO from
-     * getting stuck firing an unimplemented event.
+     * Route a single due event to its handler. Stub for harddelete
+     * cancels-and-warns; the real handler arrives in 10b.
+     * Cancellation prevents a misconfigured DO from getting stuck
+     * firing an unimplemented event.
      */
     private async runAlarmEvent(name: AlarmEventName): Promise<void> {
         switch (name) {
@@ -1822,6 +1866,8 @@ export class DjibbList extends DurableObject {
                 await this.handleCascadeArchive();
                 return;
             case 'cascade-restore':
+                await this.handleCascadeRestore();
+                return;
             case 'harddelete':
                 console.warn(
                     `\`alarm()\` event "${name}" has no handler yet; canceling`
@@ -2025,6 +2071,161 @@ export class DjibbList extends DurableObject {
                         clientID,
                         id: 1,
                         name: 'cascadeArchiveList',
+                        timestamp: Date.now(),
+                        args: {
+                            accountId: null,
+                            timestamp_client: new Date().toISOString(),
+                            listId: childId,
+                            cascade_source: workspaceId,
+                        },
+                    },
+                ],
+            },
+        });
+    }
+
+    /**
+     * Workspace cascade-restore sweep (ADR 0008, ADR 0011 §Step 10a.5).
+     *
+     * Mirror of `handleCascadeArchive`. Drains children whose
+     * `cascade_source` matches this workspace's id and whose
+     * `time_deleted` is still set — i.e. the ones this specific
+     * deletion-then-restore campaign needs to flip back.
+     *
+     * Skip semantics (preserved from the archive side, by SQL design):
+     *
+     *   - `cascade_source IS NULL` (user-archived before the workspace
+     *     was deleted) → excluded from the batch. The user's prior
+     *     intent — "this list belongs in the trash" — survives the
+     *     workspace round-trip.
+     *   - `cascade_source != self` (cascaded under a different
+     *     workspace) → excluded. Each workspace restores only what
+     *     it archived.
+     *   - `time_deleted IS NULL` (already restored or never archived)
+     *     → excluded. Idempotent against partial-restore retries.
+     *
+     * Mid-restore re-archive: the handler reads the workspace's own
+     * `time_deleted` first. If non-null (a fresh `archiveList` raced
+     * ahead of this tick), the sweep cancels; the `_handlePush`
+     * trigger has already re-enqueued cascade-archive for the
+     * resumption.
+     *
+     * Cursorless, like the archive side: each successful restore
+     * clears the child's `cascade_source`, dropping it from the next
+     * batch's SELECT. Re-arms on any non-empty batch; cancels on
+     * empty.
+     */
+    async handleCascadeRestore(): Promise<void> {
+        const entityId = getEntityId(this.sql);
+        if (!entityId || !entityId.startsWith('w/')) {
+            console.warn(
+                `\`handleCascadeRestore()\` not a workspace entity (id="${entityId}"); canceling`
+            );
+            await this.cancelEvent('cascade-restore');
+            return;
+        }
+
+        const own = this.sql
+            .exec(
+                `SELECT time_deleted, time_updated FROM list_elements WHERE id = ?;`,
+                entityId
+            )
+            .one();
+        const ownTimeDeleted = own?.time_deleted as number | null;
+        if (ownTimeDeleted != null) {
+            // Workspace got re-archived between the user's restore and
+            // this alarm tick. The archive trigger has already
+            // enqueued cascade-archive; cancel restore to avoid
+            // chasing the older direction.
+            console.log(
+                `\`handleCascadeRestore()\` workspace "${entityId}" re-archived; canceling restore`
+            );
+            await this.cancelEvent('cascade-restore');
+            return;
+        }
+        // The workspace's `time_updated` was bumped by the
+        // unarchiveList that triggered this sweep, so it's a monotonic
+        // per-campaign timestamp — same epoch role the deletion
+        // timestamp plays for cascade-archive. Without it, a
+        // delete→restore→delete→restore cycle would re-use the same
+        // clientID across the two restore campaigns; Replicache's
+        // per-(DO, clientID) mutationID counter would then skip the
+        // second restore's push as already-processed.
+        const restoreTsMs = (own.time_updated as number) * 1000;
+
+        const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
+        const batchResult = await d1
+            .prepare(
+                `SELECT id FROM workspace_entities
+                 WHERE workspace_id = ?
+                   AND cascade_source = ?
+                   AND time_deleted IS NOT NULL
+                 ORDER BY id
+                 LIMIT ?`
+            )
+            .bind(entityId, entityId, DjibbList.CASCADE_ARCHIVE_BATCH_SIZE)
+            .all<{ id: string }>();
+
+        const rows = batchResult.results ?? [];
+        if (rows.length === 0) {
+            await this.cancelEvent('cascade-restore');
+            return;
+        }
+
+        for (const { id: childId } of rows) {
+            try {
+                await this.cascadeRestoreChild(
+                    childId,
+                    entityId,
+                    restoreTsMs
+                );
+            } catch (error) {
+                console.error(
+                    `\`handleCascadeRestore()\` child push failed for "${childId}":`,
+                    error
+                );
+            }
+        }
+
+        await this.scheduleEvent('cascade-restore', Date.now());
+    }
+
+    /**
+     * Cascade-restore a single child entity via synthetic-client push.
+     * Symmetric with `cascadeArchiveChild`: clientID encodes the
+     * campaign epoch (here, the workspace's `time_updated` from when
+     * the unarchive ran), so delete→restore→delete→restore cycles
+     * never reuse a clientID. Without this, the second restore's
+     * mutationId=1 push would be rejected by Replicache as
+     * already-processed against the first restore's clientID, and the
+     * second restore would silently no-op.
+     */
+    private async cascadeRestoreChild(
+        childId: string,
+        workspaceId: string,
+        restoreTsMs: number
+    ): Promise<void> {
+        const env = this.env as { DJIBB_LIST: DurableObjectNamespace };
+        const stubId = env.DJIBB_LIST.idFromName(childId);
+        const stub = env.DJIBB_LIST.get(
+            stubId
+        ) as unknown as DurableObjectStub<DjibbList>;
+        const clientID = `cascade-restore:${workspaceId}:${restoreTsMs}`;
+
+        await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'system',
+            listId: childId,
+            pushRequest: {
+                profileID: 'p_cascade',
+                clientGroupID: `cg_cascade:${workspaceId}`,
+                pushVersion: 1,
+                schemaVersion: '1',
+                mutations: [
+                    {
+                        clientID,
+                        id: 1,
+                        name: 'cascadeRestoreList',
                         timestamp: Date.now(),
                         args: {
                             accountId: null,

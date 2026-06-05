@@ -148,16 +148,47 @@ describe('workspace cascade-archive trigger', () => {
         await resetWorkspaceData();
     });
 
-    it('archiving a workspace enqueues the cascade-archive event', async () => {
-        const owner = newId('account');
-        const { wsId, stub } = await mintWorkspace('trg1', owner);
-        await archiveWorkspace(wsId, stub, owner, 'trg1', 2);
+    // Note: a direct "alarm:cascade-archive:at exists after archive"
+    // assertion would be racy under suite load — the Cloudflare DO
+    // test runtime fires overdue alarms asynchronously, so by the
+    // time we read storage the dispatcher may have already run and
+    // canceled the event (handleCascadeArchive cancels on an empty
+    // batch). Trigger semantics are covered by the end-to-end test
+    // below: we drive `alarm()` directly (rather than
+    // `handleCascadeArchive()`) so the dispatcher routes through the
+    // event queue. If the trigger failed to schedule cascade-archive,
+    // the dispatcher's legacy-fire branch runs reconcile instead and
+    // the child's catalog row stays untouched — which the assertion
+    // would catch.
 
-        const dueAt = await runInDurableObject(stub, async (_i, state) =>
-            state.storage.get<number>('alarm:cascade-archive:at')
+    it('end-to-end: archive triggers dispatcher routing to cascade-archive', async () => {
+        const owner = newId('account');
+        const { wsId, stub: wsStub } = await mintWorkspace('e2ea', owner);
+        const { id: childId } = await mintListUnderWorkspace(
+            'e2eaL',
+            wsId,
+            owner
         );
-        expect(dueAt).toBeDefined();
-        expect(typeof dueAt).toBe('number');
+
+        await archiveWorkspace(wsId, wsStub, owner, 'e2ea', 2);
+
+        // Drive the dispatcher directly. If the trigger fired,
+        // `readPendingAlarmEvents` returns cascade-archive and
+        // `runAlarmEvent` invokes `handleCascadeArchive`. If the
+        // trigger silently failed, the queue would be empty and the
+        // dispatcher's legacy-fire branch runs reconcile instead —
+        // which doesn't touch the child's catalog row.
+        await runInDurableObject(wsStub, async i => i.alarm());
+
+        const after = await env.DJIBB_AUTH.prepare(
+            `SELECT cascade_source, time_deleted
+             FROM workspace_entities WHERE id = ?`
+        )
+            .bind(childId)
+            .first<{ cascade_source: string | null; time_deleted: number | null }>();
+
+        expect(after!.cascade_source).toBe(wsId);
+        expect(after!.time_deleted).not.toBeNull();
     });
 
     it('archiving a list does NOT enqueue cascade-archive', async () => {

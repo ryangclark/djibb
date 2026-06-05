@@ -18,6 +18,7 @@ import * as archiveListGroups from './archiveListGroups';
 import * as archiveListItem from './archiveListItem';
 import * as archiveListItems from './archiveListItems';
 import * as cascadeArchiveList from './cascadeArchiveList';
+import * as cascadeRestoreList from './cascadeRestoreList';
 import * as changeMemberRole from './changeMemberRole';
 import * as createWorkspace from './createWorkspace';
 import * as leaveMember from './leaveMember';
@@ -82,6 +83,7 @@ export const Mutations = {
     [archiveListItem.name]: archiveListItem,
     [archiveListItems.name]: archiveListItems,
     [cascadeArchiveList.name]: cascadeArchiveList,
+    [cascadeRestoreList.name]: cascadeRestoreList,
     [changeMemberRole.name]: changeMemberRole,
     [createWorkspace.name]: createWorkspace,
     [leaveMember.name]: leaveMember,
