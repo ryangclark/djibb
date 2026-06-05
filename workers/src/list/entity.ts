@@ -137,12 +137,17 @@ export type EntitySnapshot = {
     slot: Slot | null;
     /**
      * Optional on the DO-side snapshot (ADR 0011 §Step 10a / ADR 0008).
-     * Only cascade-archive mutations carry a value; ordinary mutators
-     * omit it. When absent, INSERT writes NULL and ON CONFLICT UPDATE
-     * COALESCEs to the existing value — so non-cascade emits never
-     * clobber a previously-set cascade_source. Clearing is done by
-     * `restoreWorkspace` via direct catalog UPDATE, not through the
-     * snapshot path.
+     * The DO entity row carries `cascade_source` natively (10a.4a)
+     * alongside `time_deleted`; `emitEntitySnapshot` reads it from the
+     * row and threads it here. NULL means "live, or user-archived" —
+     * indistinguishable at this layer; the projection writer's ON
+     * CONFLICT UPDATE COALESCEs into the existing value so a
+     * non-cascade emit (e.g. a rename arriving after the cascade has
+     * already stamped this row) can't clobber the breadcrumb. Clearing
+     * happens when `unarchiveEntity` runs against the row — the next
+     * emit then carries NULL forward via the same COALESCE, except
+     * cascade-restore (10a.5) issues a direct catalog UPDATE to clear
+     * the projection promptly without waiting on a subsequent emit.
      */
     cascade_source?: string | null;
     authorization_rules: AuthorizationRules;
@@ -282,18 +287,17 @@ export async function EmitEntitySnapshotToCatalog(
     // emit. This keeps a stale emit (e.g. alarm-driven reconciliation)
     // from clobbering a freshly-claimed slug.
     const slug = snapshot.slug ?? defaultSlugForId(snapshot.id);
-    // ADR 0011 §Step 10a.1 / ADR 0008: cascade_source rides through here
-    // because cascade-archive mutations set it on the child entity row
-    // and re-emit the snapshot. Non-cascade emits leave it undefined →
-    // bound as null. ON CONFLICT UPDATE uses COALESCE to preserve a
-    // previously-set cascade_source against a stale reconcile emit that
-    // happens to fire between the cascade mutation and a future
-    // unrelated mutation — same hazard the slug column dodged by being
-    // excluded from UPDATE entirely. The shapes differ because
-    // cascade_source DOES need to flow back through future emits (the
-    // child DO persists it locally), but a null incoming value should
-    // not be treated as "clear this." `restoreWorkspace` clears via
-    // direct catalog UPDATE, not through snapshot emit.
+    // ADR 0011 §Step 10a / ADR 0008: cascade_source rides through here
+    // because the DO entity row carries it natively (10a.4a) — every
+    // emit just mirrors the row's value. Set by `cascadeArchiveList`,
+    // cleared by `unarchiveEntity`. The ON CONFLICT UPDATE writes the
+    // value unconditionally (no COALESCE) because the row is
+    // authoritative: a non-cascade emit on an already-archived row
+    // still carries the cascade_source forward from the row, and an
+    // unarchive emit must clear the projection's value. Cascade-
+    // restore (10a.5) additionally issues a direct catalog UPDATE to
+    // clear the projection promptly for any rows whose own DO emit
+    // hasn't landed yet.
     const cascadeSource = snapshot.cascade_source ?? null;
     await d1
         .prepare(
@@ -309,10 +313,7 @@ export async function EmitEntitySnapshotToCatalog(
                 forked_from_id = excluded.forked_from_id,
                 meta = excluded.meta,
                 slot = excluded.slot,
-                cascade_source = COALESCE(
-                    excluded.cascade_source,
-                    workspace_entities.cascade_source
-                ),
+                cascade_source = excluded.cascade_source,
                 authorization_rules = excluded.authorization_rules,
                 time_updated = excluded.time_updated,
                 time_deleted = excluded.time_deleted,

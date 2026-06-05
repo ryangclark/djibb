@@ -17,6 +17,7 @@ import * as archiveListGroup from './archiveListGroup';
 import * as archiveListGroups from './archiveListGroups';
 import * as archiveListItem from './archiveListItem';
 import * as archiveListItems from './archiveListItems';
+import * as cascadeArchiveList from './cascadeArchiveList';
 import * as changeMemberRole from './changeMemberRole';
 import * as createWorkspace from './createWorkspace';
 import * as leaveMember from './leaveMember';
@@ -80,6 +81,7 @@ export const Mutations = {
     [archiveListGroups.name]: archiveListGroups,
     [archiveListItem.name]: archiveListItem,
     [archiveListItems.name]: archiveListItems,
+    [cascadeArchiveList.name]: cascadeArchiveList,
     [changeMemberRole.name]: changeMemberRole,
     [createWorkspace.name]: createWorkspace,
     [leaveMember.name]: leaveMember,
@@ -252,7 +254,15 @@ export function executeServerMutation(
         };
     }
 
-    if (!entry.requiredRole.includes(ctxBase.role)) {
+    // The union-narrowed type of `entry.requiredRole` is the
+    // intersection of every concrete mutator's `requiredRole` tuple
+    // (some are `readonly ['owner']`, some are SYSTEM_ROLES, etc.), so
+    // .includes() over the union won't accept the broad
+    // `AuthorizationRole` directly. The runtime check is a plain
+    // string-in-array test; cast to widen.
+    if (
+        !(entry.requiredRole as readonly string[]).includes(ctxBase.role)
+    ) {
         return {
             ok: false,
             status: 'unauthorized',

@@ -33,6 +33,19 @@ export type Slot = z.TypeOf<typeof SlotEnum>;
  */
 const entityBaseFields = {
     authorization_rules: AuthorizationRulesSchema,
+    /**
+     * Breadcrumb pointing back at the Workspace whose cascade-archive
+     * sweep brought this entity down (ADR 0008, ADR 0011 §Step 10a).
+     * NULL on every live entity, NULL on entities the user manually
+     * archived, set only by `cascadeArchiveList` to the workspace ID.
+     *
+     * Cleared on `unarchiveEntity`. `restoreWorkspace` (10a.5) scans
+     * `WHERE cascade_source = ? AND time_deleted IS NOT NULL` to find
+     * exactly the children this specific deletion brought down —
+     * manually-archived siblings stay archived because their
+     * `cascade_source` is null.
+     */
+    cascade_source: z.string().nullable().optional(),
     child_element_refs: z.array(z.string()),
     description: z.string().optional(),
     /**

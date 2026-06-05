@@ -82,6 +82,7 @@ import { newId } from '../id';
 const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
     'acceptInvitation',
     'archiveList',
+    'cascadeArchiveList',
     'changeMemberRole',
     'createWorkspace',
     'initFromTemplate',
@@ -1452,6 +1453,12 @@ export class DjibbList extends DurableObject {
             // projection writer defaults to the id suffix when absent.
             slug: (entity as { slug?: string }).slug,
             slot: entity.slot,
+            // ADR 0008 / ADR 0011 §Step 10a.4a: cascade_source lives
+            // on the DO row alongside time_deleted; the row is
+            // authoritative and the snapshot just mirrors it.
+            cascade_source:
+                (entity as { cascade_source?: string | null })
+                    .cascade_source ?? null,
             authorization_rules: entity.authorization_rules,
             time_created: Math.floor(entity.time_created.getTime() / 1000),
             time_updated: timeUpdated,

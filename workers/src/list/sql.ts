@@ -142,6 +142,10 @@ export function getElementById(sql: SqlStorage, elementId: string) {
         // `slot` column is recent (ADR 0011); older DO storage may omit
         // it entirely. Treat undefined and null the same.
         data.slot = data.slot ?? null;
+        // `cascade_source` column is recent (ADR 0008, ADR 0011 §Step
+        // 10a.4a); older DO storage may omit it. Treat undefined and
+        // null the same — at rest, every entity is `null`.
+        data.cascade_source = data.cascade_source ?? null;
         // `meta` is a stringified JSON blob (ADR 0011 §Step 5). Parse
         // on the way out; tolerate `null` (column default) and the
         // empty-string seen on some legacy DO rows.
@@ -207,6 +211,7 @@ export function getChangedElements(sql: SqlStorage, previousVersion: number) {
             data.workspace_id = data.workspace_id ?? null;
             data.forked_from_id = data.forked_from_id ?? null;
             data.slot = data.slot ?? null;
+            data.cascade_source = data.cascade_source ?? null;
             data.meta =
                 data.meta && typeof data.meta === 'string'
                     ? JSON.parse(data.meta)
@@ -290,6 +295,7 @@ export function InitializeTables(
         `CREATE TABLE IF NOT EXISTS list_elements(
             "id" TEXT NOT NULL PRIMARY KEY,
             "authorization_rules" TEXT DEFAULT NULL, -- JSON, entity rows only (ADR 0003)
+            "cascade_source" TEXT DEFAULT NULL, -- entity rows only; set by cascade-archive mutations (ADR 0008, ADR 0011 §Step 10a)
             "child_element_refs" TEXT NOT NULL DEFAULT '[]',
             "description" TEXT DEFAULT "",
             "forked_from_id" TEXT DEFAULT NULL, -- entity rows only
@@ -569,16 +575,38 @@ export function renameEntity(
  */
 export function archiveEntity(
     sql: SqlStorage,
-    { entityId, version }: { entityId: string; version: number }
+    {
+        entityId,
+        version,
+        cascadeSource,
+    }: {
+        entityId: string;
+        version: number;
+        /**
+         * The Workspace ID whose cascade-archive sweep is driving this
+         * archive. Set only by `cascadeArchiveList` (ADR 0008 / ADR 0011
+         * §Step 10a). User-driven `archiveList` omits this; the column
+         * remains NULL, which is the resting state for any entity that
+         * was archived by direct user intent rather than by a parent
+         * Workspace's cascade. The restore predicate in 10a.5 selects
+         * `WHERE cascade_source = ?`, so a NULL row is invisible to a
+         * `restoreWorkspace` sweep — preserving the user's prior
+         * "archive this list" intent across an unrelated workspace
+         * delete/restore cycle.
+         */
+        cascadeSource?: string | null;
+    }
 ): void {
     const cursor = sql.exec(
         `UPDATE list_elements
         SET
             time_deleted = CURRENT_TIMESTAMP,
+            cascade_source = ?,
             version = ?,
             time_updated = CURRENT_TIMESTAMP
         WHERE id = ?
             AND type IN (${ENTITY_ROW_TYPES_SQL_LIST});`,
+        cascadeSource ?? null,
         version,
         entityId
     );
@@ -593,6 +621,14 @@ export function archiveEntity(
  * Restore a soft-deleted entity row by clearing `time_deleted`. Inverse
  * of `archiveEntity` for the `unarchiveList` undo path. Idempotent on
  * already-live rows.
+ *
+ * Also clears `cascade_source` unconditionally. A restored entity has
+ * by definition come back to life independently of whatever cascade
+ * archive (if any) put it under; future cascade sweeps must not pick
+ * it up under an old workspace's breadcrumb. The cascade-restore path
+ * (ADR 0008 / 10a.5) calls this from a `system`-role mutator that
+ * scanned by `cascade_source = ?` to find this row in the first place,
+ * so clearing the breadcrumb after the read is the correct ordering.
  */
 export function unarchiveEntity(
     sql: SqlStorage,
@@ -602,6 +638,7 @@ export function unarchiveEntity(
         `UPDATE list_elements
         SET
             time_deleted = NULL,
+            cascade_source = NULL,
             version = ?,
             time_updated = CURRENT_TIMESTAMP
         WHERE id = ?
