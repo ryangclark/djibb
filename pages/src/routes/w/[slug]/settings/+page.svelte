@@ -14,9 +14,17 @@
 	// into `ctx.lastOutcome` and we read it here. On success we
 	// navigate to the new slug URL.
 	//
-	// Workspace delete is still dropped (no
-	// `archiveWorkspace`/`softDeleteWorkspace` mutator yet; lands
-	// with the cascade-delete dispatcher in ADR 0011 §Step 10).
+	// ADR 0011 §Step 10a.4c / ADR 0008: workspace delete is the
+	// highest-friction action in the product. It's not Cmd+Z-undoable;
+	// instead we render an explicit modal that requires the user to
+	// type the workspace name to confirm. The mutator is `archiveList`
+	// against the workspace's own id — the post-commit trigger in
+	// `_handlePush` enqueues the `cascade-archive` alarm event, which
+	// fans out `cascadeArchiveList` to every owned list and template
+	// in batches of N=10. The user's click returns instantly; the
+	// fan-out finishes in the background. Restoration is a 30-day
+	// window via the Trash UI (Step 10b — not yet built); past that
+	// the hard-delete clock fires and storage is reclaimed.
 
 	const session = getSessionState();
 	const ctx = getContext(WORKSPACE_REPLICACHE_KEY);
@@ -32,6 +40,21 @@
 	let saving = $state(false);
 	let leaving = $state(false);
 	let error = $state('');
+
+	// ADR 0008 friction tier: workspace delete requires a typed
+	// confirmation against the current workspace name (case-
+	// insensitive). The button only enables when the input matches —
+	// no accidental Enter, no muscle-memory click-through. While the
+	// mutation is in flight `deleting` blocks re-submit and dims the
+	// modal.
+	let deleteModalOpen = $state(false);
+	let deleteConfirmText = $state('');
+	let deleting = $state(false);
+	const deleteConfirmMatches = $derived(
+		deleteConfirmText.trim().toLowerCase() ===
+			(workspace?.name ?? '').trim().toLowerCase() &&
+			(workspace?.name ?? '').trim().length > 0
+	);
 
 	let synced = $state(false);
 	$effect(() => {
@@ -162,6 +185,41 @@
 			leaving = false;
 		}
 	}
+
+	function openDeleteModal() {
+		deleteConfirmText = '';
+		error = '';
+		deleteModalOpen = true;
+	}
+
+	function closeDeleteModal() {
+		if (deleting) return;
+		deleteModalOpen = false;
+	}
+
+	async function onConfirmDelete() {
+		if (!ctx?.mutate || !workspaceId) return;
+		if (!deleteConfirmMatches) return;
+		deleting = true;
+		error = '';
+		try {
+			// archiveList against the workspace's own id soft-deletes
+			// the workspace entity. The DO's post-commit hook then
+			// enqueues `cascade-archive`, which fans out to every owned
+			// list and template in batches. Nothing to await here for
+			// the cascade — the user's view of "I deleted this" is
+			// satisfied the moment archiveList returns. Refresh the
+			// session list so the deleted workspace drops from the
+			// switcher, and navigate the user away from a URL that's
+			// about to stop resolving.
+			await ctx.mutate.archiveList({ listId: workspaceId });
+			await session.refreshWorkspaces();
+			await goto('/workspaces');
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+			deleting = false;
+		}
+	}
 </script>
 
 {#if sessionWorkspace}
@@ -207,9 +265,13 @@
 				>
 					{leaving ? 'Leaving…' : 'Leave'}
 				</button>
-				<!-- ADR 0011 §7b.4: delete is dropped until the workspace
-				     cascade-delete dispatcher lands (Step 10). The legacy
-				     `softDeleteWorkspace` HTTP path is gone. -->
+				<button
+					class="border border-red-600 text-red-700 px-3 py-1 text-sm"
+					onclick={openDeleteModal}
+					disabled={deleting}
+				>
+					Delete workspace…
+				</button>
 			{:else}
 				<p class="text-sm text-stone-500">
 					Personal workspaces cannot be deleted or left.
@@ -222,3 +284,92 @@
 		{/if}
 	{/if}
 {/if}
+
+{#if deleteModalOpen && workspace}
+	<div class="modal-backdrop" role="dialog" aria-modal="true">
+		<div class="modal">
+			<h3>Delete this workspace?</h3>
+			<p>
+				All lists and templates in
+				<strong>{workspace.name}</strong>
+				will be moved to the trash. You'll have <strong>30 days</strong>
+				to restore them before they're permanently deleted.
+			</p>
+			<p>
+				Members of this workspace will lose access immediately.
+			</p>
+			<label class="block mt-3 text-sm">
+				Type <strong>{workspace.name}</strong> to confirm:
+				<input
+					class="border px-2 py-1 mt-1 block w-full"
+					bind:value={deleteConfirmText}
+					placeholder={workspace.name}
+					disabled={deleting}
+					autocomplete="off"
+				/>
+			</label>
+			<div class="modal-actions">
+				<button
+					type="button"
+					onclick={closeDeleteModal}
+					disabled={deleting}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					class="danger"
+					onclick={onConfirmDelete}
+					disabled={!deleteConfirmMatches || deleting}
+				>
+					{deleting ? 'Deleting…' : 'Delete workspace'}
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<style>
+	.modal-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.4);
+		display: grid;
+		place-items: center;
+		z-index: 100;
+	}
+	.modal {
+		background: white;
+		padding: 1.5rem;
+		border-radius: 0.5rem;
+		max-width: 30rem;
+		margin: 0 1rem;
+	}
+	.modal h3 {
+		margin: 0 0 0.5rem 0;
+		font-weight: 600;
+	}
+	.modal p {
+		margin: 0.5rem 0;
+		font-size: 0.875rem;
+	}
+	.modal-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 0.5rem;
+		margin-top: 1rem;
+	}
+	.modal-actions button {
+		border: 1px solid #d6d3d1;
+		padding: 0.25rem 0.75rem;
+		font-size: 0.875rem;
+	}
+	.modal-actions button.danger {
+		border-color: #dc2626;
+		color: #b91c1c;
+	}
+	.modal-actions button.danger:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+</style>
