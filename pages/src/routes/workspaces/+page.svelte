@@ -58,7 +58,10 @@
 	}
 </script>
 
-<h1 class="text-2xl mb-2">Workspaces</h1>
+<div class="flex items-baseline justify-between mb-2">
+	<h1 class="text-2xl">Workspaces</h1>
+	<a class="text-sm underline text-stone-500" href="/trash">Trash</a>
+</div>
 
 {#if !session.accounts.length}
 	<p>Sign in to manage workspaces.</p>

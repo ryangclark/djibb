@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { HonoEnv } from '..';
 import { HandleSession } from '../auth/middleware';
 import { GetWorkspacesByAccountId } from '../workspace/service';
+import { ListTrashedEntitiesForAccount } from '../catalog/service';
 import { BadRequestError, UnauthenticatedError, UnauthorizedError } from '../errors';
 import { IdTypes } from '../id';
 import { GetAccountByUsername, SetAccountUsername } from './username';
@@ -30,6 +31,30 @@ AccountApp.get('/:suffix/workspaces', async c => {
 
     const workspaces = await GetWorkspacesByAccountId(c.env.DJIBB_AUTH, accountId);
     return c.json(workspaces);
+});
+
+/**
+ * Trash listing for one account. Same URL convention as `/workspaces`:
+ * `/a/<suffix>/trash`. Returns the soft-deleted entities (workspaces,
+ * plus lists/templates with `cascade_source IS NULL`) the actor owns.
+ * Per ADR 0008 / ADR 0011 §Step 10b-ui.
+ */
+AccountApp.get('/:suffix/trash', async c => {
+    const session = c.get('session');
+    if (!session) throw new UnauthenticatedError();
+
+    const accountId = `${IdTypes.account}/${c.req.param('suffix')}`;
+    if (!session.accounts.some(a => a.id === accountId)) {
+        throw new UnauthorizedError(
+            'Account is not part of the current session.'
+        );
+    }
+
+    const entities = await ListTrashedEntitiesForAccount(
+        c.env.DJIBB_AUTH,
+        accountId
+    );
+    return c.json(entities);
 });
 
 const PatchAccountSchema = z.object({
