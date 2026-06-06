@@ -1,23 +1,43 @@
 <script>
 	import { getContext } from 'svelte';
 	import { WORKSPACE_REPLICACHE_KEY } from '../_context.js';
+	import EntityInvites from '$lib/components/EntityInvites.svelte';
 
 	// ADR 0011 §7b.4: members are now read from the live workspace
 	// entity's `authorization_rules.authorized_accounts` (Replicache
 	// subscription), and `changeMemberRole`/`removeMember` dispatch
 	// through DO mutators. The legacy HTTP `fetchWorkspaceMembers` /
 	// `changeMemberRole` / `removeMember` helpers are gone.
+	//
+	// ADR 0011 §Step 10d: workspace invitations collapse onto ADR 0009.
+	// Workspaces are DjibbLists, so `inviteByIdentity` / `revokeInvitation`
+	// work against the workspace DO unchanged; the shared `EntityInvites`
+	// component drives the invite/pending/revoke surface below, fed by the
+	// `pending_invites/*` keyspace exposed on the layout context.
 
 	const ctx = getContext(WORKSPACE_REPLICACHE_KEY);
 
 	const workspace = $derived(ctx?.workspace ?? null);
 	const sessionWorkspace = $derived(ctx?.sessionWorkspace ?? null);
 	const workspaceId = $derived(ctx?.workspaceId ?? null);
+	const pendingInvites = $derived(ctx?.pendingInvites ?? []);
+
+	// Workspace invites never offer `owner` (single-owner invariant) or
+	// `checker` (not a workspace role) — narrower than the entity default.
+	const WORKSPACE_INVITE_ROLES = /** @type {const} */ ([
+		'admin',
+		'editor',
+		'viewer'
+	]);
 
 	const currentRole = $derived(sessionWorkspace?.membership?.role ?? null);
 	const isAdmin = $derived(currentRole === 'owner' || currentRole === 'admin');
-	const isPersonal = $derived(sessionWorkspace?.workspace?.is_personal ?? false);
-	const actorAccountId = $derived(sessionWorkspace?.membership?.account_id ?? null);
+	const isPersonal = $derived(
+		sessionWorkspace?.workspace?.is_personal ?? false
+	);
+	const actorAccountId = $derived(
+		sessionWorkspace?.membership?.account_id ?? null
+	);
 
 	/** @type {Array<{account_id: string, role: string}>} */
 	const members = $derived.by(() => {
@@ -39,7 +59,9 @@
 	async function onChangeRole(accountId, ev) {
 		if (!ctx?.mutate || !workspaceId) return;
 		const target = /** @type {HTMLSelectElement} */ (ev.target);
-		const role = /** @type {'owner'|'admin'|'editor'|'viewer'} */ (target.value);
+		const role = /** @type {'owner'|'admin'|'editor'|'viewer'} */ (
+			target.value
+		);
 		try {
 			await ctx.mutate.changeMemberRole({
 				listId: workspaceId,
@@ -91,7 +113,10 @@
 					<td class="pr-6 font-mono text-xs">{m.account_id}</td>
 					<td class="pr-6">
 						{#if isAdmin && !isPersonal && m.account_id !== actorAccountId}
-							<select value={m.role} onchange={(ev) => onChangeRole(m.account_id, ev)}>
+							<select
+								value={m.role}
+								onchange={(ev) => onChangeRole(m.account_id, ev)}
+							>
 								<option value="owner">owner</option>
 								<option value="admin">admin</option>
 								<option value="editor">editor</option>
@@ -116,13 +141,17 @@
 		</tbody>
 	</table>
 
-	{#if isAdmin && !isPersonal}
-		<p class="text-xs text-stone-500">
-			Workspace-level invitations are temporarily unavailable. Use the
-			Share button on individual entities to invite people for now;
-			workspace-scoped invitations return in a follow-up.
-		</p>
+	{#if isAdmin && !isPersonal && ctx?.mutate && workspaceId}
+		<EntityInvites
+			entityId={workspaceId}
+			mutators={ctx.mutate}
+			currentAccountId={actorAccountId}
+			{pendingInvites}
+			assignableRoles={WORKSPACE_INVITE_ROLES}
+		/>
 	{:else if isPersonal}
-		<p class="text-xs text-stone-500">Personal workspaces don't have invitations.</p>
+		<p class="text-xs text-stone-500">
+			Personal workspaces don't have invitations.
+		</p>
 	{/if}
 {/if}

@@ -15,5 +15,9 @@
  *                       Settings reads this to surface slug-claim
  *                       failures (slug_taken, slug_reserved, etc.) per
  *                       ADR 0011 §Step 7b.5; nulled out when consumed.
+ *   pendingInvites   — live `pending_invites/*` rows from the workspace
+ *                       DO (owner/admin-gated by the pull filter). The
+ *                       members page feeds these to `EntityInvites` for
+ *                       the invite/revoke surface per ADR 0011 §Step 10d.
  */
 export const WORKSPACE_REPLICACHE_KEY = Symbol('workspaceReplicache');

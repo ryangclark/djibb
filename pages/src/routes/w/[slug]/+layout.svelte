@@ -24,13 +24,17 @@
 	const slug = $derived(page.params.slug);
 
 	$effect(() => {
-		if (slug && session.workspaces.length && session.currentWorkspaceSlug !== slug) {
+		if (
+			slug &&
+			session.workspaces.length &&
+			session.currentWorkspaceSlug !== slug
+		) {
 			session.setActiveWorkspace(slug);
 		}
 	});
 
 	const current = $derived(
-		session.workspaces.find(w => w.workspace.slug === slug)
+		session.workspaces.find((w) => w.workspace.slug === slug)
 	);
 	const workspaceId = $derived(current?.workspace.id ?? null);
 
@@ -82,7 +86,20 @@
 	});
 
 	/** @type {any} */
-	const workspaceEntity = $derived(workspaceId ? workspaceData[workspaceId] : null);
+	const workspaceEntity = $derived(
+		workspaceId ? workspaceData[workspaceId] : null
+	);
+
+	// ADR 0011 §Step 10d: surface the workspace DO's `pending_invites/*`
+	// keyspace to child pages (members-page invite UI). The DO pull
+	// filter only emits these rows to owners/admins, so non-managers see
+	// an empty list regardless.
+	/** @type {import('$lib/types/invites.js').PendingInvite[]} */
+	const pendingInvites = $derived(
+		Object.entries(workspaceData)
+			.filter(([k]) => k.startsWith('pending_invites/'))
+			.map(([, v]) => /** @type {any} */ (v))
+	);
 
 	setContext(WORKSPACE_REPLICACHE_KEY, {
 		get mutate() {
@@ -105,6 +122,9 @@
 		get lastOutcome() {
 			return lastOutcome;
 		},
+		get pendingInvites() {
+			return pendingInvites;
+		},
 		clearOutcome() {
 			lastOutcome = null;
 		}
@@ -117,7 +137,9 @@
 			<h1 class="text-2xl">
 				{workspaceEntity?.name ??
 					current.workspace.name ??
-					(current.workspace.is_personal ? 'Your space' : current.workspace.slug)}
+					(current.workspace.is_personal
+						? 'Your space'
+						: current.workspace.slug)}
 			</h1>
 			<nav class="flex gap-4 text-sm mt-1">
 				<a href={`/w/${slug}`}>Home</a>

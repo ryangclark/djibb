@@ -90,7 +90,7 @@
 	 * Pending invitations on this entity, surfaced by the
 	 * `pending_invites/*` Replicache keyspace (ADR 0009 Slice 2).
 	 *
-	 * @type {import('$lib/components/Share.svelte').PendingInvite[]}
+	 * @type {import('$lib/types/invites.js').PendingInvite[]}
 	 */
 	let pendingInvites = $derived(
 		Object.entries(list_data)
@@ -108,7 +108,7 @@
 		entityId={data.list_id}
 		entityType="template"
 		entity={list}
-		mutators={mutators}
+		{mutators}
 		currentAccountId={sessionState.currentAccountId}
 		backHref={`/t/${suffix}`}
 		{pendingInvites}
@@ -118,7 +118,10 @@
 {/if}
 
 <UndoToast event={toastEvent} onUndo={() => onUndoClick?.()} />
-<ConfirmToast pending={pendingConfirm} setPending={(p) => (pendingConfirm = p)} />
+<ConfirmToast
+	pending={pendingConfirm}
+	setPending={(p) => (pendingConfirm = p)}
+/>
 
 <style>
 	.loading {

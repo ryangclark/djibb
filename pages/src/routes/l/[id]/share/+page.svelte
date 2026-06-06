@@ -104,7 +104,7 @@
 	 * keyspace for everyone else, so this array is naturally empty
 	 * for non-managers.
 	 *
-	 * @type {import('$lib/components/Share.svelte').PendingInvite[]}
+	 * @type {import('$lib/types/invites.js').PendingInvite[]}
 	 */
 	let pendingInvites = $derived(
 		Object.entries(list_data)
@@ -122,7 +122,7 @@
 		entityId={data.list_id}
 		entityType="list"
 		entity={list}
-		mutators={mutators}
+		{mutators}
 		currentAccountId={sessionState.currentAccountId}
 		backHref={`/l/${suffix}`}
 		{pendingInvites}
@@ -132,7 +132,10 @@
 {/if}
 
 <UndoToast event={toastEvent} onUndo={() => onUndoClick?.()} />
-<ConfirmToast pending={pendingConfirm} setPending={(p) => (pendingConfirm = p)} />
+<ConfirmToast
+	pending={pendingConfirm}
+	setPending={(p) => (pendingConfirm = p)}
+/>
 
 <style>
 	.loading {
