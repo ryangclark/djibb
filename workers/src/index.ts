@@ -4,6 +4,7 @@ import { User, verifyRequestOrigin } from 'lucia';
 
 import { CatalogApp } from './catalog/fetch';
 import { list_app, template_app, workspace_app } from './list/fetch';
+import { WorkspaceInviteApp } from './workspace/inviteResolver';
 import { AuthorizationRole } from './auth/rules';
 import { EntityRow } from './list/entity';
 import { Session } from './auth/session';
@@ -161,6 +162,12 @@ app.route('/u', UserApp);
 // app fires via Replicache on a per-workspace client. Reads come from
 // the `entity_memberships` projection via `/a/<id>/workspaces`.
 app.route('/workspace', workspace_app);
+
+// ADR 0011 §Step 10d.3: slug→id resolver for the pre-membership
+// workspace-invite accept surface. Mounted separately from
+// `/workspace` (a generic entity router that requires an `id` query
+// param) — gated on the caller holding a pending invite.
+app.route('/workspace-invite', WorkspaceInviteApp);
 
 app.onError(err => {
     if (err instanceof DjibbError) {

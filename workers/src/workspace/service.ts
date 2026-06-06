@@ -217,3 +217,59 @@ export async function GetMembership(
         time_joined: new Date((row as any).time_joined * 1000),
     };
 }
+
+/**
+ * ADR 0011 §Step 10d.3: resolve a workspace slug to its entity id +
+ * name, but ONLY for a caller who actually holds a pending invitation
+ * to that workspace.
+ *
+ * The pre-membership accept surface (`/w/[slug]` invitee branch) needs
+ * the entity id to mount Replicache by id — but the account isn't a
+ * member yet, so it can't come off the session's workspace list. A bare
+ * slug→id lookup would be a discovery oracle: workspace slugs are
+ * human-guessable (unlike entity nanoids), and restricted-role pulls are
+ * currently permitted (see the ADR 0009 shakedown handoff, corner #6),
+ * so leaking the id would let any authed user read a workspace's
+ * contents. Gating on a pending invite in `entity_invitations_index`
+ * keeps this purpose-specific: you can only resolve a workspace you were
+ * invited to.
+ *
+ * `identityValues` is the set of verified email identities for the
+ * active account (lowercased), matched against pending, unexpired
+ * invite rows. Returns null when no slug match, no pending invite, or
+ * the invite expired — the route maps all of these to 404 so the
+ * negative cases are indistinguishable.
+ */
+export async function ResolveInvitedWorkspaceBySlug(
+    d1: D1Database,
+    {
+        slug,
+        identityValues,
+        nowSeconds,
+    }: { slug: string; identityValues: string[]; nowSeconds: number }
+): Promise<{ id: string; name: string | null } | null> {
+    if (identityValues.length === 0) return null;
+    const placeholders = identityValues.map(() => '?').join(', ');
+    const row = await d1
+        .prepare(
+            `SELECT we.id AS id, we.name AS name
+            FROM workspace_entities we
+            JOIN entity_invitations_index ei ON ei.target_id = we.id
+            WHERE we.type = 'workspace'
+              AND we.slug = ?
+              AND we.time_deleted IS NULL
+              AND ei.target_type = 'workspace'
+              AND ei.status = 'pending'
+              AND ei.identity_kind = 'email'
+              AND ei.time_expires > ?
+              AND ei.identity_value IN (${placeholders})
+            LIMIT 1`
+        )
+        .bind(slug, nowSeconds, ...identityValues)
+        .first();
+    if (!row) return null;
+    return {
+        id: (row as any).id,
+        name: (row as any).name ?? null,
+    };
+}
