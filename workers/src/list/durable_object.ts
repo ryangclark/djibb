@@ -1787,7 +1787,30 @@ export class DjibbList extends DurableObject {
         const idSuffix = entityId.includes('/')
             ? entityId.split('/')[1]
             : entityId;
-        const acceptUrl = `${origin}${pathPrefix}${idSuffix}?from_invite=1`;
+        // Workspace pages route by slug (`/w/<slug>`), not by id suffix,
+        // so resolve the slug from the D1 catalog (the DO's local sql
+        // doesn't carry it — ADR 0011 §7b.5). Lists/Templates route by
+        // their id suffix directly. Fall back to the id suffix if the
+        // slug is somehow missing so the link still names the right DO.
+        let pathSegment = idSuffix;
+        if (entityTypeLabel === 'workspace') {
+            const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
+            const row = await d1
+                .prepare(
+                    `SELECT slug FROM workspace_entities
+                      WHERE id = ? AND type = 'workspace' LIMIT 1;`
+                )
+                .bind(entityId)
+                .first<{ slug: string | null }>();
+            if (row?.slug) {
+                pathSegment = row.slug;
+            } else {
+                console.warn(
+                    `\`fireInvitationEmails()\` no slug for workspace "${entityId}"; using id suffix.`
+                );
+            }
+        }
+        const acceptUrl = `${origin}${pathPrefix}${pathSegment}?from_invite=1`;
 
         const sends = invites.map(async invite => {
             // v1 only supports email-kind identities.

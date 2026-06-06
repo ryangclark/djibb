@@ -505,6 +505,93 @@ describe('inviteByIdentity', () => {
         }
     });
 
+    // ADR 0011 §Step 10d.2: workspaces route by slug (`/w/<slug>`), not
+    // by id suffix, so the invitation email's acceptUrl must carry the
+    // slug resolved from the D1 catalog — not `/w/<idSuffix>`, which
+    // would 404 against the slug-keyed `/w/[slug]` route.
+    it('uses the workspace slug (not the id suffix) in the acceptUrl', async () => {
+        const suffix = 'wsinvemail';
+        const workspaceId = `${IdTypes.workspace}/${suffix
+            .padEnd(21, 'a')
+            .slice(0, 21)}`;
+        const stub = env.DJIBB_LIST.get(
+            env.DJIBB_LIST.idFromName(workspaceId)
+        ) as DurableObjectStub<DjibbList>;
+        const ownerId = newId('account');
+        const cg = 'cg_wsinv';
+        const cid = 'c_wsinv';
+
+        // Mint the workspace, then claim a slug distinct from the id
+        // suffix so the assertion can tell the two apart.
+        await stub.handlePush({
+            authorizedAccounts: [{ id: ownerId } as any],
+            authorizedRole: 'ownerless',
+            listId: workspaceId,
+            pushRequest: makePush({
+                clientGroupID: cg,
+                clientID: cid,
+                name: 'createWorkspace',
+                mutationId: 1,
+                accountId: ownerId,
+                body: { workspaceId, name: 'Invite Team' },
+            }),
+        });
+        await stub.handlePush({
+            authorizedAccounts: [{ id: ownerId } as any],
+            authorizedRole: 'owner',
+            listId: workspaceId,
+            pushRequest: makePush({
+                clientGroupID: cg,
+                clientID: cid,
+                name: 'setWorkspaceSlug',
+                mutationId: 2,
+                accountId: ownerId,
+                body: { workspaceId, slug: 'invite-team' },
+            }),
+        });
+
+        const sends: Array<Record<string, unknown>> = [];
+        const originalEmail = (env as { EMAIL?: unknown }).EMAIL;
+        (env as { EMAIL: unknown }).EMAIL = {
+            send: async (msg: Record<string, unknown>) => {
+                sends.push(msg);
+            },
+        };
+
+        try {
+            const result = await stub.handlePush({
+                authorizedAccounts: [
+                    { id: ownerId, display_name: 'Alice Inviter' } as any,
+                ],
+                authorizedRole: 'owner',
+                listId: workspaceId,
+                pushRequest: makePush({
+                    clientGroupID: cg,
+                    clientID: cid,
+                    name: 'inviteByIdentity',
+                    mutationId: 3,
+                    accountId: ownerId,
+                    body: {
+                        listId: workspaceId,
+                        identity_kind: 'email',
+                        identity_value: 'recipient@example.com',
+                        role: 'editor',
+                    },
+                }),
+            });
+            expect(result.error).toBeNull();
+
+            expect(sends).toHaveLength(1);
+            const html = String(sends[0]!.html);
+            expect(html).toContain('/w/invite-team?from_invite=1');
+            // Crucially NOT the id-suffix form, which would 404.
+            const idSuffix = workspaceId.split('/')[1];
+            expect(html).not.toContain(`/w/${idSuffix}`);
+        } finally {
+            (env as { EMAIL: unknown }).EMAIL = originalEmail;
+        }
+    });
+
     it('skips email send for preflight-failed invites (already_member)', async () => {
         const { listId, stub } = getListStub('invemail2');
         const clientGroupID = 'cg_inv_email2';
