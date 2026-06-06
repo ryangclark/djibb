@@ -256,3 +256,26 @@ redundant once layout-level session resolution lands.
   an inviter's session re-pushes `initList` alongside
   `inviteByIdentity` in one batch. Didn't block the E2E once the
   upstream layers were sorted, but worth investigating.
+
+## Addendum 2026-06-06 — workspace invitations (ADR 0011 §10d)
+
+Workspace invites now ride the same flow (workspaces are DjibbLists).
+Relevant to the corners above:
+
+- **Corner #6 is still open and now also applies to workspaces.** A
+  restricted-role caller can still pull an entity's full contents; for
+  workspaces the "URL" is a *human-guessable slug*, not an unguessable
+  nanoid, which widens the exposure. The pre-membership accept surface
+  deliberately does **not** ship a bare slug→id lookup — the
+  `/workspace-invite/:slug` resolver
+  (`workers/src/workspace/inviteResolver.ts` →
+  `ResolveInvitedWorkspaceBySlug`) only answers when the caller holds a
+  pending invite. That contains the *discovery* angle but not the
+  underlying pull exposure; the real fix is still the role-aware pull
+  projection flagged in corner #6.
+- The deferred **in-app pending-invite inbox / "shared with me"** (the
+  "what the right architecture looks like" section) would subsume the
+  slug→id resolver: an inbox entry already carries `entity_id`, so the
+  invitee wouldn't need to resolve a slug at all. Until then the
+  resolver is the workspace analogue of the `?from_invite=1` deep-link
+  entry point.

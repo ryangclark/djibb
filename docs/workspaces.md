@@ -460,9 +460,14 @@ migration against a real userbase. Order of operations:
    reconciliation alarm to handle multiple per-DO scheduled events.
 9. **Trash UI + Start Fresh** (ADR 0008 prerequisites for shipping
    `deleteWorkspace`).
-10. **Workspace invitations onto ADR 0009.** `workspace_invitations`
-    table retires; existing pending rows (if any) get emitted into
-    the corresponding workspace DO's pending-invite keyspace.
+10. **Workspace invitations onto ADR 0009.** ✅ Done (ADR 0011 §10d).
+    `workspace_invitations` had already retired in §7b.3; since
+    workspaces are DjibbLists, `inviteByIdentity` / `revokeInvitation` /
+    `pending_invites` worked server-side unchanged. The remaining work
+    was client + accept-path: the shared `EntityInvites` component on
+    `/w/[slug]/members`, the `acceptUrl` slug fix, a pending-invite-gated
+    slug→id resolver (`/workspace-invite/:slug`), and a `/w/[slug]`
+    invitee branch rendering the `InviteBanner`.
 
 Surface today is small enough that we may opt to wipe rather than
 backfill — decide at apply time.
@@ -484,13 +489,18 @@ backfill — decide at apply time.
   `/w/:slug/settings`, `/w/:slug/members` (read-only).
 - `GET /account/:id/workspaces` re-added against the derived index.
 
-**Phase 3 — Invitations (collapse onto ADR 0009).**
-- `inviteByIdentity` mutator on `DjibbWorkspace` (inherited from the
-  base; trivial after Phase 1).
-- Workspace accept-banner flow reuses the entity-invite UI.
-- `workspace_invitations` table retires.
-- Link-type invitations: separate ADR slice (open question against
-  ADR 0009).
+**Phase 3 — Invitations (collapse onto ADR 0009).** ✅ Done (ADR 0011
+§10d).
+- `inviteByIdentity` mutator on the workspace DO (inherited — workspaces
+  are DjibbLists, so it worked unchanged).
+- Workspace invite UI reuses the entity-invite component
+  (`EntityInvites` on `/w/[slug]/members`).
+- Workspace accept-banner flow reuses `InviteBanner` via a `/w/[slug]`
+  invitee branch, reachable pre-membership through a pending-invite-gated
+  slug→id resolver.
+- `workspace_invitations` table retired (in §7b.3).
+- Link-type invitations: still a separate ADR slice (open question
+  against ADR 0009).
 
 **Phase 4 — Cascade + Trash (ADR 0008).**
 - Alarm dispatcher generalization.

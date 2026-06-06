@@ -354,7 +354,17 @@ against `docs/workspaces.md` §Migration plan):
    rejects as the primary view.)*
 10. Cascade dispatcher (ADR 0008), Trash UI, "Start Fresh,"
     invitations collapse onto ADR 0009 — all gated on steps 1–6
-    landing first.
+    landing first. *(Shipped: §10a cascade dispatcher, §10b Trash UI +
+    per-DO hard-delete clock, §10c personal-workspace "Start Fresh,"
+    §10d workspace invitations onto ADR 0009. The invitation work split
+    into §10d.1 invite UI — the shared `EntityInvites` component on the
+    members page, since workspaces are DjibbLists the `inviteByIdentity`
+    / `revokeInvitation` / `pending_invites` machinery already worked
+    server-side; §10d.2 the `acceptUrl` slug fix in `fireInvitationEmails`;
+    §10d.3 the pre-membership accept surface — a pending-invite-gated
+    slug→id resolver (`/workspace-invite/:slug`) plus a `/w/[slug]`
+    invitee branch that mounts Replicache by id and renders the
+    `InviteBanner`. With this, the implementation order is complete.)*
 
 Steps 3 (single-owner invariant) and 4 (enum retirement) can land
 together since they're paired by design.
