@@ -3,8 +3,10 @@
 	/**
 	 * ADR 0009 Slice 3 — invitee-side accept surface.
 	 *
-	 * Renders on `/l/[id]` and `/t/[id]` when the URL carries
-	 * `?from_invite=1` (the query string set by the invitation email).
+	 * Renders on `/l/[id]`, `/t/[id]`, and `/w/[slug]` when the URL
+	 * carries `?from_invite=1` (the query string set by the invitation
+	 * email). On the workspace surface it drives the pre-membership
+	 * accept flow (ADR 0011 §Step 10d.3).
 	 * Fires the `acceptInvitation` mutator with the active account's
 	 * verified email; the server-side mutator does the real
 	 * identity-match check and resolves the rest. Failures
@@ -31,7 +33,7 @@
 	/**
 	 * @typedef {Object} Props
 	 * @property {string} entityId
-	 * @property {'list' | 'template'} entityType
+	 * @property {'list' | 'template' | 'workspace'} entityType
 	 * @property {string | null} entityName  may be null pre-load
 	 * @property {import('$djibb/auth/rules').AuthorizationRules | undefined} authorizationRules
 	 * @property {import('$lib/replicache/types').ClientListMutators | undefined} mutators
@@ -60,16 +62,14 @@
 	let submitting = $state(false);
 
 	let activeAccount = $derived(
-		sessionAccounts.find(a => a.id === currentAccountId) ?? null
+		sessionAccounts.find((a) => a.id === currentAccountId) ?? null
 	);
 
 	// Server demands a verified email — `preflightAcceptInvitation`
 	// rejects unverified identity attempts with `identity_unverified`.
 	// Surface the requirement up front rather than firing a doomed mutation.
 	let activeEmail = $derived(
-		activeAccount && activeAccount.email_verified
-			? activeAccount.email
-			: null
+		activeAccount && activeAccount.email_verified ? activeAccount.email : null
 	);
 
 	let alreadyAuthorized = $derived(
@@ -110,7 +110,13 @@
 		`/accounts?next=${encodeURIComponent(pathname + '?from_invite=1')}`
 	);
 
-	let entityLabel = $derived(entityType === 'template' ? 'template' : 'list');
+	let entityLabel = $derived(
+		entityType === 'template'
+			? 'template'
+			: entityType === 'workspace'
+				? 'workspace'
+				: 'list'
+	);
 	let displayName = $derived(entityName?.trim() || `this ${entityLabel}`);
 </script>
 
@@ -123,15 +129,15 @@
 			</p>
 		{:else if !activeAccount}
 			<p>
-				You've been invited to <strong>{displayName}</strong>.
-				Pick an account to continue.
+				You've been invited to <strong>{displayName}</strong>. Pick an account
+				to continue.
 				<a href={signInHref}>Manage accounts</a>.
 			</p>
 		{:else if !activeEmail}
 			<p>
-				You've been invited to <strong>{displayName}</strong>, but
-				the active account ({activeAccount.display_name}) doesn't
-				have a verified email. Verify it, or
+				You've been invited to <strong>{displayName}</strong>, but the active
+				account ({activeAccount.display_name}) doesn't have a verified email.
+				Verify it, or
 				<a href={signInHref}>switch accounts</a>, to accept.
 			</p>
 		{:else}
@@ -147,9 +153,7 @@
 						disabled={submitting}
 						onclick={accept}
 					>
-						{submitting
-							? 'Accepting…'
-							: `Accept as ${activeEmail}`}
+						{submitting ? 'Accepting…' : `Accept as ${activeEmail}`}
 					</button>
 					<button
 						type="button"

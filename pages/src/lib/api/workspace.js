@@ -52,3 +52,23 @@ export async function fetchWorkspacesForAccount(accountId) {
 	if (!res.ok) throw new Error(`workspaces fetch failed: ${res.status}`);
 	return res.json();
 }
+
+/**
+ * ADR 0011 §Step 10d.3: resolve a workspace slug to its entity id +
+ * name for the pre-membership invite-accept surface. The server only
+ * answers when the authed account holds a pending invite to that
+ * workspace (see `workers/src/workspace/inviteResolver.ts`); every
+ * negative case is a 404, mapped here to `null` so callers can't tell
+ * them apart.
+ * @param {string} slug
+ * @returns {Promise<{ id: string, name: string | null } | null>}
+ */
+export async function resolveInvitedWorkspace(slug) {
+	const res = await fetch(
+		`${BASE}/workspace-invite/${encodeURIComponent(slug)}`,
+		{ credentials: 'include' }
+	);
+	if (res.status === 404) return null;
+	if (!res.ok) throw new Error(`resolve invite failed: ${res.status}`);
+	return res.json();
+}
