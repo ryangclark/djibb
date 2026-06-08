@@ -44,10 +44,12 @@
 	 *   Replicache keyspace. Visible only to owners/admins per the
 	 *   role-gated pull filter; the route filters `list_data` for keys
 	 *   beginning with `pending_invites/`.
-	 * @property {readonly import('$djibb/auth/rules').AccountRole[]} [assignableRoles]
-	 *   Roles offerable on an invite. Defaults to the full entity set;
-	 *   workspaces narrow it (no `owner` — single-owner invariant; no
-	 *   `checker` — not a workspace role).
+	 * @property {readonly import('$djibb/auth/rules').InvitableRole[]} [assignableRoles]
+	 *   Roles offerable on an invite. Defaults to the full *invitable*
+	 *   set, which excludes `owner`: ownership is transferred via
+	 *   `transferOwnership`, never invited (single-owner invariant).
+	 *   Workspaces narrow it further (no `checker` — not a workspace
+	 *   role).
 	 */
 
 	/** @type {Props} */
@@ -56,7 +58,7 @@
 		mutators,
 		currentAccountId,
 		pendingInvites = [],
-		assignableRoles = ['owner', 'admin', 'editor', 'checker', 'viewer']
+		assignableRoles = ['admin', 'editor', 'checker', 'viewer']
 	} = $props();
 
 	// ADR 0009 Slice 3 — invite-by-email form. Local "Invitation sent"
@@ -65,7 +67,7 @@
 	// post-commit poke, <1s).
 	let inviteEmail = $state('');
 	let inviteRole = $state(
-		/** @type {import('$djibb/auth/rules').AccountRole} */ (
+		/** @type {import('$djibb/auth/rules').InvitableRole} */ (
 			assignableRoles.includes('editor') ? 'editor' : assignableRoles[0]
 		)
 	);

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { AccountRoleEnum } from '../../auth/rules';
+import { InvitableRoleEnum } from '../../auth/rules';
 import { BadMutationError, NotFoundError } from '../../errors';
 import { ListSchema } from '..';
 import {
@@ -28,6 +28,12 @@ import type {
  * Owner-gated (mirrors `setListAuthRules`'s `requiredRole`); a passing
  * stranger on an ownerless list cannot invite collaborators.
  *
+ * `role` is an `InvitableRole` (`AccountRole` minus `owner`): ownership
+ * is transferred via `transferOwnership`, never invited. This also
+ * stops an `admin` — who passes the `OWNER_ROLES` gate — from minting a
+ * second `owner` through the invite path, which `changeMemberRole`
+ * already forbids on the direct-grant path.
+ *
  * The mutator is constructive — inverse is `revokeInvitation` with the
  * same (kind, value). No pre-state needed; the identity is in the
  * forward args.
@@ -43,7 +49,7 @@ export const argsSchema = z.object({
     listId: ListSchema.shape.id,
     identity_kind: InvitationIdentityKindEnum,
     identity_value: z.string().min(3).max(254),
-    role: AccountRoleEnum,
+    role: InvitableRoleEnum,
 });
 
 export type Args = z.infer<typeof argsSchema>;

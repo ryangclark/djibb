@@ -46,6 +46,25 @@ export const AccountRoleEnum = AuthorizationRoleEnum.extract([
 export type AccountRole = z.infer<typeof AccountRoleEnum>;
 
 /**
+ * Roles that may be granted through an invitation (ADR 0009).
+ * `AccountRoleEnum` minus `owner`: ownership is *transferred* via the
+ * `transferOwnership` mutator, never *invited*. Excluding `owner` here
+ * keeps the invite path consistent with `changeMemberRole`, which only
+ * lets the current owner mint a new owner — without this narrowing an
+ * `admin` (who passes `inviteByIdentity`'s `OWNER_ROLES` gate) could
+ * invite a second `owner` and break the single-owner invariant
+ * (`assertSingleOwner`).
+ */
+export const InvitableRoleEnum = AccountRoleEnum.exclude([
+    AuthorizationRoleEnum.enum.owner,
+]);
+
+/**
+ * Roles that may be granted through an invitation.
+ */
+export type InvitableRole = z.infer<typeof InvitableRoleEnum>;
+
+/**
  * Possible roles for non-authorized user who, for example, visits the
  * List by URL.
  */

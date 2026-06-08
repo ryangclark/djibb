@@ -434,10 +434,16 @@ migration against a real userbase. Order of operations:
    `slot`, `slug`. The `members` keyspace (role-gated:
    admins+ see the full list; members see themselves only) is the
    workspace-specific keyspace.
-3. **Role enum reconciliation.** Settle the `admin`-vs-`owner`
-   question above (likely a small ADR slice). Migrate
-   `AuthorizationRoleEnum` or add the per-mutator capability layer
-   accordingly.
+3. **Role enum reconciliation.** ✅ Done (shipped across ADR 0011).
+   The `admin`-vs-`owner` question is settled: distinct roles, `admin`
+   unbounded co-admin, `owner` the single transferable principal
+   (ADR 0011 §Decision C). Capability tiers
+   (`EDIT_ROLES`/`OWNER_ROLES`/`SYSTEM_ROLES`) and the single-owner
+   invariant (`assertSingleOwner`) are enforced per-mutator rather than
+   through a monolithic choke-point. Corollary invariant: **ownership
+   is transferred (`transferOwnership`), never invited** — the
+   invitable role set (`InvitableRoleEnum`) excludes `owner`, so an
+   admin cannot mint an owner via the invite path.
 4. **Personal workspace on account creation.** Wire
    `account/service.ts::CreateAccount` to instantiate a
    `DjibbWorkspace` stub with `slot: 'personal_workspace'` and push the
@@ -515,10 +521,13 @@ backfill — decide at apply time.
 
 ## Open questions / TODO (not blocking v1)
 
-- **Role enum reconciliation.** The `admin`-vs-`owner` distinction
-  (and whether to widen `AuthorizationRoleEnum` or layer a per-
-  mutator capability) is a prerequisite for Phase 1 above. Deserves
-  its own ADR slice.
+- **Role enum reconciliation.** ✅ Resolved (shipped across ADR 0011) —
+  `admin` and `owner` are distinct, capability tiers replace a
+  per-mutator permission bag, and the single-owner invariant is
+  enforced per write-site via `assertSingleOwner`. Ownership is
+  transferred, never invited (`InvitableRoleEnum` excludes `owner`).
+  (The richer permission-bag/custom-perms idea is tracked separately
+  under Phase 5 polish.)
 - **Link-type invitations.** ADR 0009 covers `email` + `username`.
   Adding `link` (multi-use, public-URL) is open against that ADR —
   not blocked on Workspace-as-DjibbList specifically.
