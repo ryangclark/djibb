@@ -409,4 +409,50 @@ describe('hard-delete handler', () => {
             DjibbList.HARD_DELETE_DELAY_MS = original;
         }
     });
+
+    it('in-tick: a co-scheduled reconcile does not run after hard-delete wipes the DO', async () => {
+        // Regression for the in-tick race (a5dc83f). `alarm()` reads all
+        // due events up front, then loops. `harddelete` sorts before
+        // `reconcile`, so it runs first and `deleteAll()`s the DO
+        // mid-loop. Without the terminal-stop, the loop would then run
+        // `reconcile` against the now-schemaless DO: `getEntityId` is
+        // strict and throws "no such table" (rejecting `alarm()`), and a
+        // re-arm would resurrect the storage we just wiped.
+        const original = DjibbList.HARD_DELETE_DELAY_MS;
+        DjibbList.HARD_DELETE_DELAY_MS = 0;
+        try {
+            const owner = newId('account');
+            const { wsId, stub } = await mintWorkspace('hdrace', owner);
+            await archiveList(wsId, stub, owner, 'hdrace', 2, true);
+
+            // Force the (already-armed) reconcile into the past so both
+            // it and the now-due harddelete fire in the same alarm tick.
+            await runInDurableObject(stub, async (_i, state) => {
+                await state.storage.put('alarm:reconcile:at', Date.now() - 1);
+            });
+
+            // Must resolve. A leaked reconcile against the wiped DO would
+            // throw "no such table" and reject here.
+            await expect(
+                runInDurableObject(stub, async i => i.alarm())
+            ).resolves.toBeUndefined();
+
+            // DO fully self-destructed and stayed wiped — reconcile
+            // neither resurrected storage nor re-armed an alarm.
+            const storageSize = await runInDurableObject(
+                stub,
+                async (_i, state) => (await state.storage.list()).size
+            );
+            expect(storageSize).toBe(0);
+
+            const row = await env.DJIBB_AUTH.prepare(
+                `SELECT id FROM workspace_entities WHERE id = ?`
+            )
+                .bind(wsId)
+                .first();
+            expect(row).toBeNull();
+        } finally {
+            DjibbList.HARD_DELETE_DELAY_MS = original;
+        }
+    });
 });

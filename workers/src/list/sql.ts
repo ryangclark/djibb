@@ -424,7 +424,12 @@ export function InitializeTables(
  * one entity row (`type IN ('list','template')`); used by alarm-driven
  * reconciliation (ADR 0007) which has no caller-supplied entityId.
  *
- * Returns null if the DO has not been initialized yet (no entity row).
+ * Returns null when the schema exists but holds no entity row. Throws
+ * if the `list_elements` table doesn't exist at all — that's a real
+ * fault in the request path (the DO is always initialized before a push
+ * queries it). The alarm dispatcher guards against the schemaless case
+ * up front (`alarm()` checks the schema exists), so alarm-driven callers
+ * never reach here on a brand-new or self-destructed DO.
  */
 export function getEntityId(sql: SqlStorage): string | null {
     const cursor = sql.exec(

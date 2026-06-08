@@ -483,4 +483,42 @@ describe('alarm dispatcher (multi-event)', () => {
         );
         expect(armed).toBeGreaterThan(Date.now());
     });
+
+    it('no-ops on a schemaless DO (post-hard-delete stray fire) instead of throwing', async () => {
+        // Regression for the async path (c621d01). A real alarm fires
+        // after the DO hard-deleted itself — `deleteAll()` dropped the
+        // SQLite schema, so `list_elements` is gone. Without the
+        // `isInitialized()` guard, the empty-pending legacy fire would
+        // run reconcile and `getEntityId` (strict) would throw "no such
+        // table". The guard clears the alarm slot and no-ops.
+        const { listId, stub } = getListStub('schemaless');
+        await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'ownerless',
+            listId,
+            pushRequest: makeInitListPush({
+                clientGroupID: 'cg_schemaless',
+                clientID: 'c_schemaless',
+                listId,
+            }),
+        });
+
+        // Simulate the post-hard-delete state: storage and the SQLite
+        // schema wiped, but a stray Cloudflare alarm still in flight.
+        await runInDurableObject(stub, async (_i, state) => {
+            await state.storage.deleteAll();
+            await state.storage.setAlarm(Date.now() - 1);
+        });
+
+        // Must resolve — a leaked reconcile would throw "no such table".
+        await expect(
+            runInDurableObject(stub, instance => instance.alarm()),
+        ).resolves.toBeUndefined();
+
+        // Guard cleared the alarm slot and left no events behind.
+        const alarm = await runInDurableObject(stub, (_i, state) =>
+            state.storage.getAlarm(),
+        );
+        expect(alarm).toBeNull();
+    });
 });

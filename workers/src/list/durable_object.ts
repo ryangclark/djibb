@@ -1980,6 +1980,23 @@ export class DjibbList extends DurableObject {
     }
 
     /**
+     * True if this DO's SQLite schema exists. A DO is initialized lazily
+     * on its first push (which creates `list_elements`); before that —
+     * and after a hard-delete `deleteAll()` drops the schema — the table
+     * is absent. The alarm dispatcher guards on this so handlers never
+     * query entity rows against a schemaless DO.
+     */
+    private isInitialized(): boolean {
+        const cursor = this.sql.exec(
+            `SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'list_elements'
+            LIMIT 1;`
+        );
+        return !cursor.next().done;
+    }
+
+    /**
      * Alarm dispatcher (ADR 0011 §Step 10a.2 / ADR 0008). Cloudflare
      * fires this on the single per-DO alarm slot; we route to whatever
      * events are due, then re-arm to the next earliest.
@@ -1997,6 +2014,19 @@ export class DjibbList extends DurableObject {
      * `cancelEvent` inside the handler does that.
      */
     async alarm(): Promise<void> {
+        // A schemaless DO is either uninitialized or has hard-deleted
+        // itself (`deleteAll()` drops the schema). A stray alarm fire —
+        // e.g. one already in flight when `deleteAll()` ran — has nothing
+        // to act on. Clear the alarm and no-op rather than letting a
+        // handler query a `list_elements` table that isn't there (which
+        // would throw "no such table" and, if it re-armed, resurrect the
+        // storage we just wiped). The request path keeps SQL strict; this
+        // is the one place a missing schema is expected.
+        if (!this.isInitialized()) {
+            await this.ctx.storage.deleteAlarm();
+            return;
+        }
+
         const now = Date.now();
         const pending = await this.readPendingAlarmEvents();
 
@@ -2010,7 +2040,11 @@ export class DjibbList extends DurableObject {
 
         for (const [name, dueAt] of pending) {
             if (dueAt > now) continue;
-            await this.runAlarmEvent(name);
+            // A terminal handler (hard-delete) wipes all DO storage,
+            // including the `pending` keys we're iterating. Stop here so
+            // remaining due events don't run against a destroyed DO.
+            const destroyed = await this.runAlarmEvent(name);
+            if (destroyed) return;
         }
     }
 
@@ -2018,21 +2052,23 @@ export class DjibbList extends DurableObject {
      * Route a single due event to its handler. Every `AlarmEventName`
      * has a concrete handler as of ADR 0011 §Step 10b-clock; the
      * switch is exhaustive (TypeScript enforces it).
+     *
+     * Returns `true` if the handler self-destructed the DO (terminal),
+     * signaling `alarm()` to stop dispatching further due events.
      */
-    private async runAlarmEvent(name: AlarmEventName): Promise<void> {
+    private async runAlarmEvent(name: AlarmEventName): Promise<boolean> {
         switch (name) {
             case 'reconcile':
                 await this.handleReconcile();
-                return;
+                return false;
             case 'cascade-archive':
                 await this.handleCascadeArchive();
-                return;
+                return false;
             case 'cascade-restore':
                 await this.handleCascadeRestore();
-                return;
+                return false;
             case 'harddelete':
-                await this.handleHardDelete();
-                return;
+                return this.handleHardDelete();
         }
     }
 
@@ -2439,7 +2475,7 @@ export class DjibbList extends DurableObject {
      * fires at the same time (give or take async drift in the cascade
      * fan-out), so the whole tree drains together.
      */
-    async handleHardDelete(): Promise<void> {
+    async handleHardDelete(): Promise<boolean> {
         const entityId = getEntityId(this.sql);
         if (!entityId) {
             // No entity row in this DO — either never initialized, or
@@ -2449,7 +2485,7 @@ export class DjibbList extends DurableObject {
                 '`handleHardDelete()` no entity row; canceling'
             );
             await this.cancelEvent('harddelete');
-            return;
+            return false;
         }
 
         const own = this.sql
@@ -2467,7 +2503,7 @@ export class DjibbList extends DurableObject {
                 `\`handleHardDelete()\` entity "${entityId}" not deleted; canceling`
             );
             await this.cancelEvent('harddelete');
-            return;
+            return false;
         }
 
         // Purge the catalog row first. If this fails the DO survives —
@@ -2491,7 +2527,7 @@ export class DjibbList extends DurableObject {
                 'harddelete',
                 Date.now() + 60 * 1000
             );
-            return;
+            return false;
         }
 
         // DO storage gone. Per ADR 0008: no further alarm scheduling.
@@ -2501,6 +2537,14 @@ export class DjibbList extends DurableObject {
         // pushes (if any stale ones arrive) hit an uninitialized DO
         // and either fail or re-bootstrap empty — both safe.
         await this.ctx.storage.deleteAll();
+
+        // Terminal: signal the alarm dispatcher to stop. The `pending`
+        // map it's iterating was read before this `deleteAll()`, so any
+        // remaining due events (e.g. a co-scheduled `reconcile`) would
+        // otherwise run against a now-destroyed DO — querying a dropped
+        // `list_elements` table (harmless log noise) and, worse,
+        // re-arming themselves, resurrecting storage we just wiped.
+        return true;
     }
 
     async handleReconcile(): Promise<void> {
