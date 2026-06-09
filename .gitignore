@@ -11,3 +11,8 @@ node_modules
 !.env.example
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Claude Code project dir: keep local state out, but track shared skills so
+# they travel with the repo (the contribute-a-list skill, future skills).
+.claude/*
+!.claude/skills/
