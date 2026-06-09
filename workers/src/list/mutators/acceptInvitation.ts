@@ -14,7 +14,7 @@ import {
     tombstonePendingInvite,
 } from '../invitations';
 import { setEntityAuthorizationRules, setListVersion } from '../sql';
-import { toStoredValue } from './_shared';
+import { parseStoredAuthorizationRules, toStoredValue } from './_shared';
 import type {
     ClientMutator,
     Inverse,
@@ -122,11 +122,7 @@ export const server: ServerMutator<Args> = (
         // Entity was deleted between preflight and commit.
         return { status: 'gone' };
     }
-    const currentRaw = row.authorization_rules;
-    const current: AuthorizationRules =
-        typeof currentRaw === 'string'
-            ? JSON.parse(currentRaw)
-            : (currentRaw as unknown as AuthorizationRules);
+    const current = parseStoredAuthorizationRules(row.authorization_rules);
 
     // If the acceptor already has an explicit grant, the invite is a
     // no-op on rules — but we still tombstone the pending row (the

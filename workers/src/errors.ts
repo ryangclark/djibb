@@ -18,8 +18,14 @@ export enum CoreErrorCode {
  * Any namespaced Djibb error code. `CoreErrorCode` is the shared core set;
  * subsystems define their own enums (e.g. `AuthErrorCode`, `ReplicacheError`)
  * whose members are `${namespace}/${kind}` strings and so widen into this.
+ *
+ * Modeled as the literal `namespace/kind` shape rather than a bare `string`
+ * so a typo'd code (`'unauthorized'` with no namespace) is still a type
+ * error, while subsystem enums stay accepted without `errors.ts` having to
+ * import them (which would be a cycle — they import `DjibbError` from here).
+ * The explicit `CoreErrorCode` arm keeps autocomplete for the core set.
  */
-export type DjibbErrorCode = CoreErrorCode | (string & {});
+export type DjibbErrorCode = CoreErrorCode | `${string}/${string}`;
 
 export interface SerializedDjibbError {
     name: string;

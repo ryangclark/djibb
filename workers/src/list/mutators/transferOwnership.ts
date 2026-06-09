@@ -8,6 +8,7 @@ import { setEntityAuthorizationRules } from '../sql';
 import {
     assertSingleOwner,
     findOwnerAccountId,
+    parseStoredAuthorizationRules,
     toStoredValue,
 } from './_shared';
 import type {
@@ -87,11 +88,7 @@ export const server: ServerMutator<Args> = (
     const row = rows[0];
     if (!row) return { status: 'gone' };
 
-    const currentRaw = row.authorization_rules;
-    const current: AuthorizationRules =
-        typeof currentRaw === 'string'
-            ? JSON.parse(currentRaw)
-            : (currentRaw as unknown as AuthorizationRules);
+    const current = parseStoredAuthorizationRules(row.authorization_rules);
 
     const currentOwner = findOwnerAccountId(current);
     if (currentOwner === null) {

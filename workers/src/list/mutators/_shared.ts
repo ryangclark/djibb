@@ -8,6 +8,7 @@ import type {
 
 import { AuthorizationRoleEnum } from '../../auth/rules';
 import type { AuthorizationRole, AuthorizationRules } from '../../auth/rules';
+import { UnexpectedError } from '../../errors';
 import { DatelikeToDateSchema } from '../../schema';
 
 /**
@@ -220,6 +221,19 @@ export type MutatorModule<A = unknown> = {
 /** Replicache values must be plain JSON; round-trip strips Date instances. */
 export function toStoredValue(value: unknown): ReadonlyJSONObject {
     return JSON.parse(JSON.stringify(value));
+}
+
+/**
+ * Read a stored `authorization_rules` SQL value as rules. The column is
+ * JSON-TEXT at rest, so a non-string is structurally impossible — surface
+ * that loudly instead of casting an arbitrary blob into the rules shape (it
+ * also lets the callers drop the old `as unknown as AuthorizationRules`).
+ */
+export function parseStoredAuthorizationRules(raw: unknown): AuthorizationRules {
+    if (typeof raw !== 'string') {
+        throw new UnexpectedError('authorization_rules not stored as JSON text');
+    }
+    return JSON.parse(raw);
 }
 
 // ---------- Single-owner invariant (ADR 0011 §Decision C) ----------

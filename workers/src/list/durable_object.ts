@@ -227,6 +227,18 @@ export type AlarmEventName =
  * [] top-level handlers should not throw
  */
 
+/**
+ * View a `DjibbList` DurableObjectStub as the underlying class for typing.
+ * Through the stub's RPC wrapper, `handlePull`'s recursive `ReadonlyJSONValue`
+ * return type blows TS's instantiation-depth limit (TS2589). The method
+ * really returns a plain `Result`, and `await` passes it through whether the
+ * value comes back over RPC or in-process — so the cast is sound at runtime.
+ * Centralized here so the rationale lives in one place, not at every callsite.
+ */
+export function asLocalList(stub: unknown): DjibbList {
+    return stub as DjibbList;
+}
+
 export class DjibbList extends DurableObject {
     id: DurableObjectId;
     sql: SqlStorage;
