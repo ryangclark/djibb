@@ -97,5 +97,8 @@
 		/* Completeness */
 		// "skipDefaultLibCheck": true,                      /* Skip type checking .d.ts files that are included with TypeScript. */
 		"skipLibCheck": true /* Skip type checking all .d.ts files. */
-	}
+	},
+	/* `bin/` is the Node CLI, not Worker code — it has its own tsconfig with
+	   Node types and runs under `node` type-stripping, never bundled here. */
+	"exclude": ["bin"]
 }

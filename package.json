@@ -4,7 +4,8 @@
     "description": "Building beautiful, remixable checklists.",
     "private": true,
     "scripts": {
-        "start": "node npmrundev.mjs"
+        "start": "node npmrundev.mjs",
+        "djibb": "node workers/bin/djibb.ts"
     },
     "workspaces": [
         "pages",

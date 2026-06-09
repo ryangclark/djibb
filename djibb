@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# djibb CLI shim. Runs the TypeScript entry under plain node (type-stripping,
+# Node >= 23.6). No build step. From the repo root:
+#
+#   ./djibb test-parse                 # round-trip every contributed seed
+#   ./djibb test-parse wrong-window    # one seed by slug
+#   ./djibb test-parse path/to/list.md # one file by path
+#
+exec node "$(dirname "$0")/workers/bin/djibb.ts" "$@"

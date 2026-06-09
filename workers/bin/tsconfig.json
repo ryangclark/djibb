@@ -1,0 +1,21 @@
+{
+	/* The Node CLI. Unlike the Worker code one directory up, this runs under
+	   `node` (type-stripping, Node >= 23.6): Node globals and types, and `.ts`
+	   import specifiers (Node resolves them; tsc must be told to allow them). */
+	"compilerOptions": {
+		"target": "es2022",
+		"lib": ["es2022"],
+		"module": "es2022",
+		"moduleResolution": "bundler",
+		"types": ["node"],
+		"allowImportingTsExtensions": true,
+		"resolveJsonModule": true,
+		"isolatedModules": true,
+		"noEmit": true,
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"forceConsistentCasingInFileNames": true,
+		"skipLibCheck": true
+	},
+	"include": ["."]
+}
