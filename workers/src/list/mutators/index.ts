@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import type { MutatorDefs, ReadonlyJSONValue, WriteTransaction } from 'replicache';
+import type {
+    MutatorDefs,
+    MutatorReturn,
+    ReadonlyJSONValue,
+    WriteTransaction,
+} from 'replicache';
 
 import type { AuthorizationRules } from '../../auth/rules';
 import { MutationEnvelopeArgsSchema } from './_shared';
@@ -311,7 +316,7 @@ export function executeServerMutation(
  * shape. The frontend does NOT enforce `requiredRole` — UI gating is the
  * presentation-layer concern; the server is the security boundary.
  */
-export const mutators: MutatorDefs = Object.fromEntries(
+export const mutators = Object.fromEntries(
     Object.values(Mutations).map(m => [
         m.name,
         async (tx: WriteTransaction, args: ReadonlyJSONValue) => {
@@ -325,7 +330,15 @@ export const mutators: MutatorDefs = Object.fromEntries(
             return (m.client as ClientMutator<any>)(tx, a, ctx);
         },
     ])
-);
+    // `Object.fromEntries` widens to a string-index map, erasing the
+    // per-name keys. Re-key it by `MutationName` so consumers (and
+    // `MakeMutators<typeof mutators>` on the pages client) recover the
+    // named mutator surface. Still assignable to `MutatorDefs`, so the
+    // Replicache constructor accepts it unchanged.
+) as Record<
+    MutationName,
+    (tx: WriteTransaction, args?: ReadonlyJSONValue) => MutatorReturn
+> satisfies MutatorDefs;
 
 /**
  * Backwards-compat re-export. The pages app imports from

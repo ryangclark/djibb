@@ -256,7 +256,14 @@ function makePuller(url) {
 		}
 		return {
 			httpRequestInfo,
-			response: await response.json()
+			// `response.json()` widens to `any`; pin it to the V1 pull
+			// shape so the returned object satisfies `PullerResultV1`
+			// rather than being matched against the V0 branch (which
+			// requires `lastMutationID`).
+			response:
+				/** @type {import('replicache').PullResponseV1} */ (
+					await response.json()
+				)
 		};
 	};
 }

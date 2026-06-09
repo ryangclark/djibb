@@ -115,12 +115,15 @@ export function buildFlatRows(list, data, collapsed) {
  */
 export function nextCursorId(rows, cursorId, delta) {
     if (rows.length === 0) return null;
+    // `rows` is non-empty past the guard above and the index math below
+    // stays in-bounds, so the `?? `/`?.` fallbacks are unreachable — they
+    // just satisfy `noUncheckedIndexedAccess`.
     if (cursorId === null) {
-        return delta > 0 ? rows[0].id : rows[rows.length - 1].id;
+        return delta > 0 ? (rows[0]?.id ?? null) : (rows[rows.length - 1]?.id ?? null);
     }
     const idx = rows.findIndex((r) => r.id === cursorId);
-    if (idx === -1) return rows[0].id;
+    if (idx === -1) return rows[0]?.id ?? null;
     const next = idx + delta;
     if (next < 0 || next >= rows.length) return cursorId;
-    return rows[next].id;
+    return rows[next]?.id ?? cursorId;
 }

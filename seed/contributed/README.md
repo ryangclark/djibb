@@ -25,6 +25,20 @@ The body decodes with `workers/src/list/markdown.ts::parseMarkdown`. Files
 that don't parse, or that violate the ADR 0012 limitations, won't import
 cleanly — keep them in canonical grammar.
 
+### Dogfood it
+
+Run a contribution through the encoder/parser round-trip to see it work:
+
+```sh
+./djibb test-parse                 # every list in this directory
+./djibb test-parse wrong-window    # one, by slug
+./djibb test-parse --show wrong-window   # also print the canonical form
+```
+
+It checks the two ADR 0012 round-trip invariants, names the frontmatter the
+content-only encoding drops (expected), and tells you whether your body is
+already in canonical grammar. No build step — it runs under `node`.
+
 ## Promoting a contribution (maintainer)
 
 1. Read it. Does it earn a spot — specific, a little surprising, on-tone?

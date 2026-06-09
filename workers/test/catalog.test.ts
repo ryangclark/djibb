@@ -44,6 +44,7 @@ async function seedEntity({
         name,
         description: null,
         forked_from_id: null,
+        meta: null,
         slot: null,
         authorization_rules: ownerId
             ? {
@@ -176,6 +177,7 @@ describe('EmitEntitySnapshotToCatalog (version guard)', () => {
             name,
             description: null,
             forked_from_id: null,
+            meta: null,
             slot: null,
             authorization_rules: {
                 authorized_accounts: {},

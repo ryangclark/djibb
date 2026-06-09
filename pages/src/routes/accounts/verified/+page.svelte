@@ -8,6 +8,8 @@
 
 	const { data } = $props();
 
+	// One-time read at mount to drive the redirect guard below.
+	// svelte-ignore state_referenced_locally
 	const { accountId } = data;
 
 	if (!accountId) {

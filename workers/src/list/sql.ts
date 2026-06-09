@@ -2,11 +2,11 @@ import {
     ENTITY_ROW_TYPES_SQL_LIST,
     isEntityRow,
     isEntityRowType,
-    ListElement,
+    type ListElement,
     ListElementUnion,
-    ListItem,
+    type ListItem,
     ListSchema,
-    Quantity,
+    type Quantity,
 } from '.';
 import {
     BadMutationError,
@@ -18,12 +18,12 @@ import {
     ValidationError,
 } from '../errors';
 import {
-    ReplicacheClientGroup,
+    type ReplicacheClientGroup,
     ReplicacheClientGroupSchema,
 } from '../replicache';
-import { AuthorizationRules } from '../auth/rules';
+import type { AuthorizationRules } from '../auth/rules';
 import { DefaultAuthorizationRules } from './constants';
-import { MutationEnvelope, MutationStatus } from './mutators';
+import type { MutationEnvelope, MutationStatus } from './mutators';
 
 /**
  * TODO:

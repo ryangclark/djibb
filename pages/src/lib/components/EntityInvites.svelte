@@ -66,6 +66,9 @@
 	// under the section below on the next pull (driven by the
 	// post-commit poke, <1s).
 	let inviteEmail = $state('');
+	// Default the role picker from the assignable set at open time; a
+	// one-time snapshot, not a reactive mirror of the prop.
+	// svelte-ignore state_referenced_locally
 	let inviteRole = $state(
 		/** @type {import('$djibb/auth/rules').InvitableRole} */ (
 			assignableRoles.includes('editor') ? 'editor' : assignableRoles[0]

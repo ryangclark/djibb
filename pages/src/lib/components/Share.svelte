@@ -87,10 +87,12 @@
 	// Snapshot of the rules at page load. The save call passes this
 	// as `expected` so the server CAS catches a concurrent admin's
 	// edit instead of clobbering it.
+	// svelte-ignore state_referenced_locally
 	let baseline = $state(structuredClone(entity.authorization_rules));
 
 	// Draft mutates as the user edits; save commits draft to server,
 	// then re-baselines on success.
+	// svelte-ignore state_referenced_locally
 	let draft = $state(structuredClone(entity.authorization_rules));
 
 	let saving = $state(false);

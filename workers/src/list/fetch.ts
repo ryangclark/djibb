@@ -1,14 +1,14 @@
-import { Context, Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { PushRequestV1 } from 'replicache';
+import type { PushRequestV1 } from 'replicache';
 
-import { HonoEnv } from '..';
+import type { HonoEnv } from '..';
 
 import { HandleSession } from '../auth/middleware';
 import {
-    AuthorizationRole,
+    type AuthorizationRole,
     AuthorizationRoleEnum,
-    AuthorizationRules,
+    type AuthorizationRules,
 } from '../auth/rules';
 
 import {
@@ -26,6 +26,7 @@ import { IdTypes } from '../id';
 import { GetMembership } from '../workspace/service';
 import { resolveRole } from '../auth/resolver';
 import { GetEntity } from './entity';
+import { asLocalList } from './durable_object';
 import { initListArgsSchema } from './mutators/client';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
@@ -227,7 +228,9 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
         const listId = c.get('list').name ?? c.get('entity_id');
         if (!listId) throw new UnexpectedError('invalid listId');
 
-        const { data: pullResponse, error } = await c.get('list').handlePull({
+        const { data: pullResponse, error } = await asLocalList(
+            c.get('list')
+        ).handlePull({
             authorizedRole: c.get('authorized_role'),
             listId,
             pullRequest: parse_result.data,

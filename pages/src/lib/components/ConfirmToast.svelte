@@ -1,3 +1,18 @@
+<script module>
+	// @ts-check
+	/**
+	 * @typedef {object} Pending
+	 * @property {string} mutator Forward mutator's wire name (the
+	 *   thing the user wants to undo).
+	 * @property {(ok: boolean) => void} resolve Callback into the
+	 *   runtime's awaited onConfirm Promise.
+	 *
+	 * Exported from the module context so routes can reference it via
+	 * `import('./ConfirmToast.svelte').Pending` when bridging the
+	 * runtime's `onConfirm` Promise to this prompt.
+	 */
+</script>
+
 <script>
 	// @ts-check
 	/**
@@ -16,14 +31,6 @@
 	 *   - Captures keyboard for y/n while open.
 	 *   - Holds a callback into the runtime's await chain, not a
 	 *     fire-and-forget signal.
-	 */
-
-	/**
-	 * @typedef {object} Pending
-	 * @property {string} mutator Forward mutator's wire name (the
-	 *   thing the user wants to undo).
-	 * @property {(ok: boolean) => void} resolve Callback into the
-	 *   runtime's awaited onConfirm Promise.
 	 */
 
 	/**

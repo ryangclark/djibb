@@ -12,6 +12,9 @@
 	let signingOut = $state(false);
 
 	let editingUsername = $state(false);
+	// Intentional one-time snapshot of the account's username as an
+	// editable draft; it is not meant to track the prop reactively.
+	// svelte-ignore state_referenced_locally
 	let usernameDraft = $state(account.user_name ?? '');
 	let savingUsername = $state(false);
 	let usernameError = $state('');

@@ -1,8 +1,8 @@
 import { Google, OAuth2Tokens } from 'arctic';
 import { generateCodeVerifier, generateState } from 'arctic';
-import { Context } from 'hono';
+import type { Context } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
-import { CookieOptions } from 'hono/utils/cookie';
+import type { CookieOptions } from 'hono/utils/cookie';
 import { z } from 'zod';
 
 import { NotFoundError, UnexpectedError, ValidationError } from '../errors';
@@ -19,7 +19,7 @@ import {
     OAUTH_REDIRECT_URI,
 } from './constants';
 import { FlagRouter, MOCK_AUTH_MODE } from '../flags';
-import { HonoEnv } from '..';
+import type { HonoEnv } from '..';
 
 export async function handleGetMockSession(c: Context<HonoEnv>) {
     if (!FlagRouter.featureIsEnabled(MOCK_AUTH_MODE)) {

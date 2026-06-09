@@ -2,7 +2,7 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, it, expect } from 'vitest';
 import type { PushRequestV1 } from 'replicache';
 
-import { DjibbList } from '../src/list/durable_object';
+import { DjibbList, asLocalList } from '../src/list/durable_object';
 import { IdTypes } from '../src/id';
 
 function getListStub(name: string) {
@@ -118,7 +118,7 @@ describe('renameList end-to-end', () => {
         expect(row.name).toBe('My Renamed List');
         expect(row.version).toBe(2);
 
-        const pullResult = await stub.handlePull({
+        const pullResult = await asLocalList(stub).handlePull({
             authorizedRole: 'ownerless',
             listId,
             pullRequest: {

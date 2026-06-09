@@ -1,4 +1,4 @@
-import { StatusCode } from 'hono/utils/http-status';
+import type { StatusCode } from 'hono/utils/http-status';
 
 export enum CoreErrorCode {
     AlreadyInitialized = 'core/already-initialized',
@@ -14,10 +14,23 @@ export enum CoreErrorCode {
     // Add more error codes as needed
 }
 
+/**
+ * Any namespaced Djibb error code. `CoreErrorCode` is the shared core set;
+ * subsystems define their own enums (e.g. `AuthErrorCode`, `ReplicacheError`)
+ * whose members are `${namespace}/${kind}` strings and so widen into this.
+ *
+ * Modeled as the literal `namespace/kind` shape rather than a bare `string`
+ * so a typo'd code (`'unauthorized'` with no namespace) is still a type
+ * error, while subsystem enums stay accepted without `errors.ts` having to
+ * import them (which would be a cycle — they import `DjibbError` from here).
+ * The explicit `CoreErrorCode` arm keeps autocomplete for the core set.
+ */
+export type DjibbErrorCode = CoreErrorCode | `${string}/${string}`;
+
 export interface SerializedDjibbError {
     name: string;
     message: string;
-    code: CoreErrorCode;
+    code: DjibbErrorCode;
     httpStatusCode: StatusCode;
     stack?: string;
 }
@@ -26,10 +39,14 @@ export interface SerializedDjibbError {
  * Custom Djibb error class that extends the built-in `Error` class.
  */
 export class DjibbError extends Error {
-    public code: CoreErrorCode;
+    public code: DjibbErrorCode;
     public httpStatusCode: StatusCode = 500;
 
-    constructor(message: string, code: CoreErrorCode, statusCode: StatusCode) {
+    constructor(
+        message: string,
+        code: DjibbErrorCode,
+        statusCode: StatusCode
+    ) {
         super(message);
         Object.setPrototypeOf(this, new.target.prototype);
         this.code = code;

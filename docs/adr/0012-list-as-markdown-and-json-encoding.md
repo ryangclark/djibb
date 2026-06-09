@@ -56,7 +56,7 @@ Optional description paragraph.
 Optional group description.
 - [ ] A boolean item
 - [x] A done boolean item
-- [ ] Salt — 2 tsp           # fresh count: target 2, value 0
+- [ ] Salt — 0/2 tsp         # fresh count: value 0, target 2
 - [ ] Fuel — 3/10 gal        # partial count: value 3, target 10
 - [x] Olive oil — 2/2 tbsp   # complete count (value === target)
   An indented continuation line is the item's description.
@@ -68,7 +68,7 @@ Optional group description.
 | entity / group / item `description` | paragraph under the heading; for items, an indented continuation line |
 | `ListGroup` | `## Subheading` |
 | `ListItem`, `unit: 'boolean'` | `- [ ]` / `- [x]`, no tail |
-| `ListItem` count | `- [ ] name — <qty> <unit>` |
+| `ListItem` count | `- [ ] name — <value>/<target> <unit>` |
 
 **Frontmatter is emitted only when it carries something** — a Template
 type, a slug, or a lineage pointer. A plain List with none of these is just
@@ -82,13 +82,19 @@ Completion is universal (`CONTEXT.md`): an item is done when
 reflects completion**, and the tail (if any) carries the count:
 
 - `boolean` unit → **no tail**; the checkbox *is* the value.
-- fresh count (`value === 0`) → `— N unit` (target `N`, value `0`).
-- any other count → `— M/N unit` (value `M`, target `N`).
+- any count → `— M/N unit` (value `M`, target `N`). A fresh count is just
+  `— 0/N unit`; there is **no bare `N unit` shorthand**.
+
+The slash is mandatory: a count is *always* `M/N unit`, full stop. This
+makes the grammar perfectly regular — **a slash means count, and nothing
+else does**. The aesthetic cost (a fresh count reads `0/2 tsp` rather than
+`2 tsp`) is arguably a gain: `0/2 tsp` signals "count, currently empty" at a
+glance, where `2 tsp` reads like a static label.
 
 On the way back in, parsing is **grammar-driven, not separator-driven**: the
 tail after the last ` — ` is read as a quantity only if it actually matches
-`M/N unit` / `N unit` (a unit word is required). This is what lets an em
-dash live inside an item *name* — see Limitation 1.
+`M/N unit` (the slash *and* a unit word are both required). This is what
+lets an em dash live inside an item *name* — see Limitation 1.
 
 ### D. Where the code lives
 
@@ -125,6 +131,8 @@ The encoder emits exactly one canonical spelling; the parser is strictly
 lines). That asymmetry is deliberate: wild input flows in, our own output
 stays stable.
 
+Round-trip property is scoped to entity frontmatter (`slug`/`forked_from`); any gallery fields are Git-layer-only.
+
 ## Limitations (accepted, characterized by tests)
 
 These surfaced from dogfooding the spike and are encoded as
@@ -133,9 +141,12 @@ characterization tests so they're visible, not silent:
 1. **An em dash in an item name** collides with the ` — ` quantity
    separator. Resolved by grammar-driven parsing: a boolean item emits no
    tail, so `Chicken — skip the brine` has no quantity grammar after the
-   dash and round-trips intact. The residual edge — a boolean item whose
-   name *ends* in something shaped like a quantity (`Rest — 5 min`) — will
-   be read as a count. Rare; documented.
+   dash and round-trips intact. Requiring the slash (§C) shrinks the
+   residual edge from "any number + unit" (`Rest — 5 min`, common) to "a
+   literal fraction-slash + unit word in a name" (`Sprint — 3/4 mile` meant
+   as prose) — which is essentially never written. `Rest — 5 min` now has no
+   slash, so it stays prose and the item stays boolean. Documented for the
+   vanishing case that remains.
 
 2. **Ungrouped items after a group are not representable.** A `##` heading
    is terminal in Markdown: once a group opens, every following bullet

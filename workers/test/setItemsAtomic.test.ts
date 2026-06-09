@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, it, expect } from 'vitest';
-import type { PushRequestV1 } from 'replicache';
+import type { PushRequestV1, ReadonlyJSONValue } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '../src/id';
@@ -134,7 +134,7 @@ function makeSetItemsAtomicPush({
                     accountId: null,
                     timestamp_client: new Date().toISOString(),
                     items,
-                },
+                } as ReadonlyJSONValue,
             },
         ],
     };

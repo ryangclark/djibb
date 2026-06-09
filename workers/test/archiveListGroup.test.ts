@@ -206,8 +206,8 @@ describe('archiveListGroup / unarchiveListGroup end-to-end', () => {
                 )
                 .toArray()
         );
-        expect(both[0].time_deleted).not.toBeNull();
-        expect(both[1].time_deleted).not.toBeNull();
+        expect(both[0]!.time_deleted).not.toBeNull();
+        expect(both[1]!.time_deleted).not.toBeNull();
     });
 
     it('inverses point pair-wise', () => {

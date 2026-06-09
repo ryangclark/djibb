@@ -8,7 +8,11 @@ import {
 import { NotFoundError } from '../../errors';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema, isEntityRowType } from '..';
 import { setEntityAuthorizationRules } from '../sql';
-import { countOwners, toStoredValue } from './_shared';
+import {
+    countOwners,
+    parseStoredAuthorizationRules,
+    toStoredValue,
+} from './_shared';
 import type {
     ClientMutator,
     Inverse,
@@ -77,11 +81,7 @@ export const server: ServerMutator<Args> = (
         return { status: 'stale' };
     }
 
-    const raw = row.authorization_rules;
-    const current: AuthorizationRules =
-        typeof raw === 'string'
-            ? JSON.parse(raw)
-            : (raw as unknown as AuthorizationRules);
+    const current = parseStoredAuthorizationRules(row.authorization_rules);
 
     const self = current.authorized_accounts[accountId];
     if (!self) {

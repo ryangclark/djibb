@@ -2,7 +2,7 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, it, expect } from 'vitest';
 import type { PushRequestV1 } from 'replicache';
 
-import { DjibbList } from '../src/list/durable_object';
+import { DjibbList, asLocalList } from '../src/list/durable_object';
 import { IdTypes, newId } from '../src/id';
 import type { Quantity } from '../src/list';
 
@@ -205,7 +205,7 @@ describe('setItemQuantity end-to-end', () => {
 
         // 5. Pull from v=1; the item row (version=2) should land
         // in the patch.
-        const pullResult = await stub.handlePull({
+        const pullResult = await asLocalList(stub).handlePull({
             authorizedRole: 'ownerless',
             listId,
             pullRequest: {

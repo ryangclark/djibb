@@ -36,6 +36,7 @@
 	class="fixed inset-0 z-[950] flex items-center justify-center bg-black/40"
 	onclick={onClose}
 	role="dialog"
+	tabindex="-1"
 	aria-modal="true"
 	aria-label="Keyboard cheatsheet"
 >

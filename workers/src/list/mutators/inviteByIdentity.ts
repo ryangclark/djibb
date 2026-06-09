@@ -103,6 +103,7 @@ export const server: ServerMutator<Args> = (
         inviter_account_id,
         time_created,
         time_expires,
+        time_deleted: null, // live row; the INSERT hardcodes NULL too
         version: nextVersion,
     });
 

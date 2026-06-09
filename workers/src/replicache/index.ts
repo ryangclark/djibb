@@ -1,4 +1,4 @@
-import { WriteTransaction } from 'replicache';
+import type { WriteTransaction } from 'replicache';
 import { z } from 'zod';
 
 export const MutationSchema = z.object({

@@ -1,8 +1,8 @@
-import { Context } from 'hono';
-import { CookieOptions } from 'hono/utils/cookie';
+import type { Context } from 'hono';
+import type { CookieOptions } from 'hono/utils/cookie';
 import { TimeSpan } from 'lucia';
 import { z } from 'zod';
-import { HonoEnv } from '..';
+import type { HonoEnv } from '..';
 
 export const SESSION_EXPIRATION = new TimeSpan(30, 'd');
 

@@ -1,11 +1,11 @@
 import { z } from 'zod';
 
 import {
-    AuthorizationRules,
+    type AuthorizationRules,
     AuthorizationRulesSchema,
 } from '../auth/rules';
 import { UnexpectedError } from '../errors';
-import { ENTITY_ROW_TYPES, Slot, SlotEnum } from '.';
+import { ENTITY_ROW_TYPES, SlotEnum, type Slot } from '.';
 
 /**
  * Snapshot of entity metadata as it lives in the D1 `workspace_entities`

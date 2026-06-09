@@ -1,8 +1,8 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, it, expect } from 'vitest';
-import type { PushRequestV1 } from 'replicache';
+import type { PushRequestV1, ReadonlyJSONObject } from 'replicache';
 
-import { DjibbList } from '../src/list/durable_object';
+import { DjibbList, asLocalList } from '../src/list/durable_object';
 import { IdTypes } from '../src/id';
 import type { AuthorizationRules } from '../src/auth/rules';
 
@@ -53,7 +53,7 @@ function makeInitListPush({
     };
 }
 
-function makeMetadataPush<TBody extends Record<string, unknown>>({
+function makeMetadataPush<TBody extends ReadonlyJSONObject>({
     clientGroupID,
     clientID,
     name,
@@ -130,7 +130,7 @@ describe('archiveList end-to-end', () => {
         // A pull from v=1 ("I have version 1") sees the archived row's
         // bumped version and emits a `del` op so the client drops the
         // entity from its store.
-        const pullResult = await stub.handlePull({
+        const pullResult = await asLocalList(stub).handlePull({
             authorizedRole: 'ownerless',
             listId,
             pullRequest: {
@@ -191,7 +191,7 @@ describe('setDescription end-to-end', () => {
 
         // Pull from scratch — the entity row's `description` round-trips
         // through the patch.
-        const pullResult = await stub.handlePull({
+        const pullResult = await asLocalList(stub).handlePull({
             authorizedRole: 'ownerless',
             listId,
             pullRequest: {

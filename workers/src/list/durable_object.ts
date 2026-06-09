@@ -1,16 +1,28 @@
 import { DurableObject } from 'cloudflare:workers';
-import { MutationV1, PullResponseOKV1, PushRequestV1 } from 'replicache';
+import type {
+    MutationV1,
+    PullResponseOKV1,
+    PushRequestV1,
+    ReadonlyJSONValue,
+} from 'replicache';
 
-import { ReplicachePullRequest } from '../replicache';
-import { isEntityRow, isEntityRowType, List, ListElement } from './index';
+import type { ReplicachePullRequest } from '../replicache';
+import {
+    isEntityRow,
+    isEntityRowType,
+    type List,
+    type ListElement,
+    type Template,
+    type WorkspaceEntity,
+} from './index';
 import {
     executeServerMutation,
-    MutationStatus,
+    type MutationStatus,
     parseMutationEnvelope,
 } from './mutators';
 import { OWNER_ROLES } from './mutators/_shared';
 
-import { AuthorizationRole } from '../auth/rules';
+import type { AuthorizationRole } from '../auth/rules';
 import {
     encodeWSMessage,
     WS_QUERY_CLIENT_ID,
@@ -18,12 +30,12 @@ import {
     type MutationOutcomeStatus,
     type WSMessage,
 } from '../websocket/constants';
-import { Bindings } from '..';
+import type { Bindings } from '..';
 import {
     BadMutationError,
     DjibbError,
     NotFoundError,
-    SerializedDjibbError,
+    type SerializedDjibbError,
     TablesAlreadyInitializedError,
     UnauthorizedError,
     UnexpectedError,
@@ -39,8 +51,8 @@ import {
     setMutation,
     setReplicacheClientGroup,
 } from './sql';
-import { Account } from '../account';
-import { Result, tryCatch, tryCatchAsync } from '../utils/trycatch';
+import type { Account } from '../account';
+import { tryCatch, tryCatchAsync, type Result } from '../utils/trycatch';
 import {
     EmitEntityMembershipsToCatalog,
     EmitEntitySnapshotToCatalog,
@@ -215,6 +227,18 @@ export type AlarmEventName =
  * [] top-level handlers should not throw
  */
 
+/**
+ * View a `DjibbList` DurableObjectStub as the underlying class for typing.
+ * Through the stub's RPC wrapper, `handlePull`'s recursive `ReadonlyJSONValue`
+ * return type blows TS's instantiation-depth limit (TS2589). The method
+ * really returns a plain `Result`, and `await` passes it through whether the
+ * value comes back over RPC or in-process — so the cast is sound at runtime.
+ * Centralized here so the rationale lives in one place, not at every callsite.
+ */
+export function asLocalList(stub: unknown): DjibbList {
+    return stub as DjibbList;
+}
+
 export class DjibbList extends DurableObject {
     id: DurableObjectId;
     sql: SqlStorage;
@@ -283,7 +307,11 @@ export class DjibbList extends DurableObject {
         });
     }
 
-    getList(args: { listId: string }): Result<List, SerializedDjibbError> {
+    // The DO serves every entity-row type (ADR 0011), so `_getList`
+    // returns any of them — not just `List`.
+    getList(args: {
+        listId: string;
+    }): Result<List | Template | WorkspaceEntity, SerializedDjibbError> {
         return tryCatch(() => this._getList(args));
     }
 
@@ -469,12 +497,15 @@ export class DjibbList extends DurableObject {
                 pullResponse.patch.push({
                     key,
                     op: 'put',
+                    // The entity row is JSON at rest, but `meta`'s
+                    // `Record<string, unknown>` values aren't provably
+                    // `ReadonlyJSONValue` to the compiler.
                     value: {
                         ...element,
                         time_created: element.time_created.toISOString(),
                         time_deleted: null,
                         time_updated: element.time_updated.toISOString(),
-                    },
+                    } as ReadonlyJSONValue,
                 });
             }
         }

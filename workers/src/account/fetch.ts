@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { HonoEnv } from '..';
+import type { HonoEnv } from '..';
 import { HandleSession } from '../auth/middleware';
 import { GetWorkspacesByAccountId } from '../workspace/service';
 import { ListTrashedEntitiesForAccount } from '../catalog/service';

@@ -1,4 +1,4 @@
-import { ReadonlyJSONValue } from 'replicache';
+import type { ReadonlyJSONValue } from 'replicache';
 import { z } from 'zod';
 
 const datelike = z.union([z.number(), z.string(), z.date()]);

@@ -290,7 +290,9 @@ describe('tryCoalesce', () => {
     });
 
     it('chains: three rapid moves collapse to one entry whose inverse hits the original', () => {
-        let stack: ReturnType<typeof reorderEntry>[] = [];
+        // `Entry` (tryCoalesce's element type) is wider than reorderEntry's
+        // literal return, so type the stack from it to hold coalesced entries.
+        let stack: NonNullable<ReturnType<typeof tryCoalesce>>[] = [];
 
         const first = reorderEntry({ id: 'A', fromIndex: 0, toIndex: 2, t: 100 });
         stack = [first];

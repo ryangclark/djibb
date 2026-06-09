@@ -92,6 +92,9 @@
 	async function openPicker(/** @type {string} */ itemId) {
 		picker_open_for = itemId;
 		picker_query = '';
+		// Focus the search field once the picker row has mounted — the
+		// intended open-gesture UX, without an `autofocus` attribute.
+		tick().then(() => picker_search_input?.focus());
 		if (picker_entities.length === 0) {
 			picker_loading = true;
 			const result = await tryCatchAsync(
@@ -152,8 +155,10 @@
 	// Bindings
 	/** @type {HTMLInputElement} */
 	let quick_add_list_item_input;
-	/** @type {HTMLInputElement} */
-	let edit_name_input;
+	/** @type {HTMLInputElement | undefined} */
+	let edit_name_input = $state();
+	/** @type {HTMLInputElement | undefined} */
+	let picker_search_input = $state();
 	/**
 	 * Root container for the list view. Made focusable (tabindex="-1")
 	 * so the list-view keymap (D.1+) can capture single-key shortcuts
@@ -458,20 +463,21 @@
 					}}
 				/>
 			{:else}
-				<h2
-					class="text-2xl cursor-text"
-					onclick={startEditName}
-					onkeydown={(e) => {
-						if (e.key === 'Enter') startEditName();
-					}}
-					role="button"
-					tabindex="0"
-				>
-					{#if list.name}
-						{list.name}
-					{:else}
-						<span class="italic text-slate-500">Untitled List</span>
-					{/if}
+				<!-- Editable title: a real <button> inside the heading gives
+				     built-in keyboard activation (Enter/Space) and correct
+				     semantics, so no a11y role override is needed. -->
+				<h2 class="text-2xl">
+					<button
+						type="button"
+						class="cursor-text border-0 bg-transparent p-0 text-left text-inherit"
+						onclick={startEditName}
+					>
+						{#if list.name}
+							{list.name}
+						{:else}
+							<span class="italic text-slate-500">Untitled List</span>
+						{/if}
+					</button>
 				</h2>
 			{/if}
 		</header>
@@ -694,10 +700,10 @@
 	<div class="ml-6 mb-2 border border-slate-300 bg-white rounded p-2 max-w-md">
 		<div class="flex items-center gap-2 mb-2">
 			<input
+				bind:this={picker_search_input}
 				class="flex-1 border-b border-slate-300 outline-none px-1 py-0.5 text-sm"
 				placeholder="Search lists & templates…"
 				bind:value={picker_query}
-				autofocus
 			/>
 			<button
 				class="text-slate-500 hover:text-slate-800 cursor-pointer"

@@ -4,7 +4,12 @@ import { NotFoundError } from '../../errors';
 import type { AuthorizationRules } from '../../auth/rules';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '..';
 import { setEntityAuthorizationRules } from '../sql';
-import { countOwners, OWNER_ROLES, toStoredValue } from './_shared';
+import {
+    countOwners,
+    OWNER_ROLES,
+    parseStoredAuthorizationRules,
+    toStoredValue,
+} from './_shared';
 import type {
     CapturePreState,
     ClientMutator,
@@ -59,10 +64,7 @@ function readCurrentRules(
         .toArray();
     const row = rows[0];
     if (!row) return null;
-    const raw = row.authorization_rules;
-    return typeof raw === 'string'
-        ? (JSON.parse(raw) as AuthorizationRules)
-        : (raw as unknown as AuthorizationRules);
+    return parseStoredAuthorizationRules(row.authorization_rules);
 }
 
 export const server: ServerMutator<Args> = (

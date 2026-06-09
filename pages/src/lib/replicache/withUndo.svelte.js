@@ -109,9 +109,11 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
 
     /**
      * The user firing path. Mirrors `mutate`'s shape (Proxy keyed by
-     * mutator wire name) but adds capture-then-fire-then-push.
+     * mutator wire name) but adds capture-then-fire-then-push. Typed as
+     * the named `ClientListMutators` surface so call sites can reach
+     * individual mutators (`mutateWithUndo.setItemFields(...)`).
      *
-     * @type {Record<string, (args: any) => Promise<unknown>>}
+     * @type {import('./types').ClientListMutators}
      */
     const mutateWithUndo = new Proxy(/** @type {any} */ ({}), {
         get(_, name) {
