@@ -126,6 +126,7 @@
 		currentAccountId={sessionState.currentAccountId}
 		backHref={`/l/${suffix}`}
 		{pendingInvites}
+		workspaces={sessionState.workspaces}
 	/>
 {:else}
 	<p class="loading">Loading list…</p>

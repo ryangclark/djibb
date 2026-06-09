@@ -75,8 +75,9 @@ import {
     type InvitePreflightFailureReason,
 } from './invitations';
 import { tryClaimSlug } from './slug';
+import { preflightMoveList } from './mutators/moveList';
 import { GetAccountByEmail } from '../account/service';
-import { mintPersonalWorkspaceEntity } from '../workspace/service';
+import { GetMembership, mintPersonalWorkspaceEntity } from '../workspace/service';
 import { sendEntityInvitationEmail } from '../email';
 import { LIST_PULL_KEYSPACES } from './pull';
 import {
@@ -102,6 +103,7 @@ const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
     'initFromTemplate',
     'initList',
     'leaveMember',
+    'moveList',
     'removeMember',
     'renameList',
     'renameWorkspace',
@@ -137,6 +139,7 @@ const INVITATION_MUTATORS: ReadonlySet<string> = new Set([
 const PREFLIGHTED_MUTATORS: ReadonlySet<string> = new Set([
     'acceptInvitation',
     'inviteByIdentity',
+    'moveList',
     'setWorkspaceSlug',
 ]);
 
@@ -181,6 +184,24 @@ function inviteReasonToOutcomeStatus(
         case 'already_member':
         case 'self_invite':
             return 'precondition';
+    }
+}
+
+/**
+ * Map a `moveList` preflight failure code to the wire-level
+ * `MutationOutcomeStatus`. A non-member of the destination (or an
+ * unauthenticated actor) is an authorization failure; a destination
+ * workspace that no longer exists is `gone`.
+ */
+function moveReasonToOutcomeStatus(
+    reason: import('./mutators/moveList').MovePreflightFailureReason
+): MutationOutcomeStatus {
+    switch (reason) {
+        case 'unauthenticated_actor':
+        case 'not_target_member':
+            return 'auth';
+        case 'target_missing':
+            return 'gone';
     }
 }
 
@@ -686,6 +707,42 @@ export class DjibbList extends DurableObject {
             return {
                 ok: false,
                 status: slugReasonToOutcomeStatus(result.reason),
+                reason: result.reason,
+                message: result.message,
+            };
+        }
+
+        if (mutation.name === 'moveList') {
+            // ADR 0011 §Phase 5: the cross-entity rule — "actor must be
+            // a member of the destination workspace" — can't run in the
+            // synchronous DO mutator (no D1 access), so it lives here.
+            // The mutator itself still enforces the list-local checks
+            // (OWNER_ROLES, well-formed target, target ≠ current).
+            const target_workspace_id =
+                typeof args.workspace_id === 'string' ? args.workspace_id : '';
+            if (!target_workspace_id) {
+                // Malformed args; let the mutator's argsSchema reject.
+                return { ok: true };
+            }
+            const actor_account_id =
+                typeof args.accountId === 'string' ? args.accountId : null;
+
+            const result = await preflightMoveList(
+                {
+                    getMembership: (a, w) => GetMembership(d1, a, w),
+                    targetWorkspaceExists: async w =>
+                        (await GetEntityVersion(d1, w)) !== null,
+                },
+                {
+                    actor_account_id,
+                    target_workspace_id,
+                    sessionAccountIds,
+                }
+            );
+            if (result.ok) return { ok: true };
+            return {
+                ok: false,
+                status: moveReasonToOutcomeStatus(result.reason),
                 reason: result.reason,
                 message: result.message,
             };

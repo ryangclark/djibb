@@ -32,6 +32,7 @@ import * as initList from './initList';
 import * as createListItem from './createListItem';
 import * as initFromTemplate from './initFromTemplate';
 import * as inviteByIdentity from './inviteByIdentity';
+import * as moveList from './moveList';
 import * as renameList from './renameList';
 import * as renameWorkspace from './renameWorkspace';
 import * as revokeInvitation from './revokeInvitation';
@@ -98,6 +99,7 @@ export const Mutations = {
     [createListItem.name]: createListItem,
     [initFromTemplate.name]: initFromTemplate,
     [inviteByIdentity.name]: inviteByIdentity,
+    [moveList.name]: moveList,
     [renameList.name]: renameList,
     [renameWorkspace.name]: renameWorkspace,
     [revokeInvitation.name]: revokeInvitation,

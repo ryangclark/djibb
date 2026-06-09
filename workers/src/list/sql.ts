@@ -1042,6 +1042,52 @@ export function setEntityAuthorizationRules(
     }
 }
 
+/**
+ * Re-point an entity row's `workspace_id` and bump its version. Used by
+ * the `moveList` mutator (ADR 0011 §Phase 5 / "move a list between
+ * workspaces"). `workspace_id` is a real top-level column — not a
+ * `meta` key — so this mirrors `setEntityAuthorizationRules` (a
+ * single-column UPDATE) rather than `setEntityMetaField`.
+ *
+ * Moving a list re-points its workspace-derived access grant: the
+ * read-side fast path (`resolveSessionRole`) folds `workspace_id` into
+ * the effective-role computation, so the post-commit catalog emit must
+ * carry the new id for the list to appear under the destination
+ * workspace (and disappear from the source). The push handler adds
+ * `moveList` to `ENTITY_METADATA_MUTATORS` for exactly that reason.
+ *
+ * Type-narrowed to entity rows via `ENTITY_ROW_TYPES_SQL_LIST`; a
+ * misrouted call against an item/group id writes zero rows and throws
+ * `NotFoundError`.
+ */
+export function setEntityWorkspaceId(
+    sql: SqlStorage,
+    {
+        entityId,
+        workspace_id,
+        version,
+    }: { entityId: string; workspace_id: string; version: number }
+): void {
+    const cursor = sql.exec(
+        `UPDATE list_elements
+        SET
+            workspace_id = ?,
+            version = ?,
+            time_updated = CURRENT_TIMESTAMP
+        WHERE id = ?
+            AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
+            AND time_deleted IS NULL;`,
+        workspace_id,
+        version,
+        entityId
+    );
+    if (cursor.rowsWritten !== 1) {
+        throw new NotFoundError(
+            `\`setEntityWorkspaceId()\` entity "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+        );
+    }
+}
+
 // Narrow UPDATE for item value + version bumps. Used by the
 // `setItemQuantity` mutator path.
 export function setItemValueAndVersion(

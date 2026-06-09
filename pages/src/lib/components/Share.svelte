@@ -60,7 +60,8 @@
 	 * @property {'list' | 'template'} entityType
 	 * @property {{
 	 *     name: string | null,
-	 *     authorization_rules: import('$djibb/auth/rules').AuthorizationRules
+	 *     authorization_rules: import('$djibb/auth/rules').AuthorizationRules,
+	 *     workspace_id?: string | null
 	 * }} entity
 	 * @property {import('$lib/replicache/types').ClientListMutators} mutators
 	 * @property {string | null} currentAccountId
@@ -71,6 +72,11 @@
 	 *   Visible only to owners/admins per the role-gated pull filter;
 	 *   passed in by the route which filters `list_data` for keys
 	 *   beginning with `pending_invites/`.
+	 * @property {import('$lib/api/workspace').WorkspaceWithMembership[]} [workspaces]
+	 *   The actor's workspaces, reused from the session (same source
+	 *   `WorkspaceSwitcher` uses — not refetched). Source of the
+	 *   "Move to workspace…" picker. Empty/omitted hides the picker
+	 *   (e.g. the template share route, which doesn't support moves).
 	 */
 
 	/** @type {Props} */
@@ -81,8 +87,48 @@
 		mutators,
 		currentAccountId,
 		backHref,
-		pendingInvites = []
+		pendingInvites = [],
+		workspaces = []
 	} = $props();
+
+	// ADR 0011 §Phase 5: move a list between workspaces. A list always
+	// belongs to exactly one workspace, so the picker preselects the
+	// current one and never offers "none". Owner/admin-gated by the
+	// same `canManage` flag as the access controls. The server-side
+	// preflight (member-of-destination) is the real boundary; this is
+	// presentation-layer convenience.
+	let currentWorkspaceId = $derived(entity.workspace_id ?? null);
+	let moving = $state(false);
+	let moveError = $state(/** @type {string | null} */ (null));
+
+	/** @param {import('$lib/api/workspace').Workspace} w */
+	function workspaceLabel(w) {
+		if (w.name) return w.name;
+		return w.is_personal ? 'Your space' : w.slug;
+	}
+
+	/** @param {Event & { currentTarget: HTMLSelectElement }} e */
+	async function onMoveChange(e) {
+		const target = e.currentTarget.value;
+		if (!target || target === currentWorkspaceId) return;
+		moving = true;
+		moveError = null;
+		const result = await tryCatchAsync(
+			mutators.moveList({ listId: entityId, workspace_id: target })
+		);
+		moving = false;
+		if (result.error) {
+			// Revert the select to the current workspace; the optimistic
+			// local move (if any) rebases on the next pull.
+			e.currentTarget.value = currentWorkspaceId ?? '';
+			moveError = `Failed to move: ${result.error.message ?? result.error}`;
+			return;
+		}
+		// Optimistic: the entity's workspace_id updates locally via the
+		// client mutator. A preflight rejection (not a member of the
+		// destination) surfaces over the WS outcome channel / global
+		// toast and the next pull restores the authoritative value.
+	}
 
 	// Snapshot of the rules at page load. The save call passes this
 	// as `expected` so the server CAS catches a concurrent admin's
@@ -118,6 +164,13 @@
 	);
 	let canManage = $derived(
 		baselineMyRole !== null && OWNER_ROLES.includes(baselineMyRole)
+	);
+
+	// ADR 0011 §Phase 5: owner/admin-gated, same flag as the access
+	// controls. Declared after `canManage` so the derivation references
+	// it lexically after its declaration.
+	let canMove = $derived(
+		entityType === 'list' && canManage && workspaces.length > 0
 	);
 
 	let isDirty = $derived(JSON.stringify(baseline) !== JSON.stringify(draft));
@@ -336,6 +389,33 @@
 		{/if}
 	</section>
 
+	{#if canMove}
+		<section>
+			<h2>Move to workspace</h2>
+			<p class="hint">
+				Members of the destination workspace gain access to this list;
+				members of the current workspace lose their workspace-derived
+				access (people you've granted access to individually keep it).
+			</p>
+			<select
+				class="workspace-select"
+				value={currentWorkspaceId ?? ''}
+				disabled={moving}
+				onchange={onMoveChange}
+			>
+				{#each workspaces as w (w.workspace.id)}
+					<option value={w.workspace.id}>
+						{workspaceLabel(w.workspace)}
+						{w.workspace.id === currentWorkspaceId ? '(current)' : ''}
+					</option>
+				{/each}
+			</select>
+			{#if moveError}
+				<p class="error" role="alert">{moveError}</p>
+			{/if}
+		</section>
+	{/if}
+
 	{#if canManage}
 		<EntityInvites {entityId} {mutators} {currentAccountId} {pendingInvites} />
 	{/if}
@@ -463,6 +543,13 @@
 		font-family: monospace;
 		border: 1px solid rgba(0, 0, 0, 0.18);
 		border-radius: 0.25rem;
+	}
+	.workspace-select {
+		width: 100%;
+		padding: 0.4rem 0.6rem;
+		border: 1px solid rgba(0, 0, 0, 0.18);
+		border-radius: 0.25rem;
+		background: white;
 	}
 	.account-list {
 		list-style: none;
