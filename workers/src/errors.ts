@@ -1,4 +1,4 @@
-import { StatusCode } from 'hono/utils/http-status';
+import type { StatusCode } from 'hono/utils/http-status';
 
 export enum CoreErrorCode {
     AlreadyInitialized = 'core/already-initialized',

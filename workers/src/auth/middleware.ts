@@ -1,7 +1,7 @@
-import { Context, Next } from 'hono';
+import type { Context, Next } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 
-import { HonoEnv } from '..';
+import type { HonoEnv } from '..';
 import { BaseSessionCookieAttributes, CookieNames } from './constants';
 import { ValidateSession } from './session';
 

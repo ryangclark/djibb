@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { setCookie } from 'hono/cookie';
 import { z } from 'zod';
 
-import { HonoEnv } from '..';
+import type { HonoEnv } from '..';
 import {
     BaseSessionCookieAttributes,
     CookieNames,

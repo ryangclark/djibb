@@ -1,13 +1,13 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { User, verifyRequestOrigin } from 'lucia';
+import { verifyRequestOrigin, type User } from 'lucia';
 
 import { CatalogApp } from './catalog/fetch';
 import { list_app, template_app, workspace_app } from './list/fetch';
 import { WorkspaceInviteApp } from './workspace/inviteResolver';
-import { AuthorizationRole } from './auth/rules';
-import { EntityRow } from './list/entity';
-import { Session } from './auth/session';
+import type { AuthorizationRole } from './auth/rules';
+import type { EntityRow } from './list/entity';
+import type { Session } from './auth/session';
 import { Auth_App } from './auth/fetch';
 import { DjibbError } from './errors';
 import { DjibbList } from './list/durable_object';

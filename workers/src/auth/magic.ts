@@ -25,12 +25,12 @@
  * sign-in UI in a follow-up commit so the surfaces can co-evolve.
  */
 
-import { Context } from 'hono';
+import type { Context } from 'hono';
 import { setCookie } from 'hono/cookie';
 import { customAlphabet, urlAlphabet } from 'nanoid';
 import { z } from 'zod';
 
-import { HonoEnv } from '..';
+import type { HonoEnv } from '..';
 import { BadRequestError, UnexpectedError, ValidationError } from '../errors';
 import {
     CreateAccount,

@@ -1,28 +1,28 @@
 import { DurableObject } from 'cloudflare:workers';
-import {
+import type {
     MutationV1,
     PullResponseOKV1,
     PushRequestV1,
     ReadonlyJSONValue,
 } from 'replicache';
 
-import { ReplicachePullRequest } from '../replicache';
+import type { ReplicachePullRequest } from '../replicache';
 import {
     isEntityRow,
     isEntityRowType,
-    List,
-    ListElement,
-    Template,
-    WorkspaceEntity,
+    type List,
+    type ListElement,
+    type Template,
+    type WorkspaceEntity,
 } from './index';
 import {
     executeServerMutation,
-    MutationStatus,
+    type MutationStatus,
     parseMutationEnvelope,
 } from './mutators';
 import { OWNER_ROLES } from './mutators/_shared';
 
-import { AuthorizationRole } from '../auth/rules';
+import type { AuthorizationRole } from '../auth/rules';
 import {
     encodeWSMessage,
     WS_QUERY_CLIENT_ID,
@@ -30,12 +30,12 @@ import {
     type MutationOutcomeStatus,
     type WSMessage,
 } from '../websocket/constants';
-import { Bindings } from '..';
+import type { Bindings } from '..';
 import {
     BadMutationError,
     DjibbError,
     NotFoundError,
-    SerializedDjibbError,
+    type SerializedDjibbError,
     TablesAlreadyInitializedError,
     UnauthorizedError,
     UnexpectedError,
@@ -51,8 +51,8 @@ import {
     setMutation,
     setReplicacheClientGroup,
 } from './sql';
-import { Account } from '../account';
-import { Result, tryCatch, tryCatchAsync } from '../utils/trycatch';
+import type { Account } from '../account';
+import { tryCatch, tryCatchAsync, type Result } from '../utils/trycatch';
 import {
     EmitEntityMembershipsToCatalog,
     EmitEntitySnapshotToCatalog,

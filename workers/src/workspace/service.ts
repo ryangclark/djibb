@@ -1,13 +1,13 @@
 import {
-    Workspace,
-    WorkspaceMember,
+    type Workspace,
+    type WorkspaceMember,
     WorkspaceSchema,
-    WorkspaceWithMembership,
+    type WorkspaceWithMembership,
 } from './index';
 import { AuthorizationRoleEnum } from '../auth/rules';
 import { ParseError, UnexpectedError } from '../errors';
 import { newId } from '../id';
-import { Account } from '../account';
+import type { Account } from '../account';
 import type { DjibbList } from '../list/durable_object';
 import type { PushRequestV1 } from 'replicache';
 

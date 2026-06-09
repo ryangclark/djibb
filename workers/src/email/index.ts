@@ -1,4 +1,4 @@
-import { Bindings } from '..';
+import type { Bindings } from '..';
 
 // ADR 0011 §7b.3: `sendInvitationEmail` (the workspace token flow) is
 // gone with the rest of the legacy invitation system. `sendEntityInvitationEmail`
