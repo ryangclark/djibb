@@ -109,7 +109,7 @@ describe('canonical encoding', () => {
     it('checkbox reflects universal completion (value === target)', () => {
         const md = encodeMarkdown(recipe);
         expect(md).toContain('- [x] Olive oil — 2/2 tbsp'); // value===target
-        expect(md).toContain('- [ ] Salt — 2 tsp'); // fresh count: bare N
+        expect(md).toContain('- [ ] Salt — 0/2 tsp'); // fresh count: 0/N, slash mandatory
         expect(md).toContain('- [x] Preheat oven to 425°F'); // boolean done
         expect(md).toContain('- [ ] Pat chicken dry');
     });
@@ -126,9 +126,16 @@ describe('lenient import of non-canonical Markdown', () => {
         ]);
     });
 
-    it('reconciles a checked box on a bare "N unit" count toward done', () => {
-        const model = parseMarkdown('# X\n- [x] Water — 8 cups\n');
+    it('reads a slash count with the value explicit (box advisory)', () => {
+        const model = parseMarkdown('# X\n- [ ] Water — 8/8 cups\n');
         expect(model.children[0]).toEqual(count('Water', 8, 8, 'cups'));
+    });
+
+    it('treats a slash-less "N unit" tail as a name, not a count', () => {
+        // The bare `N unit` shorthand is retired (ADR 0012 §C): no slash,
+        // no count, so the whole text stays the item name (boolean).
+        const model = parseMarkdown('# X\n- [ ] Rest — 5 min\n');
+        expect(model.children[0]).toEqual(bool('Rest — 5 min', false));
     });
 
     it('parses without frontmatter as a plain List', () => {

@@ -145,14 +145,14 @@ function encodeItem(item: MarkdownItem): string[] {
 }
 
 /**
- * Quantity spelling (ADR 0012):
- *  - `boolean`        -> no suffix; the checkbox *is* the value.
- *  - fresh count (0)  -> ` — N unit`     (value 0, target N)
- *  - any other count  -> ` — M/N unit`   (value M, target N)
+ * Quantity spelling (ADR 0012 §C):
+ *  - `boolean` -> no suffix; the checkbox *is* the value.
+ *  - any count -> ` — M/N unit` (value M, target N). The slash is
+ *    mandatory; a fresh count is just ` — 0/N unit`. There is no bare
+ *    `N unit` shorthand — a slash always means count, and nothing else does.
  */
 function encodeQuantity(q: MarkdownQuantity): string {
     if (q.unit === BOOLEAN_UNIT) return '';
-    if (q.value === 0) return `${QTY_SEP}${q.target_value} ${q.unit}`;
     return `${QTY_SEP}${q.value}/${q.target_value} ${q.unit}`;
 }
 
@@ -239,11 +239,12 @@ export function parseMarkdown(md: string): MarkdownList {
  *
  * Parsing is **grammar-driven, not separator-driven**: the tail after the
  * *last* ` — ` is treated as a quantity only if it actually parses as one
- * (`M/N unit` / `N unit`). Otherwise the whole text is the name. This is
- * what lets an em dash live *inside* an item name (`Chicken — skip the
- * brine`) without being mistaken for a quantity — a boolean item never
- * emits a tail, so its em dash has no quantity grammar after it and stays
- * part of the name on the way back in.
+ * (`M/N unit` — the slash *and* a unit word are both required). Otherwise
+ * the whole text is the name. This is what lets an em dash live *inside* an
+ * item name (`Chicken — skip the brine`, `Rest — 5 min`) without being
+ * mistaken for a quantity: no slash, no count. The only residual collision
+ * is a literal fraction-slash + unit in a name (`Sprint — 3/4 mile` meant as
+ * prose) — essentially never written.
  */
 function parseItem(box: string | undefined, text: string): MarkdownItem {
     const checked = box === 'x' || box === 'X';
@@ -266,27 +267,20 @@ function parseItem(box: string | undefined, text: string): MarkdownItem {
 }
 
 /**
- * Parse `M/N unit` or `N unit` into a {@link MarkdownQuantity}, or `null`
- * if the text isn't a quantity (a unit word is required, so a trailing bare
- * number like `Wait — 5` does not register as one). Box and count reconcile
- * toward completion: a checked box on a bare `N unit` tail reads as
- * value === target.
+ * Parse `M/N unit` into a {@link MarkdownQuantity}, or `null` if the text
+ * isn't a quantity. Both the slash *and* a unit word are required: `Wait —
+ * 5` (no slash, no unit), `Rest — 5 min` (no slash), and `Note — 1/2` (no
+ * unit) all fail to register, leaving the text as a plain item name. The
+ * value is explicit, so the checkbox is advisory only.
+ *
+ * The `_checked` argument is unused now that the bare `N unit` shorthand is
+ * retired — kept in the signature so the call site stays uniform.
  */
-function tryParseQuantity(text: string, checked: boolean): MarkdownQuantity | null {
-    const m = /^(\d+(?:\.\d+)?)(?:\/(\d+(?:\.\d+)?))?\s+(\S.*)$/.exec(text);
-    if (!m || m[1] === undefined || m[3] === undefined) return null;
+function tryParseQuantity(text: string, _checked: boolean): MarkdownQuantity | null {
+    const m = /^(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)\s+(\S.*)$/.exec(text);
+    if (!m || m[1] === undefined || m[2] === undefined || m[3] === undefined) return null;
 
-    const first = Number(m[1]);
-    const second = m[2] !== undefined ? Number(m[2]) : undefined;
-    const unit = m[3].trim();
-
-    if (second === undefined) {
-        // `N unit`: target N, value 0 — unless the box says it's done.
-        const target = first;
-        return { value: checked ? target : 0, target_value: target, unit };
-    }
-    // `M/N unit`: value explicit, box is advisory only.
-    return { value: first, target_value: second, unit };
+    return { value: Number(m[1]), target_value: Number(m[2]), unit: m[3].trim() };
 }
 
 interface Frontmatter {
