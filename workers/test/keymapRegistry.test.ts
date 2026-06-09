@@ -109,7 +109,7 @@ describe('groupByCategory', () => {
         const groups = groupByCategory(reg);
         const cats = groups.map(([c]) => c);
         // First category should match the first binding's category
-        expect(cats[0]).toBe(reg[0].category);
+        expect(cats[0]).toBe(reg[0]!.category);
     });
 
     it('every binding lands in exactly one group', () => {

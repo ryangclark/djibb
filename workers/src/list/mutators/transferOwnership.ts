@@ -91,7 +91,7 @@ export const server: ServerMutator<Args> = (
     const current: AuthorizationRules =
         typeof currentRaw === 'string'
             ? JSON.parse(currentRaw)
-            : (currentRaw as AuthorizationRules);
+            : (currentRaw as unknown as AuthorizationRules);
 
     const currentOwner = findOwnerAccountId(current);
     if (currentOwner === null) {

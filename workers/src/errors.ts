@@ -14,10 +14,17 @@ export enum CoreErrorCode {
     // Add more error codes as needed
 }
 
+/**
+ * Any namespaced Djibb error code. `CoreErrorCode` is the shared core set;
+ * subsystems define their own enums (e.g. `AuthErrorCode`, `ReplicacheError`)
+ * whose members are `${namespace}/${kind}` strings and so widen into this.
+ */
+export type DjibbErrorCode = CoreErrorCode | (string & {});
+
 export interface SerializedDjibbError {
     name: string;
     message: string;
-    code: CoreErrorCode;
+    code: DjibbErrorCode;
     httpStatusCode: StatusCode;
     stack?: string;
 }
@@ -26,10 +33,14 @@ export interface SerializedDjibbError {
  * Custom Djibb error class that extends the built-in `Error` class.
  */
 export class DjibbError extends Error {
-    public code: CoreErrorCode;
+    public code: DjibbErrorCode;
     public httpStatusCode: StatusCode = 500;
 
-    constructor(message: string, code: CoreErrorCode, statusCode: StatusCode) {
+    constructor(
+        message: string,
+        code: DjibbErrorCode,
+        statusCode: StatusCode
+    ) {
         super(message);
         Object.setPrototypeOf(this, new.target.prototype);
         this.code = code;

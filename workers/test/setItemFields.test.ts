@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, it, expect } from 'vitest';
-import type { PushRequestV1 } from 'replicache';
+import type { PushRequestV1, ReadonlyJSONValue } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '../src/id';
@@ -140,7 +140,7 @@ function makeSetItemFieldsPush({
                     id,
                     fields,
                     ...(expected ? { expected } : {}),
-                },
+                } as ReadonlyJSONValue,
             },
         ],
     };

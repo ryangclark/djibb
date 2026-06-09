@@ -68,6 +68,7 @@ async function seed({
         name,
         description: null,
         forked_from_id: null,
+        meta: null,
         slot: null,
         cascade_source,
         authorization_rules: {

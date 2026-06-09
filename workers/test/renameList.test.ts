@@ -118,7 +118,7 @@ describe('renameList end-to-end', () => {
         expect(row.name).toBe('My Renamed List');
         expect(row.version).toBe(2);
 
-        const pullResult = await stub.handlePull({
+        const pullResult = await (stub as unknown as DjibbList).handlePull({
             authorizedRole: 'ownerless',
             listId,
             pullRequest: {

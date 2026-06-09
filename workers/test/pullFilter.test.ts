@@ -20,7 +20,7 @@
 
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
-import type { PushRequestV1 } from 'replicache';
+import type { PushRequestV1, ReadonlyJSONObject } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '../src/id';
@@ -66,7 +66,7 @@ function makeInitListPush({
     };
 }
 
-function makePush<TBody extends Record<string, unknown>>({
+function makePush<TBody extends ReadonlyJSONObject>({
     clientGroupID,
     clientID,
     name,
@@ -174,7 +174,7 @@ describe('pull filter — PII gating', () => {
             suffix: 'pf_viewer',
         });
 
-        const result = await stub.handlePull({
+        const result = await (stub as unknown as DjibbList).handlePull({
             authorizedRole: 'viewer',
             listId,
             pullRequest: {
@@ -207,7 +207,7 @@ describe('pull filter — PII gating', () => {
             suffix: 'pf_editor',
         });
 
-        const result = await stub.handlePull({
+        const result = await (stub as unknown as DjibbList).handlePull({
             authorizedRole: 'editor',
             listId,
             pullRequest: {
@@ -228,7 +228,7 @@ describe('pull filter — PII gating', () => {
             inviteeEmail: 'alice@example.com',
         });
 
-        const result = await stub.handlePull({
+        const result = await (stub as unknown as DjibbList).handlePull({
             authorizedRole: 'owner',
             listId,
             pullRequest: {
@@ -268,7 +268,7 @@ describe('pull filter — role transitions', () => {
             inviteeEmail: 'carol@example.com',
         });
 
-        const result = await stub.handlePull({
+        const result = await (stub as unknown as DjibbList).handlePull({
             authorizedRole: 'owner',
             listId,
             pullRequest: {
@@ -301,7 +301,7 @@ describe('pull filter — role transitions', () => {
             inviteeEmail: 'dave@example.com',
         });
 
-        const result = await stub.handlePull({
+        const result = await (stub as unknown as DjibbList).handlePull({
             authorizedRole: 'viewer',
             listId,
             pullRequest: {
@@ -355,7 +355,7 @@ describe('pull filter — revoke surfaces as del', () => {
             }),
         });
 
-        const result = await stub.handlePull({
+        const result = await (stub as unknown as DjibbList).handlePull({
             authorizedRole: 'owner',
             listId,
             pullRequest: {
@@ -424,7 +424,7 @@ describe('pull filter — cookie shape', () => {
             suffix: 'pf_cookie',
         });
 
-        const result = await stub.handlePull({
+        const result = await (stub as unknown as DjibbList).handlePull({
             authorizedRole: 'owner',
             listId,
             pullRequest: {

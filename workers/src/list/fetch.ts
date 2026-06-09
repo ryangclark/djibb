@@ -26,6 +26,7 @@ import { IdTypes } from '../id';
 import { GetMembership } from '../workspace/service';
 import { resolveRole } from '../auth/resolver';
 import { GetEntity } from './entity';
+import type { DjibbList } from './durable_object';
 import { initListArgsSchema } from './mutators/client';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
@@ -227,7 +228,13 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
         const listId = c.get('list').name ?? c.get('entity_id');
         if (!listId) throw new UnexpectedError('invalid listId');
 
-        const { data: pullResponse, error } = await c.get('list').handlePull({
+        // View the stub as the underlying class: through the
+        // DurableObjectStub RPC wrapper, `PullResponseOKV1`'s recursive
+        // `ReadonlyJSONValue` blows TS's instantiation-depth limit. The
+        // method returns a plain `Result`; `await` passes it through.
+        const { data: pullResponse, error } = await (
+            c.get('list') as unknown as DjibbList
+        ).handlePull({
             authorizedRole: c.get('authorized_role'),
             listId,
             pullRequest: parse_result.data,

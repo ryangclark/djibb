@@ -275,8 +275,8 @@ describe('archiveListItem / unarchiveListItem end-to-end', () => {
                 )
                 .toArray()
         );
-        expect(both[0].time_deleted).not.toBeNull();
-        expect(both[1].time_deleted).not.toBeNull();
+        expect(both[0]!.time_deleted).not.toBeNull();
+        expect(both[1]!.time_deleted).not.toBeNull();
 
         await stub.handlePush({
             authorizedAccounts: [],
@@ -300,8 +300,8 @@ describe('archiveListItem / unarchiveListItem end-to-end', () => {
                 )
                 .toArray()
         );
-        expect(restored[0].time_deleted).toBeNull();
-        expect(restored[1].time_deleted).toBeNull();
+        expect(restored[0]!.time_deleted).toBeNull();
+        expect(restored[1]!.time_deleted).toBeNull();
     });
 
     it('inverses point pair-wise', () => {

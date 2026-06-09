@@ -208,7 +208,7 @@ describe('createListItem end-to-end', () => {
             JSON.parse(snapshot.listRow.child_element_refs as string)
         ).toEqual([item.id]);
 
-        const pullResult = await stub.handlePull({
+        const pullResult = await (stub as unknown as DjibbList).handlePull({
             authorizedRole: 'ownerless',
             listId,
             pullRequest: {
@@ -319,7 +319,7 @@ describe('createListItem end-to-end', () => {
         });
         expect(stored.references_entity_id).toBe(blankId);
 
-        const pullResult = await stub.handlePull({
+        const pullResult = await (stub as unknown as DjibbList).handlePull({
             authorizedRole: 'ownerless',
             listId,
             pullRequest: {
@@ -428,7 +428,7 @@ describe('full browser journey: create + toggle multiple items', () => {
         expect(toggleB.error).toBeNull();
 
         // 4. pull from scratch: list row + both items should be in the patch
-        const pullResult = await stub.handlePull({
+        const pullResult = await (stub as unknown as DjibbList).handlePull({
             authorizedRole: 'ownerless',
             listId,
             pullRequest: {

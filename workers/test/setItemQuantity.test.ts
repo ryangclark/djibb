@@ -205,7 +205,7 @@ describe('setItemQuantity end-to-end', () => {
 
         // 5. Pull from v=1; the item row (version=2) should land
         // in the patch.
-        const pullResult = await stub.handlePull({
+        const pullResult = await (stub as unknown as DjibbList).handlePull({
             authorizedRole: 'ownerless',
             listId,
             pullRequest: {

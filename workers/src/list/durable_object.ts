@@ -1,8 +1,20 @@
 import { DurableObject } from 'cloudflare:workers';
-import { MutationV1, PullResponseOKV1, PushRequestV1 } from 'replicache';
+import {
+    MutationV1,
+    PullResponseOKV1,
+    PushRequestV1,
+    ReadonlyJSONValue,
+} from 'replicache';
 
 import { ReplicachePullRequest } from '../replicache';
-import { isEntityRow, isEntityRowType, List, ListElement } from './index';
+import {
+    isEntityRow,
+    isEntityRowType,
+    List,
+    ListElement,
+    Template,
+    WorkspaceEntity,
+} from './index';
 import {
     executeServerMutation,
     MutationStatus,
@@ -283,7 +295,11 @@ export class DjibbList extends DurableObject {
         });
     }
 
-    getList(args: { listId: string }): Result<List, SerializedDjibbError> {
+    // The DO serves every entity-row type (ADR 0011), so `_getList`
+    // returns any of them — not just `List`.
+    getList(args: {
+        listId: string;
+    }): Result<List | Template | WorkspaceEntity, SerializedDjibbError> {
         return tryCatch(() => this._getList(args));
     }
 
@@ -469,12 +485,15 @@ export class DjibbList extends DurableObject {
                 pullResponse.patch.push({
                     key,
                     op: 'put',
+                    // The entity row is JSON at rest, but `meta`'s
+                    // `Record<string, unknown>` values aren't provably
+                    // `ReadonlyJSONValue` to the compiler.
                     value: {
                         ...element,
                         time_created: element.time_created.toISOString(),
                         time_deleted: null,
                         time_updated: element.time_updated.toISOString(),
-                    },
+                    } as ReadonlyJSONValue,
                 });
             }
         }

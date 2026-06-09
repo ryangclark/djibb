@@ -14,7 +14,7 @@
 
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
-import type { PushRequestV1 } from 'replicache';
+import type { PushRequestV1, ReadonlyJSONObject } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '../src/id';
@@ -60,7 +60,7 @@ function makeInitListPush({
     };
 }
 
-function makePush<TBody extends Record<string, unknown>>({
+function makePush<TBody extends ReadonlyJSONObject>({
     clientGroupID,
     clientID,
     name,
@@ -292,7 +292,7 @@ describe('inviteByIdentity', () => {
                 .toArray()
         );
         expect(doRows).toHaveLength(1);
-        expect(doRows[0].role).toBe('editor'); // unchanged
+        expect(doRows[0]!.role).toBe('editor'); // unchanged
     });
 
     // ------------------------------------------------------------------
@@ -770,7 +770,7 @@ describe('revokeInvitation', () => {
             .bind(listId)
             .all<{ status: string }>();
         expect(d1Rows.results).toHaveLength(1);
-        expect(d1Rows.results![0].status).toBe('revoked');
+        expect(d1Rows.results![0]!.status).toBe('revoked');
     });
 
     it('returns gone when revoking a non-existent invite', async () => {

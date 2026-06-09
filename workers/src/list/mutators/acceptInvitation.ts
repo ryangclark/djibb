@@ -126,7 +126,7 @@ export const server: ServerMutator<Args> = (
     const current: AuthorizationRules =
         typeof currentRaw === 'string'
             ? JSON.parse(currentRaw)
-            : (currentRaw as AuthorizationRules);
+            : (currentRaw as unknown as AuthorizationRules);
 
     // If the acceptor already has an explicit grant, the invite is a
     // no-op on rules — but we still tombstone the pending row (the
