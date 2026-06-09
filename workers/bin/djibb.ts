@@ -11,7 +11,7 @@
  * Pure and dependency-free, like the module it exercises: it runs under plain
  * `node` via TypeScript type-stripping (Node >= 23.6), no build step.
  *
- *   ./djibb test-parse                 # every list in seed/contributed/
+ *   ./djibb test-parse                 # every list in ./seed/contributed/ (searched upward)
  *   ./djibb test-parse wrong-window    # one seed, by slug
  *   ./djibb test-parse path/to/list.md # one file, by path
  *   ./djibb test-parse wrong-window --show   # also print the canonical form
@@ -20,12 +20,29 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { parseMarkdown, encodeMarkdown } from '../src/list/markdown.ts';
 
-const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
-const SEED_DIR = join(REPO_ROOT, 'seed', 'contributed');
+/**
+ * The seed/contributed dir of the djibb project we're standing in: walk up
+ * from the cwd until we find one. This is what lets a PATH-linked `djibb`
+ * act on the *current* project, not the checkout it was installed from.
+ */
+function findSeedDir(): string {
+    let dir = process.cwd();
+    for (;;) {
+        const candidate = join(dir, 'seed', 'contributed');
+        if (existsSync(candidate)) return candidate;
+        const parent = dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+    throw new Error(
+        `no seed/contributed/ found from ${process.cwd()} — ` +
+            `run inside a djibb project, or pass a file path.`
+    );
+}
 
 const c = {
     bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
@@ -162,12 +179,13 @@ function diff(before: string, after: string): string[] {
 /** Resolve a CLI arg to one or more file paths. */
 async function resolveTargets(arg: string | undefined): Promise<Array<{ path: string; label: string }>> {
     if (!arg) {
-        // Default: every list in seed/contributed/, minus the README.
-        const entries = await readdir(SEED_DIR);
+        // Default: every list in the current project's seed/contributed/, minus README.
+        const seedDir = findSeedDir();
+        const entries = await readdir(seedDir);
         return entries
             .filter((f: string) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md')
             .sort()
-            .map((f: string) => ({ path: join(SEED_DIR, f), label: f }));
+            .map((f: string) => ({ path: join(seedDir, f), label: f }));
     }
 
     // An existing path (absolute or relative to cwd) wins.
@@ -175,8 +193,9 @@ async function resolveTargets(arg: string | undefined): Promise<Array<{ path: st
     if (existsSync(asPath)) return [{ path: asPath, label: arg }];
 
     // Otherwise treat it as a seed slug, with or without the .md extension.
+    const seedDir = findSeedDir();
     const slug = arg.endsWith('.md') ? arg : `${arg}.md`;
-    const seedPath = join(SEED_DIR, slug);
+    const seedPath = join(seedDir, slug);
     if (existsSync(seedPath)) return [{ path: seedPath, label: slug }];
 
     throw new Error(`no file at "${arg}", and no seed "${seedPath}"`);
@@ -225,7 +244,7 @@ const COMMANDS: Record<string, { run: (args: string[]) => Promise<number>; help:
         run: cmdTestParse,
         help:
             'Round-trip a Markdown list through the ADR-0012 encoder.\n' +
-            '    djibb test-parse                 every list in seed/contributed/\n' +
+            '    djibb test-parse                 every list in ./seed/contributed/ (searched up from cwd)\n' +
             '    djibb test-parse <slug>          one seed by slug (e.g. wrong-window)\n' +
             '    djibb test-parse <path/to.md>    one file by path',
     },
