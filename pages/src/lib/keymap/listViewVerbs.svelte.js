@@ -33,7 +33,9 @@ import {
  * @param {object} input
  * @param {() => import('$djibb/list').List | import('$djibb/list').Template} input.getList
  * @param {() => Record<string, any>} input.getData
- * @param {string} input.listId
+ * @param {() => string} input.getListId
+ *   Thunk for the active list id (same reactivity reason as
+ *   `getList` / `getData`).
  * @param {() => import('$lib/replicache/types').ClientListMutators & { archiveListItem: any, archiveListGroup: any, setItemQuantity: any }} input.getMutateWithUndo
  *   Thunk for the undo-stack-pushing mutator surface. Must be a
  *   thunk because in Svelte 5, prop bindings (like `mutateWithUndo`

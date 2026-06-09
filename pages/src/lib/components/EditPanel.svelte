@@ -40,8 +40,13 @@
 
 	// Working drafts. Pre-filled from the row, edited freely. We
 	// compare against the original on commit to detect dirty fields.
+	// These are one-time snapshots of the row, edited freely — they
+	// deliberately do not track `elem` reactively.
+	// svelte-ignore state_referenced_locally
 	let name_draft = $state(elem.name ?? '');
+	// svelte-ignore state_referenced_locally
 	let description_draft = $state(elem.description ?? '');
+	// svelte-ignore state_referenced_locally
 	let target_draft = $state(elem.value?.target_value ?? 1);
 
 	/** @type {HTMLInputElement | undefined} */
@@ -128,6 +133,7 @@
 <div
 	class="fixed inset-0 z-[900] flex items-start justify-end bg-black/20"
 	role="dialog"
+	tabindex="-1"
 	aria-modal="true"
 	onkeydown={handleKeydown}
 >

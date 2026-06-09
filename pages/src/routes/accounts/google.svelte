@@ -26,7 +26,7 @@
 			return;
 		}
 
-		const onMessage = async event => {
+		const onMessage = async (/** @type {MessageEvent} */ event) => {
 			if (event.origin !== window.location.origin) return;
 			if (event.data?.type !== 'djibb:oauth-success') return;
 
@@ -92,7 +92,9 @@
 		-moz-user-select: none;
 		-webkit-user-select: none;
 		-ms-user-select: none;
+		user-select: none;
 		-webkit-appearance: none;
+		appearance: none;
 		background-color: WHITE;
 		background-image: none;
 		border: 1px solid #747775;

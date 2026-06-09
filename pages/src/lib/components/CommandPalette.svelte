@@ -84,6 +84,7 @@
 <div
 	class="fixed inset-0 z-[960] flex items-start justify-center pt-24 bg-black/40"
 	role="dialog"
+	tabindex="-1"
 	aria-modal="true"
 	aria-label="Command palette"
 	onclick={onClose}
