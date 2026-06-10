@@ -515,7 +515,10 @@ backfill — decide at apply time.
 
 **Phase 5 — Polish.**
 - Transfer-ownership flow + email confirmation.
-- Move-list-between-workspaces UI.
+- Move-list-between-workspaces UI. ✅ Done — `moveList` mutator
+  (`requiredRole: OWNER_ROLES`, set-family inverse for undo) +
+  `preflightMoveList` (actor-must-be-member-of-destination gate via D1,
+  wired into `runMutationPreflight`) + workspace picker in `Share.svelte`.
 - Permission-bag usage (custom perms).
 - CVR-backed `current_workspace_id` / `current_account_id`.
 
