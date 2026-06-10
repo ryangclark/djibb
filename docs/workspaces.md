@@ -514,7 +514,10 @@ backfill — decide at apply time.
 - Trash UI surface (`time_deleted IS NOT NULL` per-account view).
 
 **Phase 5 — Polish.**
-- Transfer-ownership flow + email confirmation.
+- Transfer-ownership flow + email confirmation. ✅ Done — `transferOwnership`
+  mutator (owner-gated, recipient-must-be-a-member guard, single-owner
+  invariant) + new-owner notification and former-owner receipt emails
+  fired from the DO post-commit tail.
 - Move-list-between-workspaces UI. ✅ Done — `moveList` mutator
   (`requiredRole: OWNER_ROLES`, set-family inverse for undo) +
   `preflightMoveList` (actor-must-be-member-of-destination gate via D1,
