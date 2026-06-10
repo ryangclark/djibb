@@ -1,6 +1,8 @@
 # ADR 0011: `DjibbList` as universal entity substrate; unified role enum
 
-- **Status:** Accepted (design only — implementation forthcoming)
+- **Status:** Accepted; implemented (core implementation order steps 1–10
+  complete — see §Implementation order; Phase 5 polish ongoing per
+  `docs/workspaces.md`, move-list shipped)
 - **Date:** 2026-05-25
 
 ## Context
