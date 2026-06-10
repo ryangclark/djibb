@@ -24,4 +24,11 @@ export default defineConfig({
             },
         }),
     ],
+    // `test/setup.ts` neutralizes the `EMAIL` send_email binding so no
+    // test ever hits miniflare's domain-validating sender (whose
+    // detached-promise rejection otherwise crashes unrelated tests under
+    // the shared pool-workers `env`). Runs inside the worker.
+    test: {
+        setupFiles: ['./test/setup.ts'],
+    },
 });

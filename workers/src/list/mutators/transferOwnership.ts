@@ -31,6 +31,12 @@ import type {
  * (someone else transferred first, or the caller's local state was
  * out of date).
  *
+ * Recipient authorization: the target must already be an authorized
+ * member of the entity (`{status: 'gone'}` otherwise). Because the
+ * transfer is immediate and non-consensual, restricting it to existing
+ * members is what keeps it from being an unwanted-ownership /
+ * notification-spam vector — see the server mutator's guard.
+ *
  * Not undoable. Returning `null` from `inverse` keeps the action out
  * of the undo history entirely. Reversal happens out-of-band: the new
  * owner can transfer back. Adding it to `FRICTION_TIER_MUTATORS` would
@@ -108,6 +114,21 @@ export const server: ServerMutator<Args> = (
     // from a stale-but-consistent view.
     if (toAccountId === currentOwner) return;
 
+    // Recipient must already be an authorized member of this entity.
+    // Ownership transfer is non-consensual by design (ADR 0011 §Decision
+    // C — "transferred, never invited"), so the only thing keeping it
+    // from being an unwanted-ownership / email-harassment vector is that
+    // you can only hand ownership to someone who already has a
+    // relationship with the entity. Members live in this entity's own
+    // `authorization_rules`, so the check is local — no preflight/D1
+    // needed (unlike `moveList`'s cross-entity destination check). A
+    // non-member target reports `gone`: there's no such member to
+    // promote. The UI only ever offers existing members; this guard
+    // defends the boundary against a hand-crafted or buggy client.
+    if (!current.authorized_accounts[toAccountId]) {
+        return { status: 'gone' };
+    }
+
     const updated: AuthorizationRules = {
         ...current,
         authorized_accounts: {
@@ -153,6 +174,10 @@ export const client: ClientMutator<Args> = async (
         return;
     }
     if (toAccountId === currentOwner) return;
+    // Mirror the server's recipient-must-be-a-member guard (see the
+    // server mutator) so the optimistic local state matches what the
+    // authority will accept.
+    if (!current.authorized_accounts[toAccountId]) return;
 
     const updated: AuthorizationRules = {
         ...current,

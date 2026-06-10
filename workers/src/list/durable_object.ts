@@ -76,9 +76,13 @@ import {
 } from './invitations';
 import { tryClaimSlug } from './slug';
 import { preflightMoveList } from './mutators/moveList';
-import { GetAccountByEmail } from '../account/service';
+import { GetAccountByEmail, GetAccountById } from '../account/service';
 import { GetMembership, mintPersonalWorkspaceEntity } from '../workspace/service';
-import { sendEntityInvitationEmail } from '../email';
+import {
+    sendEntityInvitationEmail,
+    sendOwnershipTransferEmail,
+    sendOwnershipTransferReceiptEmail,
+} from '../email';
 import { LIST_PULL_KEYSPACES } from './pull';
 import {
     appendKeyspacePatches,
@@ -978,6 +982,16 @@ export class DjibbList extends DurableObject {
             identity_value: string;
             inviter_account_id: string;
         }> = [];
+        // Tracks (to_account_id, former_owner_account_id) for every
+        // `transferOwnership` mutation that committed AND actually moved
+        // the principal (to ≠ actor). Drained post-commit to email the
+        // new owner a confirmation (ADR 0011 §Decision C, Phase 5).
+        // Captured separately from any reconciler input so we never fire
+        // on a skipped/stale transfer or a same-owner no-op.
+        const transferredOwnerships: Array<{
+            to_account_id: string;
+            former_owner_account_id: string | null;
+        }> = [];
 
         for (let i = 0; i < pushRequest.mutations.length; i++) {
             const mutation = pushRequest.mutations[i];
@@ -1208,6 +1222,29 @@ export class DjibbList extends DurableObject {
                         });
                     }
                 }
+                if (mutation.name === 'transferOwnership') {
+                    // Capture the transfer so the post-commit tail can
+                    // email the new owner. `accountId` is the actor; the
+                    // mutator proved it equals the current owner (else
+                    // `stale`), so it's the former owner. Skip same-owner
+                    // no-ops (to === actor): the mutator returns without
+                    // writing, but `didMutate` is still true for a clean
+                    // succeed, so we filter here rather than fire a
+                    // "you're now the owner" note at the existing owner.
+                    const rawArgs = (mutation.args ?? {}) as Record<
+                        string,
+                        unknown
+                    >;
+                    const toRaw = rawArgs.toAccountId;
+                    const actorRaw = rawArgs.accountId;
+                    if (typeof toRaw === 'string' && toRaw !== actorRaw) {
+                        transferredOwnerships.push({
+                            to_account_id: toRaw,
+                            former_owner_account_id:
+                                typeof actorRaw === 'string' ? actorRaw : null,
+                        });
+                    }
+                }
                 if (mutation.name === 'acceptInvitation') {
                     // Pull the (kind, value) directly off the wire
                     // args. The mutator already parsed + role-gated
@@ -1315,6 +1352,18 @@ export class DjibbList extends DurableObject {
             await this.fireInvitationEmails(
                 listId,
                 sentInvites,
+                authorizedAccounts
+            );
+        }
+
+        // Email the new owner a confirmation for any transferOwnership
+        // that committed in this push (ADR 0011 §Decision C, Phase 5).
+        // Best-effort, same posture as the invite emails: a delivery
+        // failure is logged but never blocks the push.
+        if (transferredOwnerships.length > 0) {
+            await this.fireOwnershipTransferEmails(
+                listId,
+                transferredOwnerships,
                 authorizedAccounts
             );
         }
@@ -1920,6 +1969,168 @@ export class DjibbList extends DurableObject {
                     `\`sendEntityInvitationEmail()\` failed for "${entityId}" -> "${invite.identity_value}":`,
                     error
                 );
+            }
+        });
+        await Promise.allSettled(sends);
+    }
+
+    /**
+     * Email both parties of each `transferOwnership` that committed in
+     * this push (ADR 0011 §Decision C, Phase 5): a notification to the
+     * new owner ("you're now the owner") and a receipt to the former
+     * owner ("you transferred X" — an accountability / compromise
+     * signal). Mirrors `fireInvitationEmails`' best-effort posture:
+     * per-send failures are logged via `Promise.allSettled`, never
+     * thrown, so the push response isn't blocked. The two sends are
+     * independent — a missing new-owner email doesn't suppress the
+     * former owner's receipt.
+     *
+     * Unlike the invite path the new owner is identified by account id,
+     * not an email literal, so we resolve it from D1 (`GetAccountById`);
+     * that one lookup feeds both emails (their email for the
+     * notification, their name for the receipt). The former owner is the
+     * actor, read straight from the session's `authorizedAccounts`
+     * (name + email, no D1 read). The link carries no `?from_invite=1`:
+     * the transfer already granted `owner` access, so there's nothing to
+     * accept.
+     */
+    private async fireOwnershipTransferEmails(
+        entityId: string,
+        transfers: ReadonlyArray<{
+            to_account_id: string;
+            former_owner_account_id: string | null;
+        }>,
+        authorizedAccounts: Readonly<Account[]>
+    ): Promise<void> {
+        const entity = getElementById(this.sql, entityId);
+        if (!entity || !isEntityRow(entity)) {
+            console.warn(
+                `\`fireOwnershipTransferEmails()\` no entity row for "${entityId}"`
+            );
+            return;
+        }
+        const entityName = (entity as { name?: string }).name ?? '';
+        const entityTypeLabel = entity.type;
+
+        const env = this.env as Bindings;
+        if (!env.EMAIL) {
+            console.warn(
+                '`fireOwnershipTransferEmails()` no EMAIL binding; skipping send.'
+            );
+            return;
+        }
+        const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
+
+        const origin = (env.AUTHORIZED_DOMAINS ?? '').split(';')[0] ?? '';
+        if (!origin) {
+            console.warn(
+                '`fireOwnershipTransferEmails()` no AUTHORIZED_DOMAINS; using relative URL.'
+            );
+        }
+        // URL prefix mirrors the entity ID's type prefix (`l/`, `t/`,
+        // `w/`) — see user memory "URLs mirror ID type prefixes".
+        const pathPrefix =
+            entityTypeLabel === 'list'
+                ? '/l/'
+                : entityTypeLabel === 'workspace'
+                  ? '/w/'
+                  : '/t/';
+        const idSuffix = entityId.includes('/')
+            ? entityId.split('/')[1]
+            : entityId;
+        // Workspaces route by slug, not id suffix (ADR 0011 §7b.5); the
+        // DO's local sql doesn't carry the slug, so resolve it from the
+        // D1 catalog. Fall back to the id suffix so the link still names
+        // the right DO.
+        let pathSegment = idSuffix;
+        if (entityTypeLabel === 'workspace') {
+            const row = await d1
+                .prepare(
+                    `SELECT slug FROM workspace_entities
+                      WHERE id = ? AND type = 'workspace' LIMIT 1;`
+                )
+                .bind(entityId)
+                .first<{ slug: string | null }>();
+            if (row?.slug) {
+                pathSegment = row.slug;
+            } else {
+                console.warn(
+                    `\`fireOwnershipTransferEmails()\` no slug for workspace "${entityId}"; using id suffix.`
+                );
+            }
+        }
+        const entityUrl = `${origin}${pathPrefix}${pathSegment}`;
+
+        const sends = transfers.map(async transfer => {
+            // Former owner = the actor, resolved from the in-session
+            // accounts (carries both display_name and email; no D1 read).
+            const formerOwner = transfer.former_owner_account_id
+                ? authorizedAccounts.find(
+                      a => a.id === transfer.former_owner_account_id
+                  )
+                : undefined;
+            const formerOwnerName = formerOwner?.display_name ?? '';
+
+            // New owner needs a D1 lookup — they're identified by id, and
+            // (unlike the actor) aren't in the session. One lookup feeds
+            // both emails: their email for the notification, their name
+            // for the former owner's receipt.
+            const recipient = await GetAccountById(
+                d1,
+                transfer.to_account_id
+            ).catch(err => {
+                console.error(
+                    `\`fireOwnershipTransferEmails()\` GetAccountById failed for "${transfer.to_account_id}":`,
+                    err
+                );
+                return null;
+            });
+
+            // 1. Notify the new owner.
+            const newOwnerEmail = recipient?.email;
+            if (newOwnerEmail) {
+                try {
+                    await sendOwnershipTransferEmail(env, {
+                        to: newOwnerEmail,
+                        entityTypeLabel,
+                        entityName,
+                        formerOwnerName,
+                        entityUrl,
+                    });
+                } catch (error) {
+                    console.error(
+                        `\`sendOwnershipTransferEmail()\` failed for "${entityId}" -> "${transfer.to_account_id}":`,
+                        error
+                    );
+                }
+            } else {
+                console.warn(
+                    `\`fireOwnershipTransferEmails()\` no email for new owner "${transfer.to_account_id}" of "${entityId}"; skipping notification.`
+                );
+            }
+
+            // 2. Receipt to the former owner (accountability / account-
+            // compromise signal). Independent of (1): a missing
+            // new-owner email shouldn't suppress the former owner's
+            // record of the change.
+            const formerOwnerEmail = formerOwner?.email;
+            if (formerOwnerEmail) {
+                const newOwnerName =
+                    recipient?.display_name || recipient?.email || '';
+                try {
+                    await sendOwnershipTransferReceiptEmail(env, {
+                        to: formerOwnerEmail,
+                        entityTypeLabel,
+                        entityName,
+                        newOwnerName,
+                        entityUrl,
+                    });
+                } catch (error) {
+                    console.error(
+                        `\`sendOwnershipTransferReceiptEmail()\` failed for "${entityId}" -> former owner "${transfer.former_owner_account_id}":`,
+                        error
+                    );
+                }
             }
         });
         await Promise.allSettled(sends);

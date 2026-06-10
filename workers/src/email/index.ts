@@ -4,6 +4,17 @@ import type { Bindings } from '..';
 // gone with the rest of the legacy invitation system. `sendEntityInvitationEmail`
 // below is the only invitation email path now.
 
+/**
+ * Resolve the `from` address for outbound mail. Single source of truth
+ * for every send function so the sender isn't hardcoded in each. Driven
+ * by `EMAIL_FROM` (a `wrangler.toml` var); the last-resort literal is
+ * only reached if that var is somehow unset, and it stays on the domain
+ * we actually control (djibb.com) — never the old, unowned djibb.app.
+ */
+function resolveEmailFrom(env: Bindings): string {
+    return env.EMAIL_FROM?.trim() || 'no-reply@djibb.com';
+}
+
 export interface EntityInvitationEmailParams {
     to: string;
     /** "list", "template", or "workspace" — drives subject phrasing. */
@@ -31,7 +42,7 @@ export async function sendEntityInvitationEmail(
     env: Bindings,
     params: EntityInvitationEmailParams
 ): Promise<void> {
-    const from = env.EMAIL_FROM || 'no-reply@djibb.app';
+    const from = resolveEmailFrom(env);
     const inviter = params.inviterName?.trim() || 'Someone';
     const entityName = params.entityName?.trim() || `a ${params.entityTypeLabel}`;
     const subject = `${sanitizeHeader(inviter)} shared ${sanitizeHeader(entityName)} with you on djibb`;
@@ -49,6 +60,122 @@ export async function sendEntityInvitationEmail(
 
     await env.EMAIL.send({
         from: { email: from, name: 'djibb invites' },
+        to: params.to,
+        subject,
+        html,
+        text,
+    });
+}
+
+export interface OwnershipTransferEmailParams {
+    /** New owner's email — the recipient of this confirmation. */
+    to: string;
+    /** "list", "template", or "workspace" — drives subject phrasing. */
+    entityTypeLabel: 'list' | 'template' | 'workspace';
+    /** Display name of the entity. May be empty; falls back to a
+     *  generic phrase. */
+    entityName: string;
+    /** Display name of the former owner who initiated the transfer.
+     *  May be empty; falls back to "Someone." */
+    formerOwnerName: string;
+    /** Direct URL to the entity. Unlike the invite path there's no
+     *  `?from_invite=1` — the transfer already granted `owner` access,
+     *  so this is a notification, not an accept gate. */
+    entityUrl: string;
+}
+
+/**
+ * Confirmation email for an ownership transfer (ADR 0011 §Decision C,
+ * Phase 5 polish). Sent to the *new* owner once `transferOwnership`
+ * commits: ownership is transferred immediately and is not an
+ * accept-gated invite (the former owner is demoted to `admin` in the
+ * same mutation), so this is a heads-up receipt rather than a call to
+ * action. Sibling of `sendEntityInvitationEmail`; kept separate so the
+ * copy and (future) former-owner receipt can evolve independently.
+ */
+export async function sendOwnershipTransferEmail(
+    env: Bindings,
+    params: OwnershipTransferEmailParams
+): Promise<void> {
+    const from = resolveEmailFrom(env);
+    const formerOwner = params.formerOwnerName?.trim() || 'Someone';
+    const entityName =
+        params.entityName?.trim() || `a ${params.entityTypeLabel}`;
+    const subject = `You're now the owner of ${sanitizeHeader(entityName)} on djibb`;
+
+    const text =
+        `${formerOwner} transferred ownership of "${entityName}" to you on djibb.\n\n` +
+        `You now have full control of this ${params.entityTypeLabel}.\n\n` +
+        `Open it:\n${params.entityUrl}\n\n` +
+        `If you weren't expecting this, reach out to ${formerOwner}.\n`;
+
+    const html =
+        `<p><strong>${escapeHtml(formerOwner)}</strong> transferred ownership of ` +
+        `<strong>${escapeHtml(entityName)}</strong> to you on djibb.</p>` +
+        `<p>You now have full control of this ${escapeHtml(params.entityTypeLabel)}.</p>` +
+        `<p><a href="${escapeAttr(params.entityUrl)}">Open the ${escapeHtml(params.entityTypeLabel)}</a></p>` +
+        `<p style="color:#888;font-size:12px">If you weren't expecting this, reach out to ${escapeHtml(formerOwner)}.</p>`;
+
+    await env.EMAIL.send({
+        from: { email: from, name: 'djibb' },
+        to: params.to,
+        subject,
+        html,
+        text,
+    });
+}
+
+export interface OwnershipTransferReceiptEmailParams {
+    /** Former owner's email — the recipient of this receipt. */
+    to: string;
+    /** "list", "template", or "workspace" — drives subject phrasing. */
+    entityTypeLabel: 'list' | 'template' | 'workspace';
+    /** Display name of the entity. May be empty; falls back to a
+     *  generic phrase. */
+    entityName: string;
+    /** Display name (or email) of the account that received ownership.
+     *  May be empty; falls back to "another member." */
+    newOwnerName: string;
+    /** Direct URL to the entity. */
+    entityUrl: string;
+}
+
+/**
+ * Receipt email for the *former* owner after a transfer (ADR 0011
+ * §Decision C, Phase 5). Sibling of `sendOwnershipTransferEmail` (which
+ * notifies the new owner). Its primary value is accountability /
+ * compromise detection — the same rationale as a "new sign-in" email:
+ * if the former owner didn't make this change, the receipt is how they
+ * find out. The recipient-must-be-a-member guard already prevents
+ * transfer to a stranger, so this is hygiene, not the abuse boundary.
+ */
+export async function sendOwnershipTransferReceiptEmail(
+    env: Bindings,
+    params: OwnershipTransferReceiptEmailParams
+): Promise<void> {
+    const from = resolveEmailFrom(env);
+    const newOwner = params.newOwnerName?.trim() || 'another member';
+    const entityName =
+        params.entityName?.trim() || `your ${params.entityTypeLabel}`;
+    const subject = `You transferred ownership of ${sanitizeHeader(entityName)} on djibb`;
+
+    const text =
+        `You transferred ownership of "${entityName}" to ${newOwner} on djibb.\n\n` +
+        `You're now an admin of this ${params.entityTypeLabel}.\n\n` +
+        `Open it:\n${params.entityUrl}\n\n` +
+        `If you didn't make this change, your account may be compromised — ` +
+        `secure it and contact support.\n`;
+
+    const html =
+        `<p>You transferred ownership of ` +
+        `<strong>${escapeHtml(entityName)}</strong> to ` +
+        `<strong>${escapeHtml(newOwner)}</strong> on djibb.</p>` +
+        `<p>You're now an admin of this ${escapeHtml(params.entityTypeLabel)}.</p>` +
+        `<p><a href="${escapeAttr(params.entityUrl)}">Open the ${escapeHtml(params.entityTypeLabel)}</a></p>` +
+        `<p style="color:#888;font-size:12px">If you didn't make this change, your account may be compromised — secure it and contact support.</p>`;
+
+    await env.EMAIL.send({
+        from: { email: from, name: 'djibb' },
         to: params.to,
         subject,
         html,
@@ -79,7 +206,7 @@ export async function sendMagicLinkEmail(
     env: Bindings,
     params: MagicLinkEmailParams
 ): Promise<void> {
-    const from = env.EMAIL_FROM || 'no-reply@djibb.app';
+    const from = resolveEmailFrom(env);
     const subject = 'Sign in to djibb';
 
     const text =
