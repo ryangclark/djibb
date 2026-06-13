@@ -335,7 +335,7 @@ All require authed session (via `HandleSession` middleware) except where noted. 
   - Persists the choice in `localStorage` (`session.currentWorkspaceId`).
   - **Auto-resolves the active account** to the account whose membership grants access to that workspace. This solves the "multiple authed accounts on one list" TODO for the common case.
   - Navigates to `/w/:slug`.
-- Persistence note: `currentWorkspaceId` (and eventually `currentAccountId`) will likely migrate to a Replicache Client View Record in the future — design with that in mind.
+- Persistence note: `currentWorkspaceId` stays client-local (localStorage); `currentAccountId` likewise — it's per-tab/per-auth (authenticating *is* selecting an account), so it must never be server-synced. Server-syncing the last-active workspace was considered and deferred — see ADR 0013.
 
 ### Personal workspace label
 If `slot = 'personal_workspace' && name IS NULL`, render as "Your Space" (or similar) rather than blank.
@@ -523,7 +523,13 @@ backfill — decide at apply time.
   `preflightMoveList` (actor-must-be-member-of-destination gate via D1,
   wired into `runMutationPreflight`) + workspace picker in `Share.svelte`.
 - Permission-bag usage (custom perms).
-- CVR-backed `current_workspace_id` / `current_account_id`.
+- Keep the workspace switcher fresh while a tab is open: revalidate the
+  existing `GET /a/<id>/workspaces` fetch (the `entity_memberships`
+  projection) on window-focus and after the actor's own
+  membership-changing actions. No new DO, no CVR, no poke — those were
+  considered and deferred (see ADR 0013). Instant cross-account push
+  (an invite appearing without a refocus) is deferred with them, to the
+  notification feature that justifies an account-level channel.
 
 ## Open questions / TODO (not blocking v1)
 
