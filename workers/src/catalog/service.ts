@@ -110,6 +110,66 @@ export async function ListTrashedEntitiesForAccount(
 }
 
 /**
+ * One entity shared *with* the actor — a list or template they hold a
+ * direct grant on. `role` is their granted role; `slug` is carried for
+ * symmetry with other catalog rows (lists/templates URL by id).
+ */
+export type SharedEntity = {
+    id: string;
+    type: 'list' | 'template';
+    name: string | null;
+    slug: string;
+    role: string;
+    time_updated: number; // unix seconds
+};
+
+/**
+ * ADR 0009 §"Shared with me — v1 D1, end-state DO". The recipient's
+ * surface for finding entities granted to them directly — Bob's way back
+ * to "Weekend BBQ" after he accepts Alice's invite (§Independent grant
+ * axes). This is the v1 D1-index implementation; the end-state
+ * (Account-as-DjibbList) is the substrate question ADR 0013 deferred.
+ *
+ * Returns lists/templates where the account has a *granted* entity-direct
+ * role, excluding:
+ *   - `owner` — that's the account's own entity, surfaced elsewhere.
+ *   - `restricted` (pre-accept invite state) and `ownerless` (bootstrap
+ *     artifact) — not real access.
+ *   - workspaces (`type`) — those are the switcher's job.
+ *   - entities inside a workspace the account already belongs to — they
+ *     show in that workspace's views, so listing them here would
+ *     double-count. (Independent grant axes: a direct grant is only
+ *     "shared with me" when workspace membership doesn't already cover
+ *     it.)
+ * Soft-deleted targets are excluded; newest-updated first.
+ */
+export async function ListSharedWithAccount(
+    d1: D1Database,
+    accountId: string,
+): Promise<SharedEntity[]> {
+    const result = await d1
+        .prepare(
+            `SELECT we.id, we.type, we.name, we.slug, em.role,
+                    we.time_updated
+             FROM entity_memberships em
+             JOIN workspace_entities we ON we.id = em.entity_id
+             WHERE em.account_id = ?
+               AND we.type IN ('list', 'template')
+               AND we.time_deleted IS NULL
+               AND em.role NOT IN ('owner', 'restricted', 'ownerless')
+               AND (we.workspace_id IS NULL OR we.workspace_id NOT IN (
+                     SELECT em2.entity_id
+                     FROM entity_memberships em2
+                     WHERE em2.account_id = ?
+                   ))
+             ORDER BY we.time_updated DESC`,
+        )
+        .bind(accountId, accountId)
+        .all<SharedEntity>();
+    return result.results ?? [];
+}
+
+/**
  * One pending invitation addressed to a verified identity the actor
  * holds. Carries enough to render a row and link to the entity's accept
  * surface: `target_id` URLs lists/templates (`/l/<id>`, `/t/<id>`),

@@ -5,6 +5,7 @@ import { HandleSession } from '../auth/middleware';
 import { GetWorkspacesByAccountId } from '../workspace/service';
 import {
     ListPendingInvitationsForIdentities,
+    ListSharedWithAccount,
     ListTrashedEntitiesForAccount,
 } from '../catalog/service';
 import { BadRequestError, UnauthenticatedError, UnauthorizedError } from '../errors';
@@ -58,6 +59,28 @@ AccountApp.get('/:suffix/trash', async c => {
         accountId
     );
     return c.json(entities);
+});
+
+/**
+ * "Shared with me" for one account: `/a/<suffix>/shared`. ADR 0009
+ * §"Shared with me". Lists/templates the account holds a direct grant on
+ * but doesn't own and that aren't covered by a workspace membership —
+ * the recipient's way back to an entity someone shared with them. Same
+ * URL convention as `/workspaces` and `/trash`.
+ */
+AccountApp.get('/:suffix/shared', async c => {
+    const session = c.get('session');
+    if (!session) throw new UnauthenticatedError();
+
+    const accountId = `${IdTypes.account}/${c.req.param('suffix')}`;
+    if (!session.accounts.some(a => a.id === accountId)) {
+        throw new UnauthorizedError(
+            'Account is not part of the current session.'
+        );
+    }
+
+    const shared = await ListSharedWithAccount(c.env.DJIBB_AUTH, accountId);
+    return c.json(shared);
 });
 
 /**

@@ -54,6 +54,7 @@
 		<a href="/posts">Blog</a>
 		<a href="/accounts">Accounts</a>
 		<a href="/invitations">Invitations</a>
+		<a href="/shared">Shared with me</a>
 		<button onclick={newList}>+ New list</button>
 		<button onclick={newTemplate}>+ New template</button>
 	</nav>
