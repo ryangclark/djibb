@@ -523,12 +523,16 @@ backfill — decide at apply time.
   `preflightMoveList` (actor-must-be-member-of-destination gate via D1,
   wired into `runMutationPreflight`) + workspace picker in `Share.svelte`.
 - Permission-bag usage (custom perms).
-- Keep the workspace switcher fresh while a tab is open: revalidate the
-  existing `GET /a/<id>/workspaces` fetch (the `entity_memberships`
-  projection) on window-focus and after the actor's own
-  membership-changing actions. No new DO, no CVR, no poke — those were
-  considered and deferred (see ADR 0013). Instant cross-account push
-  (an invite appearing without a refocus) is deferred with them, to the
+- Keep the workspace switcher fresh while a tab is open. ✅ Done —
+  `SessionState.revalidateWorkspaces()` re-runs the existing
+  `GET /a/<id>/workspaces` fetch (the `entity_memberships` projection)
+  and re-hydrates without disturbing the active selection; fired from
+  `+layout.svelte` on window-focus + `visibilitychange`. No new DO, no
+  CVR, no poke — those were considered and deferred (see ADR 0013).
+  Optional follow-up: also call `revalidateWorkspaces()` after the
+  actor's own membership-changing actions (create workspace / accept
+  invite / leave) for instant in-tab refresh. Instant *cross-account*
+  push (an invite appearing without a refocus) stays deferred to the
   notification feature that justifies an account-level channel.
 
 ## Open questions / TODO (not blocking v1)
