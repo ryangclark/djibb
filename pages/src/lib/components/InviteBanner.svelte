@@ -29,6 +29,7 @@
 	 * the user can dismiss manually.
 	 */
 	import { tryCatchAsync } from '$djibb/utils/trycatch';
+	import { getSessionState } from '$lib/session.svelte';
 
 	/**
 	 * @typedef {Object} Props
@@ -53,6 +54,11 @@
 		currentAccountId,
 		pathname
 	} = $props();
+
+	// Provided by the root +layout. Used to refresh the workspace
+	// switcher the instant a workspace invite is accepted, rather than
+	// waiting for the next window-focus revalidation (ADR 0013).
+	const session = getSessionState();
 
 	// Local dismiss for already-a-member / post-success / explicit close.
 	// Does not survive a refresh, but the `alreadyAuthorized` derivation
@@ -99,6 +105,12 @@
 		// the outcome channel toasts; the user can re-open the email
 		// link, switch accounts, etc.
 		dismissed = true;
+		// A workspace accept adds a membership the switcher reads from
+		// the D1 projection — refresh it now so the new workspace shows
+		// up without waiting for the focus-driven revalidation.
+		if (entityType === 'workspace') {
+			session?.revalidateWorkspaces();
+		}
 	}
 
 	// `/accounts` doesn't currently honor a `next=` param across the

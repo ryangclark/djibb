@@ -25,10 +25,15 @@
 export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/;
 
 /**
- * Slugs that would clash with worker route prefixes or have admin-y
- * connotations. Reserved across every entity type — a list can't be
- * `admin` either, regardless that the URL would be `/l/admin` not
- * `/admin`. Cheap insurance against future routing changes.
+ * Slugs that would clash with worker route prefixes or front-end
+ * routes, or have admin-y connotations. Reserved across every entity
+ * type — a list can't be `admin` either, regardless that the URL would
+ * be `/l/admin` not `/admin`. Cheap insurance against future routing
+ * changes (and ADR 0002's island-homepage flat-`/<slug>` direction,
+ * where these collisions become live rather than hypothetical).
+ *
+ * `account/username.ts::RESERVED_USERNAMES` spreads this set so the two
+ * namespaces can't drift; keep username-only additions there.
  *
  * Auto-defaulted suffixes (the nanoid after the type prefix) bypass
  * this check: a `newId('workspace')` is alphanumeric uniform-random
@@ -37,6 +42,7 @@ export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/;
  * `setWorkspaceSlug`.
  */
 export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
+    // Admin-y / auth route words.
     'admin',
     'api',
     'app',
@@ -48,11 +54,20 @@ export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
     'settings',
     'signup',
     'support',
+    // Live top-level front-end routes (pages/src/routes/*).
+    'accounts',
+    'invitations',
+    'shared',
+    'trash',
     'workspaces',
+    // Entity-prefix + nested route segments (defensive — see ADR 0002).
     'l',
     't',
     'w',
     'a',
+    'workspace',
+    'members',
+    'invites',
 ]);
 
 export type SlugClaimFailureReason =

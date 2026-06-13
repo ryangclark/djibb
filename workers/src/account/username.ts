@@ -1,4 +1,5 @@
 import { BadRequestError, FailedPreconditionError, NotFoundError, UnexpectedError } from '../errors';
+import { RESERVED_SLUGS } from '../list/slug';
 
 /**
  * Username format: lowercase letter to start, then letters, digits,
@@ -8,26 +9,15 @@ import { BadRequestError, FailedPreconditionError, NotFoundError, UnexpectedErro
 export const USERNAME_PATTERN = /^[a-z][a-z0-9_-]{2,29}$/;
 
 /**
- * Reserved usernames — the workspace slug reserved set plus a few
- * obvious shadow-words. Kept in sync with `workspace/service.ts`'s
- * RESERVED_SLUGS by inclusion check; if you add to that set and want
- * the same words reserved as usernames, mirror them here too.
+ * Reserved usernames — every reserved slug (spread directly from
+ * `list/slug.ts::RESERVED_SLUGS` so the two namespaces can't drift)
+ * plus username-only shadow-words. Add slug/route reservations there;
+ * add username-only ones to the list below.
  */
 const RESERVED_USERNAMES = new Set([
-    // Mirror of workspace RESERVED_SLUGS:
-    'admin',
-    'api',
-    'invitations',
-    'invites',
-    'members',
-    'new',
-    'settings',
-    'workspace',
-    'workspaces',
-    // Username-specific:
-    'support',
+    ...RESERVED_SLUGS,
+    // Username-specific shadow-words:
     'staff',
-    'help',
     'null',
     'undefined',
     'me',

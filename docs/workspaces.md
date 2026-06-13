@@ -529,11 +529,23 @@ backfill — decide at apply time.
   and re-hydrates without disturbing the active selection; fired from
   `+layout.svelte` on window-focus + `visibilitychange`. No new DO, no
   CVR, no poke — those were considered and deferred (see ADR 0013).
-  Optional follow-up: also call `revalidateWorkspaces()` after the
-  actor's own membership-changing actions (create workspace / accept
-  invite / leave) for instant in-tab refresh. Instant *cross-account*
-  push (an invite appearing without a refocus) stays deferred to the
-  notification feature that justifies an account-level channel.
+  Follow-up: ✅ Done — the actor's own membership-changing actions now
+  refresh the switcher immediately. `createWorkspace`, `leaveMember`,
+  `removeMember`, and the settings flows already called
+  `refreshWorkspaces()`; the remaining gap was the invite-accept path,
+  now closed (`InviteBanner.accept()` calls
+  `session.revalidateWorkspaces()` after a successful `workspace`
+  accept). Instant *cross-account* push (an invite appearing without a
+  refocus) stays deferred to the notification feature that justifies an
+  account-level channel.
+- Audit log. ✅ Done — owner/admin-only per-workspace history.
+  `GET /workspace/audit?l=<id>` on the entity router reads the DO's
+  append-only `mutations` table newest-first (`getMutationLog` in
+  `list/sql.ts`, exposed as a `DjibbList` RPC), gated to `OWNER_ROLES`
+  (the log can carry PII in mutation args). Cursor-paginated via the
+  row `seq`; UI at `/w/[slug]/audit` (`pages/src/lib/api/audit.js`).
+  Tested in `test/mutationLog.test.ts`. Display-name resolution for
+  actors is a follow-up (shows the account-id suffix for now).
 
 ## Open questions / TODO (not blocking v1)
 
@@ -547,17 +559,16 @@ backfill — decide at apply time.
 - **Link-type invitations.** ADR 0009 covers `email` + `username`.
   Adding `link` (multi-use, public-URL) is open against that ADR —
   not blocked on Workspace-as-DjibbList specifically.
-- **Slug reserved words** (`settings`, `members`, `invitations`,
-  `api`, `admin`, etc.). Already partially enforced in
-  `workspace/service.ts::RESERVED_SLUGS`.
+- **Slug reserved words.** ✅ Audited — `list/slug.ts::RESERVED_SLUGS`
+  now covers the live top-level front-end routes (`accounts`,
+  `invitations`, `shared`, `trash`, `workspaces`) plus the defensive
+  route/segment words, and `account/username.ts::RESERVED_USERNAMES`
+  spreads that set directly so the two namespaces can no longer drift.
 - **Min/max member count per workspace** (billing implications later).
-- **Workspace-level audit log.** Becomes mostly free once
-  invitations + cascade events are in the mutation log; surfacing
-  a UI for it is separate.
 - **Auth-by-workspace flow** (Slack-style `workspace.djibb.app`) —
   `auth/README.md` flags this as unclear.
 - **Image upload** (currently `workspaces.image` is a URL — no
-  upload path).
+  upload path). Deferred; tracked as GitHub issue #2.
 - **Email-sending integration.** Cloudflare's Email Service beta
   is the candidate stack:
   https://developers.cloudflare.com/email-service/llms.txt

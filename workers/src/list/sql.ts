@@ -1703,6 +1703,95 @@ export function setMutation(
     }
 }
 
+/**
+ * One row of the mutation log, shaped for the audit-log read path.
+ * `seq` is the SQLite rowid — an opaque, monotonically-increasing
+ * insertion cursor (newer rows have larger values), used for "load
+ * older" pagination without depending on clock resolution.
+ *
+ * `timestamp_server` is normalized to unix **seconds** here: the column
+ * is written with `CURRENT_TIMESTAMP`, which SQLite stores as a UTC
+ * datetime *string* despite the INTEGER affinity, so we `strftime` it
+ * back to an epoch at read time. `timestamp_client` is already epoch
+ * seconds (or null) as written by `setMutation`.
+ */
+export type MutationLogEntry = {
+    seq: number;
+    id: number;
+    client_id: string;
+    account_id: string | null;
+    name: string;
+    status: string;
+    /**
+     * The raw stringified mutation body, exactly as stored. Kept as a
+     * string (not a parsed object) deliberately: Cloudflare's RPC stub
+     * typing collapses `unknown` to `never` and chokes on a recursive
+     * JSON type across the DO boundary, so consumers `JSON.parse` this
+     * themselves. Null when the column was empty/unparseable.
+     */
+    args: string | null;
+    timestamp_client: number | null;
+    timestamp_server: number | null;
+};
+
+/**
+ * Read the entity's mutation log, newest-first, for the audit-log
+ * surface (ADR 0005's history table; per-entity, owner-gated at the
+ * HTTP boundary). Pass the `seq` of the last row from the previous page
+ * as `before` to fetch older entries. `limit` is clamped to [1, 200].
+ */
+export function getMutationLog(
+    sql: SqlStorage,
+    opts: { limit?: number; before?: number | null } = {},
+): MutationLogEntry[] {
+    const limit = Math.max(1, Math.min(Math.trunc(opts.limit ?? 50), 200));
+    const before =
+        opts.before == null || !Number.isFinite(opts.before)
+            ? null
+            : Math.trunc(opts.before);
+
+    const columns = `rowid AS seq, id, client_id, account_id, name, status, args,
+            timestamp_client,
+            CAST(strftime('%s', timestamp_server) AS INTEGER) AS timestamp_server`;
+
+    const cursor =
+        before == null
+            ? sql.exec(
+                  `SELECT ${columns}
+                    FROM mutations
+                    ORDER BY rowid DESC
+                    LIMIT ?`,
+                  limit,
+              )
+            : sql.exec(
+                  `SELECT ${columns}
+                    FROM mutations
+                    WHERE rowid < ?
+                    ORDER BY rowid DESC
+                    LIMIT ?`,
+                  before,
+                  limit,
+              );
+
+    const entries: MutationLogEntry[] = [];
+    for (const row of cursor) {
+        entries.push({
+            seq: Number(row.seq),
+            id: Number(row.id),
+            client_id: String(row.client_id),
+            account_id: row.account_id == null ? null : String(row.account_id),
+            name: String(row.name),
+            status: String(row.status),
+            args: typeof row.args === 'string' ? row.args : null,
+            timestamp_client:
+                row.timestamp_client == null ? null : Number(row.timestamp_client),
+            timestamp_server:
+                row.timestamp_server == null ? null : Number(row.timestamp_server),
+        });
+    }
+    return entries;
+}
+
 export function setListItemValue(sql: SqlStorage, listItem: ListItem) {
     // Lots of this will need to be stringified, no?
     // const cursor = sql.exec(

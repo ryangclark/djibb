@@ -28,6 +28,7 @@ import { resolveRole } from '../auth/resolver';
 import { GetEntity } from './entity';
 import { asLocalList } from './durable_object';
 import { initListArgsSchema } from './mutators/client';
+import { OWNER_ROLES } from './mutators/_shared';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
 
@@ -208,6 +209,65 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
             );
         }
         return c.json(list);
+    });
+
+    /**
+     * Owner-gated audit log for this entity (workspace Phase 5 polish).
+     * Reads the DO's append-only `mutations` table newest-first. The log
+     * can expose PII in mutation args (e.g. invited emails), so it is
+     * restricted to `OWNER_ROLES` — `restricted`/`member` callers get a
+     * 403 even though they can read the entity itself.
+     *
+     * Query params: `limit` (1–200, default 50) and `before` (the `seq`
+     * of the last row from the previous page, for "load older").
+     * Response: `{ entries, nextBefore }` where `nextBefore` is the seq
+     * to pass as `before` for the next page, or `null` at the end.
+     */
+    app.get('/audit', async c => {
+        const entity = c.get('entity');
+        if (!entity) throw new NotFoundError();
+
+        if (!OWNER_ROLES.includes(c.get('authorized_role'))) {
+            throw new UnauthorizedError(
+                'audit log is restricted to owners and admins',
+            );
+        }
+
+        const limitParam = Number(c.req.query('limit'));
+        const limit = Number.isFinite(limitParam) ? limitParam : 50;
+        const beforeParam = c.req.query('before');
+        const before =
+            beforeParam == null || beforeParam === ''
+                ? null
+                : Number(beforeParam);
+
+        const result = await c.get('list').getMutationLog({ limit, before });
+        if (result.error) {
+            return new Response(
+                JSON.stringify({
+                    code: result.error.code,
+                    error: result.error.name,
+                    message: result.error.message,
+                }),
+                {
+                    headers: { 'Content-Type': 'application/json' },
+                    status: result.error.httpStatusCode,
+                },
+            );
+        }
+        // `?? []` only fires in the (already-returned) error case; the
+        // RPC boundary widens the Result union so TS can't see that.
+        const entries = result.data ?? [];
+
+        // A full page implies there may be more; the last entry's seq is
+        // the cursor for the next "load older" request.
+        const clampedLimit = Math.max(1, Math.min(Math.trunc(limit), 200));
+        const nextBefore =
+            entries.length === clampedLimit
+                ? entries[entries.length - 1]!.seq
+                : null;
+
+        return c.json({ entries, nextBefore });
     });
 
     app.post('/pull', async c => {

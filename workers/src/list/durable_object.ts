@@ -45,6 +45,8 @@ import {
     getElementById,
     getEntityId,
     getListVersion,
+    getMutationLog,
+    type MutationLogEntry,
     getReplicacheClientGroupById,
     InitializeTables,
     setListVersion,
@@ -352,6 +354,19 @@ export class DjibbList extends DurableObject {
         }
 
         return list;
+    }
+
+    /**
+     * Read this entity's mutation log, newest-first, for the audit-log
+     * surface. The HTTP boundary (`makeEntityRouter`) gates this to
+     * `OWNER_ROLES` before calling — the log can contain PII in mutation
+     * args (e.g. invited email addresses), so it is owner/admin-only.
+     */
+    getMutationLog(args: {
+        limit?: number;
+        before?: number | null;
+    }): Result<MutationLogEntry[], SerializedDjibbError> {
+        return tryCatch(() => getMutationLog(this.sql, args));
     }
 
     /**
