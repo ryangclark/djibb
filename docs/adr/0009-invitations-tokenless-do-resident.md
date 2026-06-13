@@ -419,14 +419,21 @@ flow are gone (ADR 0011 §7b.3 / migration 0013).
 6. **Cascade-delete integration.** Shipped with ADR 0011 §10d — a
    target's hard-delete batches its `entity_invitations_index` rows.
 
+7. **"Shared with me" — v1 D1 surface.** `ListSharedWithAccount`
+   (`catalog/service.ts`) + `GET /a/<suffix>/shared` +
+   `pages/src/routes/shared`, tested in
+   `test/listSharedWithAccount.test.ts`. Lists/templates the account
+   holds a granted entity-direct role on, excluding workspaces and
+   entities already covered by a workspace membership (§Independent
+   grant axes). This is the v1 D1 index the ADR specced; the end-state
+   (Account-as-DjibbList) stays deferred — see below.
+
 ### Still deferred (as the ADR intended)
 
-- **"Shared with me" surface** (§"Shared with me — v1 D1, end-state
-  DO"). Workspace membership is surfaced via `entity_memberships`, but
-  a cross-entity "things shared with me" view (lists/templates you were
-  granted on, outside any workspace you belong to) is not yet built.
-  Its end-state — Account-as-DjibbList — is the same substrate question
-  **ADR 0013 deferred**; decide it there, not here.
+- **"Shared with me" end-state.** The v1 D1 surface is shipped (§7
+  above). The end-state — "shared with me" as a real Account-as-
+  DjibbList whose items carry `references_entity_id` — is the same
+  substrate question **ADR 0013 deferred**; decide it there, not here.
 - **Share Links** — bearer-token, anyone-with-URL invites. Still out
   of scope; own ADR pending.
 - **`username` / `account_id` identity kinds** — schema is
