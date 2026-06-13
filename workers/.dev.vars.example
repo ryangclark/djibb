@@ -1,0 +1,24 @@
+# Copy to `.dev.vars` for local `wrangler dev`. These vars/secrets live
+# as Cloudflare dashboard vars + secrets in production, so they are not
+# in wrangler.toml. Without them, the CORS/CSRF middleware throws and
+# every request 500s. Mirrors the test bindings in vitest.config.ts.
+#   cp .dev.vars.example .dev.vars
+
+# Origin allow-list for CORS/CSRF (semicolon-separated). Must include the
+# SvelteKit dev origin; add the production origin when needed.
+AUTHORIZED_DOMAINS="http://localhost:5173;https://djibb.com"
+
+# Base URL of this Worker — used to build OAuth redirect + magic-link URLs.
+API_ORIGIN="http://localhost:8787"
+
+# "dev" disables secure-cookie enforcement and enables local dev seams.
+ENV="dev"
+
+# Google OAuth credentials (Google Cloud Console > Credentials).
+# Authorized redirect URI to register: http://localhost:8787/auth/google/verify
+OAUTH_GOOGLE_CLIENT_ID=
+OAUTH_GOOGLE_CLIENT_SECRET=
+
+# Sender for outbound mail. Overrides the wrangler.toml [vars] default
+# (no-reply@djibb.com). Must be on a domain we control (djibb.com).
+EMAIL_FROM=invites@djibb.com
