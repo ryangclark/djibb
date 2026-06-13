@@ -108,3 +108,68 @@ export async function ListTrashedEntitiesForAccount(
         .all<TrashedEntity>();
     return result.results ?? [];
 }
+
+/**
+ * One pending invitation addressed to a verified identity the actor
+ * holds. Carries enough to render a row and link to the entity's accept
+ * surface: `target_id` URLs lists/templates (`/l/<id>`, `/t/<id>`),
+ * `slug` URLs workspaces (`/w/<slug>`), and `role` names what accepting
+ * grants. `time_expires` lets the UI show "expires in N days".
+ */
+export type PendingInvitation = {
+    id: string; // invitation id, 'inv/<suffix>'
+    target_id: string;
+    target_type: 'list' | 'template' | 'workspace';
+    name: string | null;
+    slug: string | null;
+    role: string;
+    inviter_account_id: string;
+    time_created: number; // unix seconds
+    time_expires: number; // unix seconds
+};
+
+/**
+ * ADR 0009 §Recipient discovery — the `/invitations` inbox half of the
+ * dual surface (the entity-page `InviteBanner` is the other half). Lists
+ * pending, unexpired invitations whose `identity_value` is one of the
+ * caller's verified emails, so a recipient who lost the invite email can
+ * still find and accept it.
+ *
+ * Keyed by identity (not account_id): invitations are pre-membership and
+ * live in `entity_invitations_index` keyed by the invited email, exactly
+ * as `ResolveInvitedWorkspaceBySlug` (workspace/service.ts) matches them.
+ * Accept itself stays per-account — the `acceptInvitation` DO mutator
+ * does the authoritative identity-ownership check at accept time, so this
+ * read only needs to be good enough to surface the row. Soft-deleted
+ * targets are excluded; ordered newest-first.
+ */
+export async function ListPendingInvitationsForIdentities(
+    d1: D1Database,
+    {
+        identityValues,
+        nowSeconds,
+    }: { identityValues: string[]; nowSeconds: number },
+): Promise<PendingInvitation[]> {
+    if (identityValues.length === 0) return [];
+    const placeholders = identityValues.map(() => '?').join(', ');
+    const result = await d1
+        .prepare(
+            `SELECT ei.id AS id, ei.target_id AS target_id,
+                    ei.target_type AS target_type, ei.role AS role,
+                    ei.inviter_account_id AS inviter_account_id,
+                    ei.time_created AS time_created,
+                    ei.time_expires AS time_expires,
+                    we.name AS name, we.slug AS slug
+             FROM entity_invitations_index ei
+             JOIN workspace_entities we ON we.id = ei.target_id
+             WHERE ei.status = 'pending'
+               AND ei.identity_kind = 'email'
+               AND ei.time_expires > ?
+               AND ei.identity_value IN (${placeholders})
+               AND we.time_deleted IS NULL
+             ORDER BY ei.time_created DESC`,
+        )
+        .bind(nowSeconds, ...identityValues)
+        .all<PendingInvitation>();
+    return result.results ?? [];
+}

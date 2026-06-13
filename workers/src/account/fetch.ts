@@ -3,7 +3,10 @@ import { z } from 'zod';
 import type { HonoEnv } from '..';
 import { HandleSession } from '../auth/middleware';
 import { GetWorkspacesByAccountId } from '../workspace/service';
-import { ListTrashedEntitiesForAccount } from '../catalog/service';
+import {
+    ListPendingInvitationsForIdentities,
+    ListTrashedEntitiesForAccount,
+} from '../catalog/service';
 import { BadRequestError, UnauthenticatedError, UnauthorizedError } from '../errors';
 import { IdTypes } from '../id';
 import { GetAccountByUsername, SetAccountUsername } from './username';
@@ -55,6 +58,37 @@ AccountApp.get('/:suffix/trash', async c => {
         accountId
     );
     return c.json(entities);
+});
+
+/**
+ * Pending-invitations inbox for one account: `/a/<suffix>/invitations`.
+ * ADR 0009 §Recipient discovery. Returns invitations addressed to this
+ * account's verified email — the lost-the-email recovery surface that
+ * complements the entity-page `InviteBanner`. Empty when the account has
+ * no verified email (nothing could have been addressed to it).
+ */
+AccountApp.get('/:suffix/invitations', async c => {
+    const session = c.get('session');
+    if (!session) throw new UnauthenticatedError();
+
+    const accountId = `${IdTypes.account}/${c.req.param('suffix')}`;
+    const account = session.accounts.find(a => a.id === accountId);
+    if (!account) {
+        throw new UnauthorizedError(
+            'Account is not part of the current session.'
+        );
+    }
+
+    const identityValues =
+        account.email_verified && account.email
+            ? [account.email.trim().toLowerCase()]
+            : [];
+
+    const invitations = await ListPendingInvitationsForIdentities(
+        c.env.DJIBB_AUTH,
+        { identityValues, nowSeconds: Math.floor(Date.now() / 1000) }
+    );
+    return c.json(invitations);
 });
 
 const PatchAccountSchema = z.object({

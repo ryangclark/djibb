@@ -53,6 +53,7 @@
 		<a href="/">Home</a>
 		<a href="/posts">Blog</a>
 		<a href="/accounts">Accounts</a>
+		<a href="/invitations">Invitations</a>
 		<button onclick={newList}>+ New list</button>
 		<button onclick={newTemplate}>+ New template</button>
 	</nav>
