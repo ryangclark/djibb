@@ -1,6 +1,8 @@
 # ADR 0009: Invitations — tokenless, DO-resident, pull-filtered
 
-- **Status:** Accepted (design only — implementation depends on Workspace-as-DO and magic-link auth landing)
+- **Status:** Accepted; implemented (core invitation flow shipped — see
+  §Status update 2026-06-12; "shared with me" surface + Share Links remain
+  deferred)
 - **Date:** 2026-05-17
 
 ## Context
@@ -377,3 +379,55 @@ Within the invitations work itself:
   Workspace-as-DjibbList lands and workspace membership lives in
   `authorized_accounts`, `workspace_invitations` becomes redundant
   and can be migrated to the unified path.
+
+---
+
+## Status update — 2026-06-12
+
+The invitation flow this ADR designed is implemented. Both upstream
+dependencies landed (Workspace-as-DjibbList per ADR 0011; magic-link
+auth in `workers/src/auth/magic.ts`), and the within-work sequence is
+complete except for the explicitly-deferred "shared with me" end-state
+and Share Links. `workspace_invitations` and the legacy `/invites/<token>`
+flow are gone (ADR 0011 §7b.3 / migration 0013).
+
+1. **D1 index + emit.** `entity_invitations_index` (migration 0007),
+   emitted from the entity DO post-commit via the ADR 0003 pipeline.
+   The companion membership projection landed as `entity_memberships`
+   (migration 0011) rather than the originally-named
+   `account_authorizations`; the auth resolver reads it
+   (`auth/resolver.ts`).
+2. **Pull-filter PII gating.** `workers/src/list/pull.ts` declares the
+   `pending_invites` keyspace `visibleTo` `OWNER_ROLES` only, with
+   version-tracked put/del patches (a del evicts the cached key on
+   demotion). This is the load-bearing security boundary from
+   §"PII gating via pull filter".
+3. **DO mutators.** `inviteByIdentity`, `revokeInvitation`,
+   `acceptInvitation` (`workers/src/list/mutators/`), inverse-backed
+   per ADR 0005. HTTP-boundary preflight (rate limits, already-member,
+   self-invite) lives in `list/invitations.ts` and is exercised by
+   `test/invitePreflight.test.ts`.
+4. **Email send path.** Invitation emails fire from the entity DO's
+   post-commit tail via `workers/src/email` (the Cloudflare Email
+   Service stack).
+5. **Recipient discovery — both surfaces.** The entity-page
+   `InviteBanner` (the `?from_invite=1` accept affordance) and the
+   canonical `/invitations` inbox covering the lost-email case
+   (`ListPendingInvitationsForIdentities`,
+   `GET /a/<suffix>/invitations`, `pages/src/routes/invitations`,
+   tested in `test/listPendingInvitations.test.ts`).
+6. **Cascade-delete integration.** Shipped with ADR 0011 §10d — a
+   target's hard-delete batches its `entity_invitations_index` rows.
+
+### Still deferred (as the ADR intended)
+
+- **"Shared with me" surface** (§"Shared with me — v1 D1, end-state
+  DO"). Workspace membership is surfaced via `entity_memberships`, but
+  a cross-entity "things shared with me" view (lists/templates you were
+  granted on, outside any workspace you belong to) is not yet built.
+  Its end-state — Account-as-DjibbList — is the same substrate question
+  **ADR 0013 deferred**; decide it there, not here.
+- **Share Links** — bearer-token, anyone-with-URL invites. Still out
+  of scope; own ADR pending.
+- **`username` / `account_id` identity kinds** — schema is
+  identity-kind-agnostic, but only `email` is implemented in practice.
