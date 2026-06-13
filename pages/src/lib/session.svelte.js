@@ -43,6 +43,10 @@ class SessionState {
 	 */
 	hasLoaded = $state(false);
 
+	/** Guards against overlapping revalidations (focus + visibilitychange
+	 * can both fire on a single tab switch). */
+	#revalidating = false;
+
 	async fetchSession() {
 		if (this.status !== STATUSES.idle) {
 			console.warn(
@@ -88,7 +92,7 @@ class SessionState {
 			return;
 		}
 		const results = await Promise.all(
-			this.accounts.map(a => fetchWorkspacesForAccount(a.id).catch(() => []))
+			this.accounts.map((a) => fetchWorkspacesForAccount(a.id).catch(() => []))
 		);
 		this.workspaces = results.flat();
 
@@ -98,11 +102,31 @@ class SessionState {
 			typeof localStorage !== 'undefined'
 				? localStorage.getItem(ACTIVE_WORKSPACE_KEY)
 				: null;
-		const validSlugs = new Set(this.workspaces.map(w => w.workspace.slug));
+		const validSlugs = new Set(this.workspaces.map((w) => w.workspace.slug));
 		if (stored && validSlugs.has(stored)) {
 			this.setActiveWorkspace(stored, { persist: false });
 		} else if (this.workspaces.length) {
 			this.setActiveWorkspace(this.workspaces[0].workspace.slug);
+		}
+	}
+
+	/**
+	 * Re-fetch the membership-backed workspace list and re-hydrate the
+	 * switcher without disturbing the active selection. Closes the
+	 * staleness window while a tab is open — an invite, rename, or
+	 * removal that lands elsewhere shows up on the next focus. Also safe
+	 * to call after the actor's own membership-changing actions (create
+	 * workspace, accept invite, leave). No-op until the first session
+	 * load completes. See ADR 0013 (revalidate the existing fetch; no
+	 * DO, no CVR, no poke).
+	 */
+	async revalidateWorkspaces() {
+		if (!this.hasLoaded || !this.accounts.length || this.#revalidating) return;
+		this.#revalidating = true;
+		try {
+			await this.refreshWorkspaces();
+		} finally {
+			this.#revalidating = false;
 		}
 	}
 
@@ -116,7 +140,7 @@ class SessionState {
 	 */
 	setActiveWorkspace(slug, opts = {}) {
 		const { persist = true } = opts;
-		const match = this.workspaces.find(w => w.workspace.slug === slug);
+		const match = this.workspaces.find((w) => w.workspace.slug === slug);
 		if (!match) return;
 		this.currentWorkspaceSlug = slug;
 		this.currentAccountId = match.membership.account_id;

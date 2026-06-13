@@ -17,6 +17,21 @@
 
 	onMount(() => {
 		sessionState.fetchSession();
+
+		// Keep the workspace switcher fresh while the tab stays open: an
+		// invite/removal that lands elsewhere appears on the next focus.
+		// No DO/CVR/poke — just revalidate the existing fetch (ADR 0013).
+		function revalidateOnFocus() {
+			if (document.visibilityState === 'visible') {
+				sessionState.revalidateWorkspaces();
+			}
+		}
+		document.addEventListener('visibilitychange', revalidateOnFocus);
+		window.addEventListener('focus', revalidateOnFocus);
+		return () => {
+			document.removeEventListener('visibilitychange', revalidateOnFocus);
+			window.removeEventListener('focus', revalidateOnFocus);
+		};
 	});
 
 	function newList() {
