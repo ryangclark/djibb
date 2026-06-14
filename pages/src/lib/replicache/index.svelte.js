@@ -43,6 +43,11 @@ function entityPath(entityId) {
  *   confuses any UI that derives "am I authorized?" from local
  *   data — most notably hiding the InviteBanner before pull
  *   reconciliation lands.
+ * @param {string | null} [input.workspaceId]
+ *   The active workspace's entity id, stamped onto the entity when the
+ *   local-empty-fires-initList shortcut creates it. Only consequential
+ *   on genuine creation (store empty AND !skipClientInit); ignored when
+ *   opening an existing entity. `null` ⇒ workspace-less, as before.
  */
 export function initList({
 	accountId,
@@ -50,6 +55,7 @@ export function initList({
 	onToast,
 	onConfirm,
 	skipClientInit = false,
+	workspaceId = null,
 }) {
 	/** @type {Object.<string, import('replicache').ReadonlyJSONValue>} */
 	const listData = $state({});
@@ -107,9 +113,14 @@ export function initList({
 			.query((tx) => tx.isEmpty())
 			.then((isEmpty) => {
 				if (isEmpty) {
+					// Stamp the actor's active workspace onto the brand-new
+					// entity so it's attributed to the workspace it was
+					// created in (the source of `workspace_id`, consumed by
+					// "shared with me" dedup today and the Island view to
+					// come). `null` when no workspace is selected.
 					mutate.initList({
 						listId,
-						workspaceId: null // TODO: implement workspace
+						workspaceId
 					});
 				}
 			});

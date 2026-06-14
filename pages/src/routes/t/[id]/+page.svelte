@@ -59,6 +59,9 @@
 			// initList when arriving via invitation link.
 			skipClientInit:
 				page.url.searchParams.get('from_invite') === '1',
+			// Attribute a freshly created template to the active workspace
+			// (no-op when opening an existing one — store isn't empty).
+			workspaceId: sessionState.currentWorkspaceId,
 			listId: data.list_id,
 			onToast: (event) => {
 				toastEvent = event;

@@ -71,6 +71,9 @@
 			// the InviteBanner before pull reconciliation lands.
 			skipClientInit:
 				page.url.searchParams.get('from_invite') === '1',
+			// Attribute a freshly created list to the active workspace
+			// (no-op when opening an existing list — store isn't empty).
+			workspaceId: sessionState.currentWorkspaceId,
 			// user_id: data.user?.username || 'my-test-user'
 			listId: data.list_id,
 			onToast: (event) => {

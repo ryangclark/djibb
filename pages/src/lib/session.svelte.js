@@ -148,4 +148,19 @@ class SessionState {
 			localStorage.setItem(ACTIVE_WORKSPACE_KEY, slug);
 		}
 	}
+
+	/**
+	 * The active workspace's entity id (the `workspace_id` a freshly
+	 * created list/template should be stamped with), resolved from the
+	 * active slug. `null` until a workspace is selected — a new entity
+	 * created in that window is workspace-less, same as before. Derived
+	 * rather than stored alongside the slug so the two can't drift.
+	 * @returns {string | null}
+	 */
+	get currentWorkspaceId() {
+		const match = this.workspaces.find(
+			(w) => w.workspace.slug === this.currentWorkspaceSlug
+		);
+		return match?.workspace.id ?? null;
+	}
 }
