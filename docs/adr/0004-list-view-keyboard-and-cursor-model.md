@@ -199,7 +199,7 @@ The flexibility is theoretical; the semantic confusion is concrete.
 
 ## References
 
-- [`docs/keymaps/list-view.md`](../keymaps/list-view.md) — the binding table, hand-written for now, intended to move to a TS source of truth (`pages/src/lib/keymap/list-view.ts`) when the cheatsheet UI lands and a second consumer justifies the indirection.
+- [`docs/keymaps/list-view.md`](../keymaps/list-view.md) — the binding table. The runtime source of truth now lives in `pages/src/lib/keymap/registry.js` (with `listView.svelte.js` / `listViewVerbs.svelte.js`), consumed by the cheatsheet (`?`) and command palette (`Cmd+K`); the markdown table is kept in sync by hand.
 - `CONTEXT.md` — List, Template, ListGroup, ListItem, Quantity-is-the-unifying-primitive.
 - ADR 0003 — DO-as-authority. View-state explicitly stays out of this authority model.
 - `pages/src/lib/components/List.svelte` — the shared component this ADR's model will be implemented against.

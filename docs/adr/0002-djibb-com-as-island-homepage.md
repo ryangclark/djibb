@@ -1,6 +1,10 @@
 # ADR 0002: djibb.com homepage — Minted List for guests, Island map for members
 
-- **Status:** Accepted
+- **Status:** Accepted (design); **not yet built**. The decision stands, but
+  the Island map is unimplemented as of 2026-06-14: the authed homepage
+  (`pages/src/routes/+page.svelte`) is a `TEMP` account-info stub and the
+  workspace view (`pages/src/routes/w/[slug]/+page.svelte`) is an explicit
+  TODO placeholder. The guest-side Minted List flow is the built half.
 - **Date:** 2026-04-28
 
 ## Context

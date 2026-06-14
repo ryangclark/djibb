@@ -1,5 +1,11 @@
 # Island
 
+> **Status: design accepted, not yet built** (as of 2026-06-14). This doc
+> is the design intent for an unimplemented surface — the authed homepage
+> and `/w/[slug]` view are still stubs (see ADR 0002 §Status). Treat
+> everything below as the spec to build toward, not a description of
+> shipped behavior.
+
 The hex-map UI surface for a Workspace's Lists on `djibb.com` (authed
 view). Each hex is one List. This doc captures the design intent for
 the surface — invariants future contributors should preserve, and the

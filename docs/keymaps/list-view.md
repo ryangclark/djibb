@@ -2,7 +2,7 @@
 
 The decision and reasoning behind this keymap live in [ADR 0004](../adr/0004-list-view-keyboard-and-cursor-model.md). This file is the binding table — a living document that changes as features land. Both `/l/` and `/t/` use this exact keymap; template-only divergences are field defaults, not key bindings.
 
-> **Source-of-truth note.** This file is hand-written for now. When the cheatsheet UI (`?`) and the command palette (`Cmd+K`) are wired up, authority will move to `pages/src/lib/keymap/list-view.ts` and this file will be regenerated from it. Until then, edit this file when bindings change and update consumers manually.
+> **Source-of-truth note.** The runtime keymap now lives in `pages/src/lib/keymap/registry.js` (plus `listView.svelte.js` / `listViewVerbs.svelte.js`), which powers the cheatsheet (`?`) and command palette (`Cmd+K`). This markdown table is no longer the authority — it is kept in sync by hand (automatic regeneration from the registry is still pending). Edit both when bindings change.
 
 ## Conventions
 
