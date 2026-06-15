@@ -4,6 +4,7 @@ import {
     isEntityRowType,
     type ListElement,
     ListElementUnion,
+    type ListGroup,
     type ListItem,
     ListSchema,
     type Quantity,
@@ -1505,6 +1506,42 @@ export function insertListItem(sql: SqlStorage, item: ListItem): void {
         item.type,
         JSON.stringify(item.value),
         item.version
+    );
+}
+
+/**
+ * Insert a group row. Symmetric to `insertListItem` — groups and items
+ * share the `list_elements` table and differ only in which columns they
+ * populate (a group carries `child_element_refs`; an item carries
+ * `value` / `references_entity_id`). `INSERT OR IGNORE` keeps it
+ * idempotent under mutation retry, matching `insertListItem`.
+ *
+ * Used by the fork path (`mintFromBlank`) to copy a Blank Template's
+ * groups into a freshly-minted List in one mutation; there is no
+ * standalone `createListGroup` mutator yet.
+ */
+export function insertListGroup(sql: SqlStorage, group: ListGroup): void {
+    sql.exec(
+        `INSERT OR IGNORE INTO list_elements (
+            id,
+            name,
+            description,
+            parent_element_ref,
+            child_element_refs,
+            time_created,
+            time_updated,
+            type,
+            version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+        group.id,
+        group.name,
+        group.description ?? '',
+        group.parent_element_ref,
+        JSON.stringify(group.child_element_refs),
+        Math.floor(group.time_created.getTime() / 1000),
+        Math.floor(group.time_updated.getTime() / 1000),
+        group.type,
+        group.version
     );
 }
 

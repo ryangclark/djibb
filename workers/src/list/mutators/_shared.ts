@@ -168,6 +168,7 @@ export const FRICTION_TIER_MUTATORS: readonly string[] = [
     'setListAuthRules',
     'initList',
     'initFromTemplate',
+    'mintFromBlank',
     'transferOwnership',
 ] as const;
 

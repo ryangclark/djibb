@@ -31,6 +31,7 @@ import * as removeMember from './removeMember';
 import * as initList from './initList';
 import * as createListItem from './createListItem';
 import * as initFromTemplate from './initFromTemplate';
+import * as mintFromBlank from './mintFromBlank';
 import * as inviteByIdentity from './inviteByIdentity';
 import * as moveList from './moveList';
 import * as renameList from './renameList';
@@ -98,6 +99,7 @@ export const Mutations = {
     [initList.name]: initList,
     [createListItem.name]: createListItem,
     [initFromTemplate.name]: initFromTemplate,
+    [mintFromBlank.name]: mintFromBlank,
     [inviteByIdentity.name]: inviteByIdentity,
     [moveList.name]: moveList,
     [renameList.name]: renameList,

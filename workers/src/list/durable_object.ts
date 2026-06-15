@@ -12,9 +12,12 @@ import {
     isEntityRowType,
     type List,
     type ListElement,
+    type ListGroup,
+    type ListItem,
     type Template,
     type WorkspaceEntity,
 } from './index';
+import { forkContentSignature, mintArgsSignature } from './fork';
 import {
     executeServerMutation,
     type MutationStatus,
@@ -145,6 +148,7 @@ const INVITATION_MUTATORS: ReadonlySet<string> = new Set([
 const PREFLIGHTED_MUTATORS: ReadonlySet<string> = new Set([
     'acceptInvitation',
     'inviteByIdentity',
+    'mintFromBlank',
     'moveList',
     'setWorkspaceSlug',
 ]);
@@ -354,6 +358,58 @@ export class DjibbList extends DurableObject {
         }
 
         return list;
+    }
+
+    /**
+     * Id-independent content signature of this entity's element tree, or
+     * `null` if this DO holds no readable List/Template entity (never
+     * initialized, or a non-content entity row). The minting DO calls
+     * this over RPC on the Blank it's being forked from to verify the
+     * client's inline copy (Phase 1b — see `./fork.ts`). Returning a
+     * plain string sidesteps the DO-RPC recursive-JSON serialization
+     * hazard entirely.
+     */
+    public forkSignature(): Result<string | null, SerializedDjibbError> {
+        return tryCatch(() => this._forkSignature());
+    }
+
+    private _forkSignature(): string | null {
+        let elements: Array<ListElement>;
+        try {
+            elements = getChangedElements(this.sql, -1);
+        } catch (error) {
+            // An uninitialized DO has no `list_elements` table yet — that
+            // is "no such Blank," not a failure.
+            if (
+                error
+                    ?.toString()
+                    .startsWith('Error: no such table: list_elements')
+            ) {
+                return null;
+            }
+            throw error;
+        }
+
+        const entity = elements.find(isEntityRow);
+        if (
+            !entity ||
+            (entity.type !== 'template' && entity.type !== 'list')
+        ) {
+            return null;
+        }
+
+        const groupsById = new Map<string, ListGroup>();
+        const itemsById = new Map<string, ListItem>();
+        for (const el of elements) {
+            if (el.type === 'group') groupsById.set(el.id, el);
+            else if (el.type === 'item') itemsById.set(el.id, el);
+        }
+
+        return forkContentSignature({
+            childElementRefs: entity.child_element_refs,
+            groupsById,
+            itemsById,
+        });
     }
 
     /**
@@ -627,6 +683,59 @@ export class DjibbList extends DurableObject {
         const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
         const sessionAccountIds = authorizedAccounts.map(a => a.id);
         const args = (mutation.args ?? {}) as Record<string, unknown>;
+
+        if (mutation.name === 'mintFromBlank') {
+            // Server-authoritative half of the hybrid fork copy (Phase
+            // 1b). The client already wrote the Blank's groups/items
+            // optimistically (inline, client-chosen ids). Here, before
+            // the synchronous mutator commits, read the *real* Blank DO
+            // and verify the submitted content faithfully matches it —
+            // so `forked_from_id` is authoritative for content-at-birth.
+            // On mismatch we skip-and-ack (the optimistic mint rolls
+            // back via the outcome channel) rather than silently
+            // accepting a list whose lineage is a lie.
+            const blankId =
+                typeof args.blankId === 'string' ? args.blankId : '';
+            if (!blankId) return { ok: true }; // argsSchema will reject
+
+            const env = this.env as { DJIBB_LIST: DurableObjectNamespace };
+            const blankStub = env.DJIBB_LIST.get(
+                env.DJIBB_LIST.idFromName(blankId)
+            ) as unknown as DurableObjectStub<DjibbList>;
+
+            const sigResult = await blankStub.forkSignature();
+            if (sigResult.error) {
+                return {
+                    ok: false,
+                    status: 'precondition',
+                    reason: 'blank_unreadable',
+                    message: `Could not read Blank "${blankId}" to verify the mint.`,
+                };
+            }
+            if (sigResult.data === null) {
+                return {
+                    ok: false,
+                    status: 'gone',
+                    reason: 'blank_missing',
+                    message: `Blank "${blankId}" was not found; cannot mint from it.`,
+                };
+            }
+
+            const submittedSig = mintArgsSignature(args);
+            // Malformed args: defer to the mutator's argsSchema to reject
+            // with a precise error rather than guessing here.
+            if (submittedSig === null) return { ok: true };
+
+            if (submittedSig !== sigResult.data) {
+                return {
+                    ok: false,
+                    status: 'precondition',
+                    reason: 'blank_content_mismatch',
+                    message: `Minted content does not match Blank "${blankId}".`,
+                };
+            }
+            return { ok: true };
+        }
 
         if (mutation.name === 'inviteByIdentity') {
             const kindParsed = InvitationIdentityKindEnum.safeParse(

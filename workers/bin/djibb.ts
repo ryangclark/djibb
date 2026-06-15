@@ -17,7 +17,7 @@
  *   ./djibb test-parse wrong-window --show   # also print the canonical form
  */
 
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { dirname, join, resolve } from 'node:path';
@@ -201,6 +201,26 @@ async function resolveTargets(arg: string | undefined): Promise<Array<{ path: st
     throw new Error(`no file at "${arg}", and no seed "${seedPath}"`);
 }
 
+/** Render one file's round-trip result — shared by test-parse and contribute. */
+function printFileResult(result: FileResult, show: boolean): void {
+    const head = result.ok ? PASS : FAIL;
+    console.log(`\n${head} ${c.bold(result.label)}`);
+    for (const note of result.notes) console.log(`  ${note}`);
+    if (show && result.canonical) {
+        console.log(c.dim('  ── canonical ──'));
+        console.log(result.canonical.replace(/^/gm, '  '));
+    }
+}
+
+/** Kebab-case a title into a slug: lowercase, non-alnum → '-', collapsed. */
+function slugify(s: string): string {
+    return s
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 80);
+}
+
 async function cmdTestParse(args: string[]): Promise<number> {
     const show = args.includes('--show');
     const positional = args.filter(a => !a.startsWith('--'));
@@ -220,13 +240,7 @@ async function cmdTestParse(args: string[]): Promise<number> {
     let failed = 0;
     for (const { path, label } of targets) {
         const result = await testParseFile(path, label);
-        const head = result.ok ? PASS : FAIL;
-        console.log(`\n${head} ${c.bold(result.label)}`);
-        for (const note of result.notes) console.log(`  ${note}`);
-        if (show && result.canonical) {
-            console.log(c.dim('  ── canonical ──'));
-            console.log(result.canonical.replace(/^/gm, '  '));
-        }
+        printFileResult(result, show);
         if (!result.ok) failed++;
     }
 
@@ -236,10 +250,145 @@ async function cmdTestParse(args: string[]): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// contribute
+// ---------------------------------------------------------------------------
+
+/**
+ * Add an example List to the current project's `seed/contributed/` holding
+ * pen (the import side of the homepage Seed Pool), then immediately run it
+ * through the same round-trip `test-parse` uses so a contributor sees it land.
+ *
+ * Source is either an existing file (`--path`) or inline Markdown (`-m`).
+ * The slug is resolved flag → frontmatter → kebab-cased `# Title`. Input
+ * that already carries frontmatter is written through verbatim (we trust the
+ * contributor); input with none gets the holding-pen contract synthesized
+ * (`djibb`, `slug`, `contributed_by`, `status: proposed`) so a pasted
+ * checklist becomes a valid proposal in one step.
+ */
+async function cmdContribute(args: string[]): Promise<number> {
+    const flag = (name: string): string | undefined => {
+        const i = args.indexOf(name);
+        return i >= 0 ? args[i + 1] : undefined;
+    };
+    const show = args.includes('--show');
+    const force = args.includes('--force');
+    const path = flag('--path');
+    const message = flag('-m') ?? flag('--message');
+    const slugFlag = flag('--slug');
+    const by = flag('--by') ?? flag('--contributed-by');
+
+    if (!path && !message) {
+        console.error(c.red('contribute needs a source: --path <file.md> or -m "<list markdown>"'));
+        return 1;
+    }
+    if (path && message) {
+        console.error(c.red('pass only one of --path or -m, not both'));
+        return 1;
+    }
+
+    // 1. Load the raw Markdown.
+    let raw: string;
+    if (path) {
+        const abs = resolve(process.cwd(), path);
+        try {
+            raw = await readFile(abs, 'utf8');
+        } catch (err) {
+            console.error(c.red(`could not read ${abs}: ${(err as Error).message}`));
+            return 1;
+        }
+    } else {
+        raw = message as string;
+    }
+
+    // 2. Parse to validate and to learn the name / type / embedded slug.
+    let model: ReturnType<typeof parseMarkdown>;
+    try {
+        model = parseMarkdown(raw);
+    } catch (err) {
+        console.error(c.red(`could not parse the list: ${(err as Error).message}`));
+        return 1;
+    }
+
+    // 3. Resolve the slug: flag wins, then frontmatter, then the title.
+    const slug = slugFlag ?? model.slug ?? slugify(model.name);
+    if (!slug) {
+        console.error(
+            c.red('no slug: pass --slug, add `slug:` frontmatter, or give the list a `# Title`')
+        );
+        return 1;
+    }
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
+        console.error(c.red(`slug "${slug}" is not kebab-case (a–z, 0–9, dashes)`));
+        return 1;
+    }
+
+    // 4. Build file content. Existing frontmatter is trusted verbatim;
+    //    its absence means we synthesize the holding-pen contract.
+    const { keys } = splitFrontmatter(raw);
+    let content: string;
+    if (keys.length === 0) {
+        const fm = [
+            '---',
+            `djibb: ${model.type}`,
+            `slug: ${slug}`,
+            `contributed_by: ${by ?? 'unknown'}`,
+            'status: proposed',
+            '---',
+            '',
+            '',
+        ].join('\n');
+        content = fm + raw.replace(/^\n+/, '');
+    } else {
+        content = raw;
+        const missing = ['status', 'contributed_by'].filter(k => !keys.includes(k));
+        if (missing.length) {
+            console.log(c.yellow(`⚠ frontmatter missing recommended: ${missing.join(', ')}`));
+        }
+        if (model.slug && model.slug !== slug) {
+            console.log(c.yellow(`⚠ frontmatter slug "${model.slug}" ≠ filename "${slug}"`));
+        }
+    }
+
+    // 5. Write into the holding pen (never clobber without --force).
+    let seedDir: string;
+    try {
+        seedDir = findSeedDir();
+    } catch (err) {
+        console.error(c.red((err as Error).message));
+        return 1;
+    }
+    const dest = join(seedDir, `${slug}.md`);
+    if (existsSync(dest) && !force) {
+        console.error(c.red(`${slug}.md already exists — pass --force to overwrite`));
+        return 1;
+    }
+    try {
+        await writeFile(dest, content.endsWith('\n') ? content : content + '\n', 'utf8');
+    } catch (err) {
+        console.error(c.red(`could not write ${dest}: ${(err as Error).message}`));
+        return 1;
+    }
+    console.log(`${PASS} wrote ${c.bold(`seed/contributed/${slug}.md`)}`);
+
+    // 6. Dogfood it: same round-trip test-parse runs.
+    const result = await testParseFile(dest, `${slug}.md`);
+    printFileResult(result, show);
+    return result.ok ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
 // dispatcher
 // ---------------------------------------------------------------------------
 
 const COMMANDS: Record<string, { run: (args: string[]) => Promise<number>; help: string }> = {
+    contribute: {
+        run: cmdContribute,
+        help:
+            'Add an example List to seed/contributed/ and round-trip it.\n' +
+            '    djibb contribute --path <file.md>            contribute an existing file\n' +
+            "    djibb contribute -m '# Title\\n- [ ] item'     contribute inline markdown\n" +
+            '    flags: --slug <s>  --by <name>  --force  --show',
+    },
     'test-parse': {
         run: cmdTestParse,
         help:
