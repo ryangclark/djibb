@@ -424,7 +424,14 @@ function detId(kind: keyof typeof ID_PREFIX, seed: string): string {
     return `${ID_PREFIX[kind]}/${detSuffix(seed)}`;
 }
 
-/** The one global Seed Pool List — a well-known deterministic singleton. */
+/**
+ * The one global Seed Pool List — a well-known deterministic singleton.
+ * Mirrors `SEED_POOL_LIST_ID` in `workers/src/list/index.ts` (the homepage
+ * reads it from there); both resolve to the same literal because the seed
+ * (`'djibb:seed_pool'`) and the derivation are frozen. Kept self-derived
+ * here rather than imported because Node's type-stripping can't follow the
+ * worker tree's extensionless relative imports.
+ */
 const SEED_POOL_LIST_ID = detId('list', 'djibb:seed_pool');
 
 const nowIso = () => new Date().toISOString();

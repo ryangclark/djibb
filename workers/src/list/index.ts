@@ -27,6 +27,19 @@ export const SlotEnum = z.enum([
 export type Slot = z.TypeOf<typeof SlotEnum>;
 
 /**
+ * The one global Seed Pool List — a well-known deterministic singleton
+ * (ADR 0011, `slot: 'seed_pool'`). Its id is derived once, offline, from
+ * the stable seed `'djibb:seed_pool'` via the same sha256→url-safe scheme
+ * `djibb promote` uses (see `workers/bin/djibb.ts` `detId`), so the value
+ * is identical in every environment and can be hardcoded here as the
+ * single source of truth shared by the CLI (which bootstraps the pool)
+ * and the homepage (which reads it). Kept as a literal rather than
+ * recomputed at runtime so the Worker bundle stays free of node:crypto;
+ * the CLI asserts its own derivation matches this constant.
+ */
+export const SEED_POOL_LIST_ID = 'l/LWmRT14-cOUtJ9-nsSwQe';
+
+/**
  * Fields shared by every top-level entity (List, Template). The `type`
  * literal and `id` length differ per concrete entity and are added by
  * the extending schemas.
