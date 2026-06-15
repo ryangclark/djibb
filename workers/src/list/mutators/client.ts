@@ -7,6 +7,7 @@
  */
 export { mutators, Mutations } from './index';
 export { wireArgsSchema as initListArgsSchema } from './initList';
+export { wireArgsSchema as mintFromBlankArgsSchema } from './mintFromBlank';
 export { DEFAULT_LIST_TITLE } from './index';
 export {
     COALESCE_WINDOW_MS,

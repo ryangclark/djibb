@@ -27,7 +27,7 @@ import { GetMembership } from '../workspace/service';
 import { resolveRole } from '../auth/resolver';
 import { GetEntity } from './entity';
 import { asLocalList } from './durable_object';
-import { initListArgsSchema } from './mutators/client';
+import { initListArgsSchema, mintFromBlankArgsSchema } from './mutators/client';
 import { OWNER_ROLES } from './mutators/_shared';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
@@ -325,19 +325,37 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
         // call carries the right authorization context. The DO writes
         // its state and emits a snapshot to D1 post-commit.
         if (!c.get('entity')) {
+            // Entity-creating mutators: the only mutations allowed to
+            // arrive for an id that doesn't exist yet. `initList` writes a
+            // shell (optionally with content); `mintFromBlank` forks a
+            // Blank Template into a brand-new List (homepage mint-on-engage,
+            // Phase 4a). Both carry the same envelope fields the ownership
+            // checks below read (`listId`/`accountId`/`workspaceId`), so the
+            // only per-mutator difference is which schema validates the args.
+            // mintFromBlank's content fidelity is verified separately by the
+            // DO preflight (`_handlePush`, ADR fork verify) — not here.
             const first = pushRequest.mutations[0];
-            if (!first || first.name !== 'initList') {
+            const initArgs = (() => {
+                if (first?.name === 'initList') {
+                    const p = initListArgsSchema.safeParse(first.args);
+                    if (!p.success) {
+                        throw new ValidationError('invalid initList args');
+                    }
+                    return p.data;
+                }
+                if (first?.name === 'mintFromBlank') {
+                    const p = mintFromBlankArgsSchema.safeParse(first.args);
+                    if (!p.success) {
+                        throw new ValidationError('invalid mintFromBlank args');
+                    }
+                    return p.data;
+                }
                 throw new NotFoundError();
-            }
-            const argsParse = initListArgsSchema.safeParse(first.args);
-            if (!argsParse.success) {
-                throw new ValidationError('invalid initList args');
-            }
-            const initArgs = argsParse.data;
+            })();
 
             if (initArgs.listId !== c.get('entity_id')) {
                 throw new ValidationError(
-                    'initList args.listId does not match request entity id',
+                    'init args.listId does not match request entity id',
                 );
             }
 

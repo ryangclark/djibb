@@ -112,6 +112,7 @@ const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
     'initFromTemplate',
     'initList',
     'leaveMember',
+    'mintFromBlank',
     'moveList',
     'removeMember',
     'renameList',

@@ -1,16 +1,18 @@
 <!--
-  Read-only preview of a Blank Template, used by the homepage to render
-  the rotating Seed Pool selection (Phase 3 / CONTEXT.md §Minted List).
+  Preview of a Blank Template, used by the homepage to render the rotating
+  Seed Pool selection (CONTEXT.md §Minted List).
 
-  Deliberately NOT the full `List.svelte` editor: no mutators, no cursor,
-  no add/delete affordances. It walks the same data shape the editor
-  consumes — a flat map keyed by element id, traversed via each element's
-  `child_element_refs` — but every control is inert. Checkboxes are
-  `disabled`; nothing here writes.
+  Deliberately NOT the full `List.svelte` editor: no cursor, no add/delete,
+  no text editing. It walks the same data shape the editor consumes — a flat
+  map keyed by element id, traversed via each element's `child_element_refs`.
 
-  The CTA is the seam Phase 4 (mint-on-engage) plugs into. For now it is
-  a plain link to the Blank's template page so the homepage is navigable
-  end-to-end before the mint flow lands.
+  Two modes, by whether `onEngage` is passed:
+    • read-only (no `onEngage`)  — checkboxes are inert; a link offers the
+      full template view. Used anywhere a static preview is wanted.
+    • engageable (`onEngage` set) — checkboxes are live; toggling one is the
+      homepage's "first edit fires a mint" gesture (Phase 4a). The parent
+      mints a real List from this Blank and navigates there; this component
+      stays dumb and just reports the toggle.
 -->
 <script>
 	import { IdTypes } from '$djibb/id';
@@ -25,7 +27,14 @@
 		/** @type {Template} */
 		blank,
 		/** @type {{ [id: string]: import('replicache').ReadonlyJSONValue }} */
-		data
+		data,
+		/**
+		 * First-edit hook. When provided, checkboxes are interactive and a
+		 * toggle calls this with the toggled item and its new checked state.
+		 * Absent ⇒ read-only preview.
+		 * @type {((item: ListItem, checked: boolean) => void) | undefined}
+		 */
+		onEngage = undefined
 	} = $props();
 
 	/** Suffix-only id for the `/t/<id>` route (strips the `t/` prefix). */
@@ -50,12 +59,16 @@
 	</div>
 
 	<footer class="mt-6">
-		<a
-			class="inline-block border border-slate-700 px-4 py-2 hover:bg-slate-100"
-			href="/t/{blankSuffix}"
-		>
-			Remix this list
-		</a>
+		{#if onEngage}
+			<p class="text-sm text-slate-500">Check anything to make it your own copy.</p>
+		{:else}
+			<a
+				class="inline-block border border-slate-700 px-4 py-2 hover:bg-slate-100"
+				href="/t/{blankSuffix}"
+			>
+				Remix this list
+			</a>
+		{/if}
 	</footer>
 </article>
 
@@ -88,8 +101,9 @@
 	<label class="flex items-center gap-2 text-slate-800">
 		<input
 			type="checkbox"
-			disabled
+			disabled={!onEngage}
 			checked={i.value.value === i.value.target_value}
+			onchange={(e) => onEngage?.(i, e.currentTarget.checked)}
 		/>
 		<span>{i.name}</span>
 	</label>
