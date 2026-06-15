@@ -108,6 +108,7 @@ const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
     'cascadeArchiveList',
     'cascadeRestoreList',
     'changeMemberRole',
+    'claimEntity',
     'createWorkspace',
     'initFromTemplate',
     'initList',
