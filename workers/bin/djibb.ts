@@ -19,10 +19,12 @@
 
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { dirname, join, resolve } from 'node:path';
 
 import { parseMarkdown, encodeMarkdown } from '../src/list/markdown.ts';
+import type { MarkdownList } from '../src/list/markdown.ts';
 
 /**
  * The seed/contributed dir of the djibb project we're standing in: walk up
@@ -377,6 +379,374 @@ async function cmdContribute(args: string[]): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// promote
+// ---------------------------------------------------------------------------
+
+/**
+ * Promote contributed seeds into the live homepage **Seed Pool**
+ * (CONTEXT.md §Seed Pool). Each `seed/contributed/*.md` becomes a real
+ * **Blank Template** Durable Object (read-only `viewer`), and a
+ * referencing item is added to the global Seed Pool **List** so the
+ * homepage can rotate through them.
+ *
+ * DOs only come into being through the worker runtime, so this is an
+ * HTTP client: it POSTs real `/push` mutations to a running worker
+ * (`--base`, default local `wrangler dev`). It is unauthenticated — the
+ * Seed Pool is `ownerless` (editable so promote can append to it) and
+ * the Blanks are `viewer` (publicly readable, not editable). Locking
+ * that down is deferred (see `initList`'s deferred-auth note).
+ *
+ * Idempotent: every id is derived deterministically from the slug, and
+ * the server primitives are INSERT-OR-IGNORE with child-ref dedupe, so
+ * re-running `promote` is a no-op for already-promoted seeds.
+ */
+
+/** url-safe 64-char alphabet for deterministic id suffixes. */
+const URLSAFE =
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+/** Mirrors `workers/src/id` ID_LENGTH so derived ids pass `parseKey`. */
+const ID_SUFFIX_LEN = 21;
+/** Mirrors `workers/src/id` IdTypes — stable wire prefixes. */
+const ID_PREFIX = { group: 'g', item: 'i', list: 'l', template: 't' } as const;
+
+/** Deterministic 21-char url-safe suffix from a seed string (sha256 → alphabet). */
+function detSuffix(seed: string): string {
+    const hash = createHash('sha256').update(seed).digest();
+    const chars: string[] = [];
+    for (let i = 0; i < ID_SUFFIX_LEN; i++) {
+        chars.push(URLSAFE[hash[i]! % 64]!);
+    }
+    return chars.join('');
+}
+
+/** Deterministic prefixed id, e.g. `detId('template', 'wrong-window')`. */
+function detId(kind: keyof typeof ID_PREFIX, seed: string): string {
+    return `${ID_PREFIX[kind]}/${detSuffix(seed)}`;
+}
+
+/** The one global Seed Pool List — a well-known deterministic singleton. */
+const SEED_POOL_LIST_ID = detId('list', 'djibb:seed_pool');
+
+const nowIso = () => new Date().toISOString();
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/** A boolean checklist quantity (unchecked): the Seed Pool item shape. */
+const BOOLEAN_UNCHECKED = { value: 0, target_value: 1, unit: 'boolean' };
+
+/**
+ * Map a parsed Markdown list to `initList` content args (groups, items,
+ * top-level child order) for a Blank Template `blankId`. Element ids are
+ * deterministic from `slug` + position, so re-promoting the same seed
+ * reuses the same ids (idempotent).
+ */
+function buildBlankContent(slug: string, blankId: string, model: MarkdownList) {
+    const ts = nowIso();
+    const groups: Record<string, unknown>[] = [];
+    const items: Record<string, unknown>[] = [];
+    const childElementRefs: string[] = [];
+
+    const mkItem = (id: string, parentRef: string, name: string, description: string | undefined, value: unknown) => ({
+        id,
+        name,
+        ...(description ? { description } : {}),
+        parent_element_ref: parentRef,
+        references_entity_id: null,
+        value,
+        type: 'item',
+        version: 0,
+        time_created: ts,
+        time_updated: ts,
+        time_deleted: null,
+    });
+
+    model.children.forEach((child, ci) => {
+        if (child.kind === 'group') {
+            const gid = detId('group', `${slug}#c${ci}`);
+            const groupItemRefs: string[] = [];
+            child.items.forEach((it, ii) => {
+                const iid = detId('item', `${slug}#c${ci}.i${ii}`);
+                items.push(mkItem(iid, gid, it.name, it.description, it.quantity));
+                groupItemRefs.push(iid);
+            });
+            groups.push({
+                id: gid,
+                name: child.name,
+                ...(child.description ? { description: child.description } : {}),
+                parent_element_ref: blankId,
+                child_element_refs: groupItemRefs,
+                type: 'group',
+                version: 0,
+                time_created: ts,
+                time_updated: ts,
+                time_deleted: null,
+            });
+            childElementRefs.push(gid);
+        } else {
+            const iid = detId('item', `${slug}#c${ci}`);
+            items.push(mkItem(iid, blankId, child.name, child.description, child.quantity));
+            childElementRefs.push(iid);
+        }
+    });
+
+    return { groups, items, childElementRefs };
+}
+
+/**
+ * POST one mutation to a worker `/push`. A fresh `clientID` per call has
+ * `lastMutationId: 0` server-side, so `id: 1` always validates; the
+ * unauthed envelope (`accountId: null`) rides inside `args`.
+ */
+async function pushMutation(
+    base: string,
+    origin: string,
+    kind: 'list' | 'template',
+    entityId: string,
+    name: string,
+    args: Record<string, unknown>
+): Promise<void> {
+    const url = `${base.replace(/\/$/, '')}/${kind}/push?id=${encodeURIComponent(entityId)}`;
+    const res = await fetch(url, {
+        method: 'POST',
+        // The worker's CSRF gate (index.ts) rejects non-GET requests
+        // whose `Origin` isn't in AUTHORIZED_DOMAINS with an empty 403.
+        headers: { 'Content-Type': 'application/json', Origin: origin },
+        body: JSON.stringify({
+            profileID: 'djibb-cli',
+            clientGroupID: randomUUID(),
+            pushVersion: 1,
+            schemaVersion: '',
+            mutations: [
+                {
+                    id: 1,
+                    clientID: randomUUID(),
+                    name,
+                    args: { ...args, accountId: null, timestamp_client: nowIso() },
+                    timestamp: Date.now(),
+                },
+            ],
+        }),
+    });
+    if (!res.ok) {
+        let detail = '';
+        try {
+            detail = JSON.stringify(await res.json());
+        } catch {
+            detail = await res.text().catch(() => '');
+        }
+        throw new Error(`HTTP ${res.status} ${detail}`);
+    }
+}
+
+/**
+ * Does an entity already exist? A `viewer` Blank is immutable to the
+ * unauthed promoter (re-running `initList` on it is correctly rejected),
+ * so re-promote idempotency comes from skipping ones that already exist
+ * rather than from re-running the mutator. GET isn't CSRF-gated.
+ */
+async function entityExists(
+    base: string,
+    kind: 'list' | 'template',
+    entityId: string
+): Promise<boolean> {
+    const url = `${base.replace(/\/$/, '')}/${kind}?id=${encodeURIComponent(entityId)}`;
+    const res = await fetch(url);
+    return res.ok;
+}
+
+/** Retry a push a few times — the Seed Pool's D1 row lags its init push. */
+async function pushWithRetry(fn: () => Promise<void>, attempts = 5): Promise<void> {
+    let lastErr: unknown;
+    for (let i = 0; i < attempts; i++) {
+        try {
+            return await fn();
+        } catch (err) {
+            lastErr = err;
+            if (i < attempts - 1) await sleep(400 * (i + 1));
+        }
+    }
+    throw lastErr;
+}
+
+async function cmdPromote(args: string[]): Promise<number> {
+    const flag = (name: string): string | undefined => {
+        const i = args.indexOf(name);
+        return i >= 0 ? args[i + 1] : undefined;
+    };
+    const base = flag('--base') ?? 'http://localhost:8787';
+    // Must be an AUTHORIZED_DOMAINS entry (the worker's CSRF origin check).
+    // Default to the local pages dev origin; pass --origin for prod.
+    const origin =
+        flag('--origin') ??
+        (base.includes('localhost') || base.includes('127.0.0.1')
+            ? 'http://localhost:5173'
+            : 'https://djibb.com');
+    const dryRun = args.includes('--dry-run');
+    const show = args.includes('--show');
+
+    // Positionals, skipping `--base <value>` and boolean flags.
+    const positional: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i]!;
+        if (a === '--base' || a === '--origin') {
+            i++;
+            continue;
+        }
+        if (a.startsWith('--')) continue;
+        positional.push(a);
+    }
+
+    let targets: Array<{ path: string; label: string }>;
+    try {
+        targets = await resolveTargets(positional[0]);
+    } catch (err) {
+        console.error(c.red((err as Error).message));
+        return 1;
+    }
+    if (targets.length === 0) {
+        console.error(c.yellow('nothing to promote (no .md files found)'));
+        return 1;
+    }
+
+    // Parse + plan every seed before pushing anything, so a bad seed
+    // fails the whole run before it half-promotes.
+    type Plan = {
+        slug: string;
+        blankId: string;
+        model: MarkdownList;
+        blankArgs: Record<string, unknown>;
+        item: Record<string, unknown>;
+    };
+    const plans: Plan[] = [];
+    for (const { path, label } of targets) {
+        let raw: string;
+        try {
+            raw = await readFile(path, 'utf8');
+        } catch (err) {
+            console.error(c.red(`could not read ${path}: ${(err as Error).message}`));
+            return 1;
+        }
+        let model: MarkdownList;
+        try {
+            model = parseMarkdown(raw);
+        } catch (err) {
+            console.error(c.red(`could not parse ${label}: ${(err as Error).message}`));
+            return 1;
+        }
+        const slug = model.slug ?? (slugify(model.name) || label.replace(/\.md$/, ''));
+        if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
+            console.error(c.red(`${label}: slug "${slug}" is not kebab-case`));
+            return 1;
+        }
+        const blankId = detId('template', slug);
+        const { groups, items, childElementRefs } = buildBlankContent(slug, blankId, model);
+        plans.push({
+            slug,
+            blankId,
+            model,
+            blankArgs: {
+                listId: blankId,
+                workspaceId: null,
+                name: model.name,
+                ...(model.description ? { description: model.description } : {}),
+                childElementRefs,
+                groups,
+                items,
+                defaultRole: 'viewer',
+            },
+            item: {
+                id: detId('item', `seed_pool#${slug}`),
+                name: model.name,
+                parent_element_ref: SEED_POOL_LIST_ID,
+                references_entity_id: blankId,
+                value: BOOLEAN_UNCHECKED,
+                type: 'item',
+                version: 0,
+                time_created: nowIso(),
+                time_updated: nowIso(),
+                time_deleted: null,
+            },
+        });
+    }
+
+    console.log(
+        `${c.bold('promote')} ${c.dim('→')} ${c.bold(base)}  ` +
+            `seed pool ${c.dim(SEED_POOL_LIST_ID)}`
+    );
+    for (const p of plans) {
+        const g = p.model.children.filter(ch => ch.kind === 'group').length;
+        const it =
+            p.model.children.filter(ch => ch.kind === 'item').length +
+            p.model.children.reduce((n, ch) => n + (ch.kind === 'group' ? ch.items.length : 0), 0);
+        console.log(
+            `  ${c.bold(p.slug)} ${c.dim('→ ' + p.blankId)} · ${g} group(s) · ${it} item(s)`
+        );
+        if (show) {
+            console.log(c.dim('    blank args: ') + JSON.stringify(p.blankArgs));
+            console.log(c.dim('    pool item:  ') + JSON.stringify(p.item));
+        }
+    }
+
+    if (dryRun) {
+        console.log(`\n${c.yellow('dry run')} — nothing pushed`);
+        return 0;
+    }
+
+    // 1. Ensure the Seed Pool exists (ownerless so we can append to it).
+    try {
+        await pushMutation(base, origin, 'list', SEED_POOL_LIST_ID, 'initList', {
+            listId: SEED_POOL_LIST_ID,
+            workspaceId: null,
+            name: 'Seed Pool',
+            slot: 'seed_pool',
+            defaultRole: 'ownerless',
+        });
+        console.log(`\n${PASS} seed pool ready`);
+    } catch (err) {
+        console.error(c.red(`seed pool init failed: ${(err as Error).message}`));
+        console.error(c.dim(`  (is the worker running at ${base}?)`));
+        return 1;
+    }
+
+    // 2. Mint each Blank Template (read-only viewer, full content inline).
+    //    Skip ones that already exist — a viewer Blank can't be re-inited
+    //    (that's the immutability we want); idempotency lives here.
+    for (const p of plans) {
+        try {
+            if (await entityExists(base, 'template', p.blankId)) {
+                console.log(`${PASS} blank ${c.bold(p.slug)} ${c.dim('(exists, skipped)')}`);
+                continue;
+            }
+            await pushMutation(base, origin, 'template', p.blankId, 'initList', p.blankArgs);
+            console.log(`${PASS} blank ${c.bold(p.slug)}`);
+        } catch (err) {
+            console.error(c.red(`✗ blank ${p.slug} failed: ${(err as Error).message}`));
+            return 1;
+        }
+    }
+
+    // 3. Add a referencing item to the Seed Pool (retry: D1 row lags init).
+    let failed = 0;
+    for (const p of plans) {
+        try {
+            await pushWithRetry(() =>
+                pushMutation(base, origin, 'list', SEED_POOL_LIST_ID, 'createListItem', {
+                    item: p.item,
+                })
+            );
+            console.log(`${PASS} pooled ${c.bold(p.slug)}`);
+        } catch (err) {
+            console.error(c.red(`✗ pool item ${p.slug} failed: ${(err as Error).message}`));
+            failed++;
+        }
+    }
+
+    console.log(
+        `\n${failed === 0 ? PASS : FAIL} ${c.bold(`${plans.length - failed}/${plans.length} promoted`)}`
+    );
+    return failed === 0 ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
 // dispatcher
 // ---------------------------------------------------------------------------
 
@@ -388,6 +758,15 @@ const COMMANDS: Record<string, { run: (args: string[]) => Promise<number>; help:
             '    djibb contribute --path <file.md>            contribute an existing file\n' +
             "    djibb contribute -m '# Title\\n- [ ] item'     contribute inline markdown\n" +
             '    flags: --slug <s>  --by <name>  --force  --show',
+    },
+    promote: {
+        run: cmdPromote,
+        help:
+            'Promote seed(s) into the live Seed Pool via a running worker.\n' +
+            '    djibb promote                    promote every seed in ./seed/contributed/\n' +
+            '    djibb promote <slug>             promote one seed\n' +
+            '    flags: --base <url> (default http://localhost:8787)\n' +
+            '           --origin <url> (CSRF origin; default http://localhost:5173)  --dry-run  --show',
     },
     'test-parse': {
         run: cmdTestParse,
