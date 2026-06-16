@@ -56,7 +56,7 @@ import {
     setMutation,
     setReplicacheClientGroup,
 } from './sql';
-import type { Account } from '../account';
+import type { Account } from '@djibb/protocol/account';
 import { tryCatch, tryCatchAsync, type Result } from '../utils/trycatch';
 import {
     EmitEntityMembershipsToCatalog,

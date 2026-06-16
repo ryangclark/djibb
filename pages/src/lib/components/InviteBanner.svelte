@@ -38,7 +38,7 @@
 	 * @property {string | null} entityName  may be null pre-load
 	 * @property {import('@djibb/protocol/auth/rules').AuthorizationRules | undefined} authorizationRules
 	 * @property {import('$lib/replicache/types').ClientListMutators | undefined} mutators
-	 * @property {readonly import('$djibb/account').Account[]} sessionAccounts
+	 * @property {readonly import('@djibb/protocol/account').Account[]} sessionAccounts
 	 * @property {string | null} currentAccountId
 	 * @property {string} pathname  current URL pathname (for sign-in `next=`)
 	 */

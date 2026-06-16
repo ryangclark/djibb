@@ -36,7 +36,7 @@
 	});
 
 	/**
-	 * @type {import("$djibb/account/index").Account | undefined}
+	 * @type {import("@djibb/protocol/account").Account | undefined}
 	 */
 	const account = $derived.by(() => {
 		for (const account of sessionState.accounts) {

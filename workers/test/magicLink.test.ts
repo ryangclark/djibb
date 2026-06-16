@@ -27,7 +27,7 @@ import { env } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { CreateAccount, GetAccountByEmail } from '../src/account/service';
-import type { Account } from '../src/account';
+import type { Account } from '@djibb/protocol/account';
 import {
     MAGIC_RATE_LIMITS,
     checkRateLimits,

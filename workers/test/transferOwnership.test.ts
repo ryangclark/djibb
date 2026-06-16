@@ -19,7 +19,7 @@ import {
     SingleOwnerInvariantError,
 } from '../src/list/mutators/_shared';
 import { CreateAccount } from '../src/account/service';
-import type { Account } from '../src/account';
+import type { Account } from '@djibb/protocol/account';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 function makeAccount(overrides: Partial<Account> = {}): Account {

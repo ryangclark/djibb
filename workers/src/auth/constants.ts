@@ -1,8 +1,10 @@
 import type { Context } from 'hono';
 import type { CookieOptions } from 'hono/utils/cookie';
 import { TimeSpan } from 'lucia';
-import { z } from 'zod';
 import type { HonoEnv } from '..';
+
+// `OAUTH_PROVIDER` / `OAUTH_PROVIDER_PRETTY` moved to @djibb/protocol/auth/constants
+// (ADR 0014) — they're pure contract; the rest below is backend-only.
 
 export const SESSION_EXPIRATION = new TimeSpan(30, 'd');
 
@@ -24,12 +26,6 @@ export const CookieNames = {
 
 export const DURABLE_OBJECT_NAME_AUTH = '_djibb_auth';
 
-// Please ensure these match `OAUTH_PROVIDER` enum!
-export const OAUTH_PROVIDER_PRETTY = {
-    djibb: 'djibb',
-    google: 'Google',
-};
-export const OAUTH_PROVIDER = z.enum(['djibb', 'google']);
 export const OAUTH_REDIRECT_URI = {
     /** Returns the base API URL for auth,
      * pulling the URL from an environment variable. */

@@ -9,7 +9,9 @@
         ".": "./src/index.ts",
         "./id": "./src/id/index.ts",
         "./schema": "./src/schema.ts",
+        "./account": "./src/account/index.ts",
         "./auth/rules": "./src/auth/rules.ts",
+        "./auth/constants": "./src/auth/constants.ts",
         "./websocket/constants": "./src/websocket/constants.ts"
     },
     "scripts": {

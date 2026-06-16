@@ -12,10 +12,10 @@ import {
     GetAccountByGoogleId,
 } from '../account/service';
 import { CreateSession } from './session';
+import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
 import {
     BaseSessionCookieAttributes,
     CookieNames,
-    OAUTH_PROVIDER,
     OAUTH_REDIRECT_URI,
 } from './constants';
 import { FlagRouter, MOCK_AUTH_MODE } from '../flags';

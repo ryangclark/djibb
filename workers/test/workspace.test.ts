@@ -4,7 +4,7 @@ import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { CreateAccount } from '../src/account/service';
 import { GetWorkspacesByAccountId } from '../src/workspace/service';
 import { GetEntity } from '../src/list/entity';
-import type { Account } from '../src/account';
+import type { Account } from '@djibb/protocol/account';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 // ADR 0011 §7b.4: the legacy `CreateWorkspace`, `UpdateWorkspace`,

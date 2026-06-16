@@ -4,7 +4,7 @@ import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { CreateAccount } from '../src/account/service';
 import { GetEntity, defaultSlugForId } from '../src/list/entity';
 import { GetWorkspacesByAccountId } from '../src/workspace/service';
-import type { Account } from '../src/account';
+import type { Account } from '@djibb/protocol/account';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 // ADR 0011 §Step 7b.5: slugs return on the entity catalog.

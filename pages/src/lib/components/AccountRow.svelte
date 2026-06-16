@@ -1,10 +1,10 @@
 <script>
-	import { OAUTH_PROVIDER_PRETTY } from '$djibb/auth/constants';
+	import { OAUTH_PROVIDER_PRETTY } from '@djibb/protocol/auth/constants';
 	import { getSessionState, STATUSES } from '$lib/session.svelte';
 	import { setAccountUsername } from '$lib/api/account';
 
 	/**
-	 * @type {{account: import("$djibb/account/index").Account}}
+	 * @type {{account: import("@djibb/protocol/account").Account}}
 	 */
 	const { account } = $props();
 

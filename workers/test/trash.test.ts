@@ -22,7 +22,7 @@ import {
 import { ListTrashedEntitiesForAccount } from '../src/catalog/service';
 import { newId } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
-import type { Account } from '../src/account';
+import type { Account } from '@djibb/protocol/account';
 
 function makeAccount(overrides: Partial<Account> = {}): Account {
     return {

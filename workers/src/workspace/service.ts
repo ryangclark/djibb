@@ -7,7 +7,7 @@ import {
 import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
 import { ParseError, UnexpectedError } from '../errors';
 import { newId } from '@djibb/protocol/id';
-import type { Account } from '../account';
+import type { Account } from '@djibb/protocol/account';
 import type { DjibbList } from '../list/durable_object';
 import type { PushRequestV1 } from 'replicache';
 

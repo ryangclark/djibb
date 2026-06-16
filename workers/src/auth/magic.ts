@@ -37,10 +37,10 @@ import {
 } from '../account/service';
 import { CreateSession } from './session';
 import { randomString } from '@djibb/protocol/id';
+import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
 import {
     BaseSessionCookieAttributes,
     CookieNames,
-    OAUTH_PROVIDER,
 } from './constants';
 
 // ─── Tunables ───────────────────────────────────────────────────────────────

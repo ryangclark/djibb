@@ -5,7 +5,7 @@ import {
     type AccountRole,
     type AuthorizationRules,
 } from '@djibb/protocol/auth/rules';
-import type { Account } from '../account';
+import type { Account } from '@djibb/protocol/account';
 import { UnexpectedError } from '../errors';
 
 /**

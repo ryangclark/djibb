@@ -21,7 +21,7 @@ export function setSessionState() {
 }
 
 class SessionState {
-	/** @type {readonly import("$djibb/account").Account[]} */
+	/** @type {readonly import("@djibb/protocol/account").Account[]} */
 	accounts = $state([]);
 	/** @type {string|null} */
 	currentAccountId = $state(null);
