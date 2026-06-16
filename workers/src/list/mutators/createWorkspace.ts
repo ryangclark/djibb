@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { ValidationError } from '@djibb/protocol/errors';
-import { defaultSlugForId } from '../entity';
+import { defaultSlugForId } from '@djibb/protocol/list/slug';
 import { SlotEnum, WorkspaceEntitySchema } from '@djibb/protocol/list';
 import type { WorkspaceEntity } from '@djibb/protocol/list';
 import { DEFAULT_LIST_TITLE } from '.';

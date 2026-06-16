@@ -15,6 +15,17 @@
 export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/;
 
 /**
+ * The default slug an entity gets at mint: the id's suffix after the
+ * first `/` (the namespace separator), or the whole id when there is
+ * none. Pure string derivation — used both when minting an entity and
+ * when projecting a snapshot to the catalog read index.
+ */
+export function defaultSlugForId(id: string): string {
+    const i = id.indexOf('/');
+    return i === -1 ? id : id.slice(i + 1);
+}
+
+/**
  * Slugs that would clash with worker route prefixes or front-end
  * routes, or have admin-y connotations. Reserved across every entity
  * type — a list can't be `admin` either, regardless that the URL would

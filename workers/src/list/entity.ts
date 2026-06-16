@@ -6,6 +6,12 @@ import {
 } from '@djibb/protocol/auth/rules';
 import { UnexpectedError } from '@djibb/protocol/errors';
 import { ENTITY_ROW_TYPES, SlotEnum, type Slot } from '@djibb/protocol/list';
+import { defaultSlugForId } from '@djibb/protocol/list/slug';
+
+// Re-export the pure default-slug derivation (now owned by
+// `@djibb/protocol/list/slug`) so existing `../entity` importers — the
+// snapshot projector below and a couple of test fixtures — keep resolving.
+export { defaultSlugForId };
 
 /**
  * Snapshot of entity metadata as it lives in the D1 `workspace_entities`
@@ -157,17 +163,6 @@ export type EntitySnapshot = {
     version: number;
 };
 
-/**
- * Default slug for an entity that didn't carry one on its DO row.
- * The id is shaped `<type>/<suffix>` (e.g. `w/abc123`) and the suffix
- * — a fresh nanoid — already satisfies SLUG_PATTERN by construction.
- * Used by `EmitEntitySnapshotToCatalog` as the auto-default and by
- * any test fixture that needs to mirror that behavior.
- */
-export function defaultSlugForId(id: string): string {
-    const i = id.indexOf('/');
-    return i === -1 ? id : id.slice(i + 1);
-}
 
 /**
  * Emit a current-state snapshot of an entity to the D1 read index. Per
