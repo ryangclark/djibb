@@ -78,6 +78,44 @@ export function entityPath(entityId) {
 }
 
 /**
+ * Wraps Replicache's raw `client.mutate` proxy so call sites pass BODY
+ * args only — envelope fields (`accountId`, `timestamp_client`) are
+ * injected here. The wire format crams envelope into `args` because
+ * Replicache forces it; this wrapper is the client-side counterpart
+ * to `parseMutationEnvelope` on the server. Both sides treat envelope
+ * as a transport detail rather than something each call site has to
+ * remember to assemble.
+ *
+ * `accountId` is captured at wrap time — the Replicache client is
+ * per-(account, entity) so it doesn't change for the client's lifetime.
+ * `timestamp_client` is stamped at the moment of the call.
+ *
+ * @template {Record<string, (args: any) => any>} M
+ * @param {M} rawMutate
+ * @param {{ accountId: string | null }} envelope
+ * @returns {M}
+ */
+export function wrapMutators(rawMutate, { accountId }) {
+	return /** @type {M} */ (
+		new Proxy(
+			{},
+			{
+				get(_, name) {
+					const raw = rawMutate[/** @type {string} */ (name)];
+					if (typeof raw !== 'function') return undefined;
+					return (/** @type {Record<string, unknown>} */ body) =>
+						raw({
+							...body,
+							accountId,
+							timestamp_client: new Date()
+						});
+				}
+			}
+		)
+	);
+}
+
+/**
  * @param {string} url
  * @returns {import('replicache').Pusher}
  */
