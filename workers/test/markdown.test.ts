@@ -21,7 +21,7 @@ import {
     listToModel,
     type MarkdownItem,
     type MarkdownList,
-} from '../src/list/markdown';
+} from '@djibb/protocol/list/markdown';
 import type { List, ListGroup, ListItem } from '@djibb/protocol/list';
 
 // --- fixtures --------------------------------------------------------------

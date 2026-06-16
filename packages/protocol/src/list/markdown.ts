@@ -27,7 +27,7 @@
  * the worker route / import path.
  */
 
-import type { List, ListGroup, ListItem, Template } from '@djibb/protocol/list';
+import type { List, ListGroup, ListItem, Template } from './index';
 
 // ---------------------------------------------------------------------------
 // Content model — the lossy projection of a List.

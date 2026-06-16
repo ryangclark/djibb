@@ -23,8 +23,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { dirname, join, resolve } from 'node:path';
 
-import { parseMarkdown, encodeMarkdown } from '../src/list/markdown.ts';
-import type { MarkdownList } from '../src/list/markdown.ts';
+import { parseMarkdown, encodeMarkdown } from '@djibb/protocol/list/markdown';
+import type { MarkdownList } from '@djibb/protocol/list/markdown';
 
 /**
  * The seed/contributed dir of the djibb project we're standing in: walk up
