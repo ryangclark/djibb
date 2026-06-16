@@ -1,15 +1,14 @@
 /**
  * Slug claim arbitration for the `workspace_entities` catalog (ADR 0011
- * §Step 7b.5). The single-DO server mutator can't see other DOs' slugs;
- * D1 holds the `UNIQUE(type, slug)` invariant. This module provides:
+ * §Step 7b.5) — the backend half. The single-DO server mutator can't see
+ * other DOs' slugs; D1 holds the `UNIQUE(type, slug)` invariant.
  *
- *   - `SLUG_PATTERN` / `RESERVED_SLUGS` — local validation, fast-fail
- *     before any D1 round-trip.
- *   - `tryClaimSlug` — atomic guarded UPDATE that either swaps the slug
- *     on a row (returning `{ ok: true }`) or returns a structured
- *     conflict reason. Called by the in-DO preflight for
- *     `setWorkspaceSlug` (and any future setSlug mutator for other
- *     entity types).
+ * The pure validation contract (`SLUG_PATTERN`, `RESERVED_SLUGS`, the
+ * `SlugClaim*` result shape) now lives in `@djibb/protocol/list/slug`;
+ * this module owns only `tryClaimSlug` — the atomic guarded UPDATE that
+ * either swaps the slug on a row (`{ ok: true }`) or returns a structured
+ * conflict reason. Called by the in-DO preflight for `setWorkspaceSlug`
+ * (and any future setSlug mutator for other entity types).
  *
  * The claim is atomic by relying on the UNIQUE index: the UPDATE
  * either applies (`meta.changes === 1`) or trips the constraint
@@ -17,68 +16,11 @@
  * to think about — SQLite's per-statement atomicity handles it.
  */
 
-/**
- * Mirrors the legacy `workers/src/workspace/index.ts::SLUG_PATTERN`.
- * 3-40 chars, lowercase alphanumeric + hyphen, no leading/trailing
- * hyphen.
- */
-export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/;
-
-/**
- * Slugs that would clash with worker route prefixes or front-end
- * routes, or have admin-y connotations. Reserved across every entity
- * type — a list can't be `admin` either, regardless that the URL would
- * be `/l/admin` not `/admin`. Cheap insurance against future routing
- * changes (and ADR 0002's island-homepage flat-`/<slug>` direction,
- * where these collisions become live rather than hypothetical).
- *
- * `account/username.ts::RESERVED_USERNAMES` spreads this set so the two
- * namespaces can't drift; keep username-only additions there.
- *
- * Auto-defaulted suffixes (the nanoid after the type prefix) bypass
- * this check: a `newId('workspace')` is alphanumeric uniform-random
- * across the full alphabet and won't equal a reserved word in
- * practice. Validation runs only on user-supplied slugs entering via
- * `setWorkspaceSlug`.
- */
-export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
-    // Admin-y / auth route words.
-    'admin',
-    'api',
-    'app',
-    'auth',
-    'help',
-    'login',
-    'logout',
-    'new',
-    'settings',
-    'signup',
-    'support',
-    // Live top-level front-end routes (pages/src/routes/*).
-    'accounts',
-    'invitations',
-    'shared',
-    'trash',
-    'workspaces',
-    // Entity-prefix + nested route segments (defensive — see ADR 0002).
-    'l',
-    't',
-    'w',
-    'a',
-    'workspace',
-    'members',
-    'invites',
-]);
-
-export type SlugClaimFailureReason =
-    | 'slug_invalid'
-    | 'slug_reserved'
-    | 'slug_taken'
-    | 'entity_missing';
-
-export type SlugClaimResult =
-    | { ok: true }
-    | { ok: false; reason: SlugClaimFailureReason; message: string };
+import {
+    SLUG_PATTERN,
+    RESERVED_SLUGS,
+    type SlugClaimResult,
+} from '@djibb/protocol/list/slug';
 
 /**
  * Atomically attempt to set `slug` on a `workspace_entities` row.

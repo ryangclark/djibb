@@ -163,7 +163,7 @@ const PREFLIGHTED_MUTATORS: ReadonlySet<string> = new Set([
  * allow it (slug taken / reserved / invalid / target gone).
  */
 function slugReasonToOutcomeStatus(
-    reason: import('./slug').SlugClaimFailureReason,
+    reason: import('@djibb/protocol/list/slug').SlugClaimFailureReason,
 ): MutationOutcomeStatus {
     switch (reason) {
         case 'entity_missing':

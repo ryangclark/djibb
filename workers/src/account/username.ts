@@ -1,5 +1,5 @@
 import { BadRequestError, FailedPreconditionError, NotFoundError, UnexpectedError } from '../errors';
-import { RESERVED_SLUGS } from '../list/slug';
+import { RESERVED_SLUGS } from '@djibb/protocol/list/slug';
 
 /**
  * Username format: lowercase letter to start, then letters, digits,

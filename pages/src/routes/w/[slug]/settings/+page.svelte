@@ -92,7 +92,7 @@
 	});
 
 	// Watch for slug-specific outcomes. The reason taxonomy comes from
-	// `workers/src/list/slug.ts::SlugClaimFailureReason` plus the
+	// `@djibb/protocol/list/slug::SlugClaimFailureReason` plus the
 	// preflight's `unauthorized_role`. Cleared from context on
 	// consumption so a retry sees fresh state.
 	const SLUG_FAILURE_REASONS = new Set([

@@ -13,6 +13,7 @@
         "./list": "./src/list/index.ts",
         "./list/constants": "./src/list/constants.ts",
         "./list/fork": "./src/list/fork.ts",
+        "./list/slug": "./src/list/slug.ts",
         "./list/markdown": "./src/list/markdown.ts",
         "./auth/rules": "./src/auth/rules.ts",
         "./auth/constants": "./src/auth/constants.ts",
