@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
-import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
+import { ListSchema } from '@djibb/protocol/list';
 import {
     assertSingleOwner,
     findOwnerAccountId,
@@ -69,7 +69,7 @@ export const requiredRole = [AuthorizationRoleEnum.enum.ownerless] as const;
 
 export const server: ServerMutator<Args> = (
     { listId, workspaceId },
-    { sql, store, nextVersion, accountId }
+    { store, nextVersion, accountId }
 ) => {
     if (!accountId) {
         // Anonymous callers also resolve to `ownerless`; there's no
@@ -78,16 +78,7 @@ export const server: ServerMutator<Args> = (
         return { status: 'gone' };
     }
 
-    const rows = sql
-        .exec(
-            `SELECT authorization_rules FROM list_elements
-             WHERE id = ?
-               AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
-               AND time_deleted IS NULL;`,
-            listId
-        )
-        .toArray();
-    const row = rows[0];
+    const row = store.getLiveEntityCasRow(listId);
     if (!row) return { status: 'gone' };
 
     const current = parseStoredAuthorizationRules(row.authorization_rules);

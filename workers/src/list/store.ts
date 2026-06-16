@@ -43,6 +43,11 @@ export function createSqlStorageEntityStore(storage: SqlStorage): EntityStore {
     return {
         createElement: bind(sql.createElement),
         getElementById: bind(sql.getElementById),
+        getElementTypeAndSlot: bind(sql.getElementTypeAndSlot),
+        getLiveEntityCasRow: bind(sql.getLiveEntityCasRow),
+        getLiveWorkspaceCasRow: bind(sql.getLiveWorkspaceCasRow),
+        getLiveGroupParentRef: bind(sql.getLiveGroupParentRef),
+        getLiveItemCasRow: bind(sql.getLiveItemCasRow),
         getChangedElements: bind(sql.getChangedElements),
         InitializeTables: bind(sql.InitializeTables),
         getEntityId: bind(sql.getEntityId),

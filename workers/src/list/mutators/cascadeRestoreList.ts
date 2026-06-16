@@ -72,7 +72,7 @@ export const requiredRole = SYSTEM_ROLES;
 
 export const server: ServerMutator<Args> = (
     { listId },
-    { sql, store, nextVersion }
+    { store, nextVersion }
 ) => {
     store.unarchiveEntity({ entityId: listId, version: nextVersion });
 };

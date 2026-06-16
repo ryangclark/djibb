@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { AuthorizationRulesSchema } from '@djibb/protocol/auth/rules';
 import { NotFoundError } from '@djibb/protocol/errors';
-import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
+import { ListSchema } from '@djibb/protocol/list';
 import { assertSingleOwner, OWNER_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -51,7 +51,7 @@ export const requiredRole = OWNER_ROLES;
 
 export const server: ServerMutator<Args> = (
     { listId, authorization_rules, expected },
-    { sql, store, nextVersion }
+    { store, nextVersion }
 ) => {
     // ADR 0011 §Decision C: at most one principal `'owner'` per entity.
     // Non-principal collaborators with the same powers go through the
@@ -59,16 +59,7 @@ export const server: ServerMutator<Args> = (
     assertSingleOwner(authorization_rules);
 
     if (expected?.authorization_rules !== undefined) {
-        const rows = sql
-            .exec(
-                `SELECT authorization_rules FROM list_elements
-                 WHERE id = ?
-                   AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
-                   AND time_deleted IS NULL;`,
-                listId
-            )
-            .toArray();
-        const row = rows[0];
+        const row = store.getLiveEntityCasRow(listId);
         if (!row) return { status: 'gone' };
         const currentRaw = row.authorization_rules;
         const current =

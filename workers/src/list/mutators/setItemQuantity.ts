@@ -34,19 +34,10 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     { itemId, quantity, expected },
-    { sql, store, nextVersion }
+    { store, nextVersion }
 ) => {
     if (expected?.quantity !== undefined) {
-        const rows = sql
-            .exec(
-                `SELECT value FROM list_elements
-                 WHERE id = ?
-                   AND type = 'item'
-                   AND time_deleted IS NULL;`,
-                itemId
-            )
-            .toArray();
-        const row = rows[0];
+        const row = store.getLiveItemCasRow(itemId);
         if (!row) return { status: 'gone' };
         const currentRaw = row.value;
         const current =

@@ -6,7 +6,7 @@ import {
     type AuthorizationRules,
 } from '@djibb/protocol/auth/rules';
 import { NotFoundError } from '@djibb/protocol/errors';
-import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema, isEntityRowType } from '@djibb/protocol/list';
+import { ListSchema, isEntityRowType } from '@djibb/protocol/list';
 import {
     countOwners,
     parseStoredAuthorizationRules,
@@ -56,20 +56,11 @@ export const requiredRole: readonly AuthorizationRole[] =
 
 export const server: ServerMutator<Args> = (
     { listId },
-    { sql, store, accountId, nextVersion }
+    { store, accountId, nextVersion }
 ) => {
     if (!accountId) return { status: 'gone' };
 
-    const rows = sql
-        .exec(
-            `SELECT type, slot, authorization_rules FROM list_elements
-             WHERE id = ?
-               AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
-               AND time_deleted IS NULL;`,
-            listId
-        )
-        .toArray();
-    const row = rows[0];
+    const row = store.getLiveEntityCasRow(listId);
     if (!row || !isEntityRowType(row.type as string)) {
         return { status: 'gone' };
     }

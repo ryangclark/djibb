@@ -43,19 +43,10 @@ export const requiredRole = OWNER_ROLES;
 
 export const server: ServerMutator<Args> = (
     { workspaceId, name: newName, expected },
-    { sql, store, nextVersion }
+    { store, nextVersion }
 ) => {
     if (expected?.name !== undefined) {
-        const rows = sql
-            .exec(
-                `SELECT name FROM list_elements
-                 WHERE id = ?
-                   AND type = 'workspace'
-                   AND time_deleted IS NULL;`,
-                workspaceId
-            )
-            .toArray();
-        const row = rows[0];
+        const row = store.getLiveWorkspaceCasRow(workspaceId);
         if (!row) return { status: 'gone' };
         if (row.name !== expected.name) return { status: 'stale' };
     }

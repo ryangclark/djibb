@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { NotFoundError } from '@djibb/protocol/errors';
-import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
+import { ListSchema } from '@djibb/protocol/list';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -35,19 +35,10 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     { listId, name: newName, expected },
-    { sql, store, nextVersion }
+    { store, nextVersion }
 ) => {
     if (expected?.name !== undefined) {
-        const rows = sql
-            .exec(
-                `SELECT name FROM list_elements
-                 WHERE id = ?
-                   AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
-                   AND time_deleted IS NULL;`,
-                listId
-            )
-            .toArray();
-        const row = rows[0];
+        const row = store.getLiveEntityCasRow(listId);
         if (!row) return { status: 'gone' };
         if (row.name !== expected.name) return { status: 'stale' };
     }

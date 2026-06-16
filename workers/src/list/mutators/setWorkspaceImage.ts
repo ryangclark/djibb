@@ -49,37 +49,23 @@ export type Args = z.infer<typeof argsSchema>;
 export const name = 'setWorkspaceImage' as const;
 export const requiredRole = OWNER_ROLES;
 
-function readCurrentImage(
-    sql: SqlStorage,
-    workspaceId: string
-): { found: boolean; image: string | null } {
-    const rows = sql
-        .exec(
-            `SELECT meta FROM list_elements
-             WHERE id = ?
-               AND type = 'workspace'
-               AND time_deleted IS NULL;`,
-            workspaceId
-        )
-        .toArray();
-    const row = rows[0];
-    if (!row) return { found: false, image: null };
-    const meta: Record<string, unknown> =
-        row.meta && typeof row.meta === 'string'
-            ? JSON.parse(row.meta as string)
-            : {};
-    const v = meta[META_IMAGE_KEY];
-    return { found: true, image: typeof v === 'string' ? v : null };
+function imageFromMeta(meta: unknown): string | null {
+    const parsed: Record<string, unknown> =
+        meta && typeof meta === 'string' ? JSON.parse(meta) : {};
+    const v = parsed[META_IMAGE_KEY];
+    return typeof v === 'string' ? v : null;
 }
 
 export const server: ServerMutator<Args> = (
     { workspaceId, image, expected },
-    { sql, store, nextVersion }
+    { store, nextVersion }
 ) => {
     if (expected !== undefined) {
-        const cur = readCurrentImage(sql, workspaceId);
-        if (!cur.found) return { status: 'gone' };
-        if (cur.image !== expected.image) return { status: 'stale' };
+        const row = store.getLiveWorkspaceCasRow(workspaceId);
+        if (!row) return { status: 'gone' };
+        if (imageFromMeta(row.meta) !== expected.image) {
+            return { status: 'stale' };
+        }
     }
     const outcome = store.setEntityMetaField({
         entityId: workspaceId,

@@ -33,18 +33,11 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     { id, toIndex, expected },
-    { sql, store, nextVersion }
+    { store, nextVersion }
 ) => {
-    const rows = sql
-        .exec(
-            `SELECT parent_element_ref FROM list_elements
-             WHERE id = ? AND type = 'group' AND time_deleted IS NULL;`,
-            id
-        )
-        .toArray();
-    const row = rows[0];
+    const row = store.getLiveGroupParentRef(id);
     if (!row) return { status: 'gone' };
-    const parentId = row['parent_element_ref'] as string;
+    const parentId = row.parent_element_ref as string;
 
     const outcome = store.reorderChildElement({
         parentId,

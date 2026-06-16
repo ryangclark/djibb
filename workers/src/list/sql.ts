@@ -179,6 +179,132 @@ export function getElementById(sql: SqlStorage, elementId: string) {
     return parseResult.data;
 }
 
+// ---------- Narrow CAS-pre-check readers (ADR 0014) ----------
+//
+// Server mutators run set-family CAS pre-checks: read the current value
+// of one or two columns and compare to the mutation's `expected.*` before
+// writing. These are deliberately narrow (single-row, few columns, no full
+// entity parse) and exist as their own port methods so the mutator files
+// stay free of raw `sql.exec` — that is what lets the mutator registry move
+// to the Cloudflare-free package. Each preserves the exact WHERE clause of
+// the query it replaced.
+
+/**
+ * Read an element's `type` and `slot` by id, with NO type or
+ * `time_deleted` filter — used by archive/unarchive/startFresh guards
+ * that must observe the row regardless of its current deletion state
+ * (e.g. to reject archiving a `personal_workspace`).
+ */
+export function getElementTypeAndSlot(
+    sql: SqlStorage,
+    elementId: string
+): { type?: string; slot?: string | null } | undefined {
+    return sql
+        .exec(
+            `SELECT type, slot FROM list_elements
+             WHERE id = ? LIMIT 1`,
+            elementId
+        )
+        .toArray()[0] as { type?: string; slot?: string | null } | undefined;
+}
+
+/**
+ * Read the CAS-relevant columns of a live entity row (a List/Template/
+ * Workspace, per `ENTITY_ROW_TYPES`, not soft-deleted). Returns the
+ * superset of columns the entity-scoped CAS checks consult; each caller
+ * reads the one or two fields it needs. `undefined` ⇒ no live entity row
+ * (callers treat as `gone`).
+ */
+export function getLiveEntityCasRow(
+    sql: SqlStorage,
+    entityId: string
+):
+    | {
+          type: string;
+          slot: string | null;
+          name: string | null;
+          description: string | null;
+          authorization_rules: unknown;
+          workspace_id: string | null;
+      }
+    | undefined {
+    return sql
+        .exec(
+            `SELECT type, slot, name, description, authorization_rules, workspace_id
+             FROM list_elements
+             WHERE id = ?
+               AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
+               AND time_deleted IS NULL;`,
+            entityId
+        )
+        .toArray()[0] as
+        | {
+              type: string;
+              slot: string | null;
+              name: string | null;
+              description: string | null;
+              authorization_rules: unknown;
+              workspace_id: string | null;
+          }
+        | undefined;
+}
+
+/**
+ * Read the CAS-relevant columns of a live `workspace` row (`name` and the
+ * stringified `meta` blob). `undefined` ⇒ no live workspace row.
+ */
+export function getLiveWorkspaceCasRow(
+    sql: SqlStorage,
+    workspaceId: string
+): { name: string | null; meta: unknown } | undefined {
+    return sql
+        .exec(
+            `SELECT name, meta FROM list_elements
+             WHERE id = ?
+               AND type = 'workspace'
+               AND time_deleted IS NULL;`,
+            workspaceId
+        )
+        .toArray()[0] as { name: string | null; meta: unknown } | undefined;
+}
+
+/**
+ * Read a live `group` row's `parent_element_ref` for reorder CAS guards.
+ * `undefined` ⇒ no live group row.
+ */
+export function getLiveGroupParentRef(
+    sql: SqlStorage,
+    groupId: string
+): { parent_element_ref: unknown } | undefined {
+    return sql
+        .exec(
+            `SELECT parent_element_ref FROM list_elements
+             WHERE id = ? AND type = 'group' AND time_deleted IS NULL;`,
+            groupId
+        )
+        .toArray()[0] as { parent_element_ref: unknown } | undefined;
+}
+
+/**
+ * Read a live `item` row's CAS-relevant columns (`parent_element_ref` for
+ * reorder guards, `value` for quantity guards). `undefined` ⇒ no live item
+ * row.
+ */
+export function getLiveItemCasRow(
+    sql: SqlStorage,
+    itemId: string
+): { parent_element_ref: unknown; value: unknown } | undefined {
+    return sql
+        .exec(
+            `SELECT parent_element_ref, value FROM list_elements
+             WHERE id = ? AND type = 'item' AND time_deleted IS NULL;`,
+            itemId
+        )
+        .toArray()[0] as
+        | { parent_element_ref: unknown; value: unknown }
+        | undefined;
+}
+
 // Queries the database for entries with a version greater than the
 // given version.
 export function getChangedElements(sql: SqlStorage, previousVersion: number) {

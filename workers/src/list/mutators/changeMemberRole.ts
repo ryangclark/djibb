@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { NotFoundError } from '@djibb/protocol/errors';
 import { AccountRoleEnum, type AuthorizationRules } from '@djibb/protocol/auth/rules';
-import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
+import { ListSchema } from '@djibb/protocol/list';
 import {
     assertSingleOwner,
     countOwners,
@@ -50,29 +50,14 @@ export type Args = z.infer<typeof argsSchema>;
 export const name = 'changeMemberRole' as const;
 export const requiredRole = OWNER_ROLES;
 
-function readCurrentRules(
-    sql: SqlStorage,
-    entityId: string
-): AuthorizationRules | null {
-    const rows = sql
-        .exec(
-            `SELECT authorization_rules FROM list_elements
-             WHERE id = ?
-               AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
-               AND time_deleted IS NULL;`,
-            entityId
-        )
-        .toArray();
-    const row = rows[0];
-    if (!row) return null;
-    return parseStoredAuthorizationRules(row.authorization_rules);
-}
-
 export const server: ServerMutator<Args> = (
     { listId, targetAccountId, role: newRole },
-    { sql, store, role: actorRole, accountId, nextVersion }
+    { store, role: actorRole, accountId, nextVersion }
 ) => {
-    const current = readCurrentRules(sql, listId);
+    const row = store.getLiveEntityCasRow(listId);
+    const current = row
+        ? parseStoredAuthorizationRules(row.authorization_rules)
+        : null;
     if (!current) return { status: 'gone' };
 
     const target = current.authorized_accounts[targetAccountId];

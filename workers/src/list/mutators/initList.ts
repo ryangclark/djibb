@@ -118,7 +118,7 @@ function rulesFor(
  */
 export const server: ServerMutator<Args> = (
     args,
-    { sql, store, accountId, nextVersion, timestamp_client }
+    { store, accountId, nextVersion, timestamp_client }
 ) => {
     const ts = timestamp_client ?? new Date();
 

@@ -34,7 +34,7 @@ export const requiredRole = EDIT_ROLES;
  */
 export const server: ServerMutator<Args> = (
     { listId },
-    { sql, store, nextVersion }
+    { store, nextVersion }
 ) => {
     // ADR 0008 / ADR 0011 §Step 10c: personal workspaces cannot be
     // archived directly. The Settings UI swaps Delete for Start Fresh
@@ -44,13 +44,7 @@ export const server: ServerMutator<Args> = (
     // bypass that route so the "exactly one current personal
     // workspace per account" invariant cannot be broken from any
     // surface that doesn't know to call `startFresh`.
-    const row = sql
-        .exec(
-            `SELECT type, slot FROM list_elements
-             WHERE id = ? LIMIT 1`,
-            listId
-        )
-        .toArray()[0] as { type?: string; slot?: string | null } | undefined;
+    const row = store.getElementTypeAndSlot(listId);
     if (row?.type === 'workspace' && row?.slot === 'personal_workspace') {
         throw new BadMutationError(
             `\`archiveList\` cannot archive a personal workspace; use \`startFresh\` instead`

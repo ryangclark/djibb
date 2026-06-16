@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { NotFoundError } from '@djibb/protocol/errors';
-import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
+import { ListSchema } from '@djibb/protocol/list';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -64,21 +64,12 @@ export const requiredRole = OWNER_ROLES;
 
 export const server: ServerMutator<Args> = (
     { listId, workspace_id, expected },
-    { sql, store, nextVersion }
+    { store, nextVersion }
 ) => {
-    const rows = sql
-        .exec(
-            `SELECT workspace_id FROM list_elements
-             WHERE id = ?
-               AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
-               AND time_deleted IS NULL;`,
-            listId
-        )
-        .toArray();
-    const row = rows[0];
+    const row = store.getLiveEntityCasRow(listId);
     if (!row) return { status: 'gone' };
 
-    const current = (row.workspace_id as string | null) ?? null;
+    const current = row.workspace_id ?? null;
 
     if (
         expected?.workspace_id !== undefined &&

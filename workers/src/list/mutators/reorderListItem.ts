@@ -44,20 +44,13 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     { id, toIndex, expected },
-    { sql, store, nextVersion }
+    { store, nextVersion }
 ) => {
     // Look up the item's current parent so reorder doesn't need a
     // parentId arg (the array invariant lives on the item record).
-    const rows = sql
-        .exec(
-            `SELECT parent_element_ref FROM list_elements
-             WHERE id = ? AND type = 'item' AND time_deleted IS NULL;`,
-            id
-        )
-        .toArray();
-    const row = rows[0];
+    const row = store.getLiveItemCasRow(id);
     if (!row) return { status: 'gone' };
-    const parentId = row['parent_element_ref'] as string;
+    const parentId = row.parent_element_ref as string;
 
     const outcome = store.reorderChildElement({
         parentId,

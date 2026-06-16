@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { NotFoundError } from '@djibb/protocol/errors';
-import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
+import { ListSchema } from '@djibb/protocol/list';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -35,23 +35,14 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     { listId, description, expected },
-    { sql, store, nextVersion }
+    { store, nextVersion }
 ) => {
     if (expected?.description !== undefined) {
-        const rows = sql
-            .exec(
-                `SELECT description FROM list_elements
-                 WHERE id = ?
-                   AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
-                   AND time_deleted IS NULL;`,
-                listId
-            )
-            .toArray();
-        const row = rows[0];
+        const row = store.getLiveEntityCasRow(listId);
         if (!row) return { status: 'gone' };
         // Description column defaults to '' so a null read here would
         // be unusual, but normalize defensively.
-        const current = (row.description as string | null) ?? '';
+        const current = row.description ?? '';
         if (current !== expected.description) return { status: 'stale' };
     }
     store.setEntityDescription({

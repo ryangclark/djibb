@@ -31,7 +31,7 @@ export const requiredRole = EDIT_ROLES;
  */
 export const server: ServerMutator<Args> = (
     { listId },
-    { sql, store, nextVersion }
+    { store, nextVersion }
 ) => {
     // ADR 0008 / ADR 0011 §Step 10c: restoring a workspace that was
     // `slot='personal_workspace'` demotes it to an ordinary team
@@ -42,13 +42,7 @@ export const server: ServerMutator<Args> = (
     // The user keeps their data; they lose only the "this is THE
     // personal workspace" identity, which the freshly-minted one now
     // holds.
-    const row = sql
-        .exec(
-            `SELECT type, slot FROM list_elements
-             WHERE id = ? LIMIT 1`,
-            listId
-        )
-        .toArray()[0] as { type?: string; slot?: string | null } | undefined;
+    const row = store.getElementTypeAndSlot(listId);
     if (row?.type === 'workspace' && row?.slot === 'personal_workspace') {
         store.unarchiveEntityAndClearSlot({
             entityId: listId,

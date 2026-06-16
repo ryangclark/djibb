@@ -74,15 +74,9 @@ export const requiredRole = OWNER_ROLES;
  */
 export const server: ServerMutator<Args> = (
     { workspaceId },
-    { sql, store, nextVersion }
+    { store, nextVersion }
 ) => {
-    const row = sql
-        .exec(
-            `SELECT type, slot FROM list_elements
-             WHERE id = ? LIMIT 1`,
-            workspaceId
-        )
-        .toArray()[0] as { type?: string; slot?: string | null } | undefined;
+    const row = store.getElementTypeAndSlot(workspaceId);
     if (!row) {
         throw new NotFoundError(
             `\`startFresh\` workspace "${workspaceId}" not found`
