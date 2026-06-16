@@ -353,7 +353,7 @@ export async function EmitInvitationsSnapshot(
     }
 ): Promise<void> {
     // Map DO rows by (kind, value) for set-difference.
-    const doKey = (k: string, v: string) => `${k} ${v}`;
+    const doKey = (k: string, v: string) => `${k} ${v}`;
     const doRowsByKey = new Map<string, PendingInviteRow>();
     for (const row of doInvites) {
         doRowsByKey.set(doKey(row.identity_kind, row.identity_value), row);
