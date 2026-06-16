@@ -17,7 +17,7 @@ import {
     type Template,
     type WorkspaceEntity,
 } from '@djibb/protocol/list';
-import { forkContentSignature, mintArgsSignature } from './fork';
+import { forkContentSignature, mintArgsSignature } from '@djibb/protocol/list/fork';
 import {
     executeServerMutation,
     type MutationStatus,
