@@ -19,6 +19,7 @@
         "wrangler": "^4.19.1"
     },
     "dependencies": {
+        "@djibb/client": "*",
         "@djibb/protocol": "*",
         "@simplewebauthn/server": "^13.3.0",
         "arctic": "^3.7.0",

@@ -1,0 +1,21 @@
+{
+    "name": "@djibb/client",
+    "version": "0.0.0",
+    "description": "The djibb client: Replicache client wiring and the framework-agnostic undo-stack runtime. No Svelte (ADR 0014).",
+    "private": true,
+    "type": "module",
+    "license": "Apache-2.0",
+    "exports": {
+        "./undoStack": "./src/undoStack.js"
+    },
+    "scripts": {
+        "typecheck": "tsc --noEmit -p tsconfig.json"
+    },
+    "dependencies": {
+        "@djibb/protocol": "*",
+        "replicache": "^15.0.1"
+    },
+    "devDependencies": {
+        "typescript": "^5.5.0"
+    }
+}

@@ -13,7 +13,7 @@ import {
     saveStack,
     stackStorageKey,
     tryCoalesce
-} from './undoStack.js';
+} from '@djibb/client/undoStack';
 
 /**
  * Per-tab, per-(account, list) undo runtime per ADR 0005.
@@ -51,7 +51,7 @@ import {
  */
 
 /**
- * @typedef {import('./undoStack.js').Entry} Entry
+ * @typedef {import('@djibb/client/undoStack').Entry} Entry
  *
  * Toast events the runtime emits, all through one `onToast` callback
  * with a discriminated `kind`. The receiver (C.1's UndoToast) renders

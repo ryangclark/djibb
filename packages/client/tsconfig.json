@@ -1,0 +1,36 @@
+{
+    "compilerOptions": {
+        /* Language / environment — browser-targeted client wiring, so
+           the DOM lib is legitimate here (unlike @djibb/protocol, which
+           runs `types: []` to keep itself runtime-agnostic). `Storage`
+           and friends come from `dom`. */
+        "target": "es2022",
+        "lib": ["es2022", "dom"],
+        "types": [],
+
+        /* Modules — bundler resolution; consumers compile from source. */
+        "module": "es2022",
+        "moduleResolution": "bundler",
+        "resolveJsonModule": true,
+
+        /* Emit — type-check only; consumers bundle the source directly. */
+        "noEmit": true,
+
+        /* JS + JSDoc — this package ships `.js` with `// @ts-check`
+           JSDoc annotations; check them as part of the typecheck gate. */
+        "allowJs": true,
+        "checkJs": true,
+
+        /* Interop — mirror the workers/protocol projects. */
+        "isolatedModules": true,
+        "verbatimModuleSyntax": true,
+        "allowSyntheticDefaultImports": true,
+        "forceConsistentCasingInFileNames": true,
+
+        /* Type checking — match the strictness shared code is written against. */
+        "strict": true,
+        "noUncheckedIndexedAccess": true,
+        "skipLibCheck": true
+    },
+    "include": ["src"]
+}

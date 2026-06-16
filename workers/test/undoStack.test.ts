@@ -15,7 +15,7 @@ import {
     stackStorageKey,
     STACK_LIMIT,
     tryCoalesce,
-} from '../../pages/src/lib/replicache/undoStack.js';
+} from '@djibb/client/undoStack';
 
 class MemoryStorage {
     private data = new Map<string, string>();
