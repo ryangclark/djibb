@@ -27,8 +27,8 @@ import { GetMembership } from '../workspace/service';
 import { resolveRole } from '../auth/resolver';
 import { GetEntity } from './entity';
 import { asLocalList } from './durable_object';
-import { initListArgsSchema, mintFromBlankArgsSchema } from './mutators/client';
-import { OWNER_ROLES } from './mutators/_shared';
+import { initListArgsSchema, mintFromBlankArgsSchema } from '@djibb/protocol/list/mutators/client';
+import { OWNER_ROLES } from '@djibb/protocol/list/mutators/_shared';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
 

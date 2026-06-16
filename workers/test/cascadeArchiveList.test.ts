@@ -19,8 +19,8 @@ import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { ID_LENGTH, IdTypes } from '@djibb/protocol/id';
-import * as cascadeArchiveList from '../src/list/mutators/cascadeArchiveList';
-import { SYSTEM_ROLES } from '../src/list/mutators/_shared';
+import * as cascadeArchiveList from '@djibb/protocol/list/mutators/cascadeArchiveList';
+import { SYSTEM_ROLES } from '@djibb/protocol/list/mutators/_shared';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 beforeAll(async () => {

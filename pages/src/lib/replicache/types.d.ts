@@ -1,4 +1,4 @@
-import type { MutationName } from '$djibb/list/mutators';
+import type { MutationName } from '@djibb/protocol/list/mutators';
 
 /**
  * The envelope-wrapped mutator surface returned by `initList`. Body

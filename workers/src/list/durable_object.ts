@@ -22,8 +22,8 @@ import {
     executeServerMutation,
     type MutationStatus,
     parseMutationEnvelope,
-} from './mutators';
-import { OWNER_ROLES } from './mutators/_shared';
+} from '@djibb/protocol/list/mutators';
+import { OWNER_ROLES } from '@djibb/protocol/list/mutators/_shared';
 
 import type { AuthorizationRole } from '@djibb/protocol/auth/rules';
 import {
@@ -81,7 +81,7 @@ import {
     type InvitePreflightFailureReason,
 } from './invitations';
 import { tryClaimSlug } from './slug';
-import { preflightMoveList } from './mutators/moveList';
+import { preflightMoveList } from '@djibb/protocol/list/mutators/moveList';
 import { GetAccountByEmail, GetAccountById } from '../account/service';
 import { GetMembership, mintPersonalWorkspaceEntity } from '../workspace/service';
 import {
@@ -207,7 +207,7 @@ function inviteReasonToOutcomeStatus(
  * workspace that no longer exists is `gone`.
  */
 function moveReasonToOutcomeStatus(
-    reason: import('./mutators/moveList').MovePreflightFailureReason
+    reason: import('@djibb/protocol/list/mutators/moveList').MovePreflightFailureReason
 ): MutationOutcomeStatus {
     switch (reason) {
         case 'unauthenticated_actor':

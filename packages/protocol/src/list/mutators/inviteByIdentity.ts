@@ -7,7 +7,7 @@ import {
     INVITATION_TTL_MS,
     InvitationIdentityKindEnum,
     normalizeIdentityValue,
-} from '../invitations';
+} from '@djibb/protocol/list/invitations';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type {
     ClientMutator,

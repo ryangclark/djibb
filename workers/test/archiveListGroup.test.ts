@@ -4,10 +4,10 @@ import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '@djibb/protocol/id';
-import * as archiveListGroup from '../src/list/mutators/archiveListGroup';
-import * as unarchiveListGroup from '../src/list/mutators/unarchiveListGroup';
-import * as archiveListGroups from '../src/list/mutators/archiveListGroups';
-import * as unarchiveListGroups from '../src/list/mutators/unarchiveListGroups';
+import * as archiveListGroup from '@djibb/protocol/list/mutators/archiveListGroup';
+import * as unarchiveListGroup from '@djibb/protocol/list/mutators/unarchiveListGroup';
+import * as archiveListGroups from '@djibb/protocol/list/mutators/archiveListGroups';
+import * as unarchiveListGroups from '@djibb/protocol/list/mutators/unarchiveListGroups';
 
 // End-to-end coverage for group-level archive/restore (A.5). Symmetric
 // to A.4. Cascade-on-archive is not tested here — it's a D.5 question.

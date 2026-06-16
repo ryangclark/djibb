@@ -21,7 +21,7 @@ import {
     EDIT_ROLES,
     OWNER_ROLES,
     SYSTEM_ROLES,
-} from '../src/list/mutators/_shared';
+} from '@djibb/protocol/list/mutators/_shared';
 
 describe(`'system' AuthorizationRole + SYSTEM_ROLES`, () => {
     it(`is a member of AuthorizationRoleEnum`, () => {

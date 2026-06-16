@@ -18,6 +18,8 @@
         "./list/markdown": "./src/list/markdown.ts",
         "./list/invitations": "./src/list/invitations.ts",
         "./list/store": "./src/list/store.ts",
+        "./list/mutators": "./src/list/mutators/index.ts",
+        "./list/mutators/*": "./src/list/mutators/*.ts",
         "./auth/rules": "./src/auth/rules.ts",
         "./auth/constants": "./src/auth/constants.ts",
         "./websocket/constants": "./src/websocket/constants.ts"

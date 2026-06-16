@@ -5,7 +5,7 @@ import type { PushRequestV1 } from 'replicache';
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '@djibb/protocol/id';
 import type { ListItem } from '@djibb/protocol/list';
-import * as reorderListItem from '../src/list/mutators/reorderListItem';
+import * as reorderListItem from '@djibb/protocol/list/mutators/reorderListItem';
 
 // End-to-end coverage for reorderListItem (A.7). Move + CAS-stale +
 // inverse declaration. Group reorder is symmetric; one item-side

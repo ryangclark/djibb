@@ -5,10 +5,10 @@ import type { PushRequestV1 } from 'replicache';
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '@djibb/protocol/id';
 import type { ListItem } from '@djibb/protocol/list';
-import * as archiveListItem from '../src/list/mutators/archiveListItem';
-import * as unarchiveListItem from '../src/list/mutators/unarchiveListItem';
-import * as archiveListItems from '../src/list/mutators/archiveListItems';
-import * as unarchiveListItems from '../src/list/mutators/unarchiveListItems';
+import * as archiveListItem from '@djibb/protocol/list/mutators/archiveListItem';
+import * as unarchiveListItem from '@djibb/protocol/list/mutators/unarchiveListItem';
+import * as archiveListItems from '@djibb/protocol/list/mutators/archiveListItems';
+import * as unarchiveListItems from '@djibb/protocol/list/mutators/unarchiveListItems';
 
 // End-to-end coverage for item-level archive/restore (A.4). Asserts
 // the soft-delete writes `time_deleted` on the item row, the unarchive

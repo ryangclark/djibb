@@ -4,7 +4,7 @@ import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '@djibb/protocol/id';
-import * as initFromTemplate from '../src/list/mutators/initFromTemplate';
+import * as initFromTemplate from '@djibb/protocol/list/mutators/initFromTemplate';
 
 // End-to-end coverage for initFromTemplate (A.8). Scope today: entity
 // row creation with `forked_from_id` set; content copy is intentionally

@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest';
 
 import { AccountRoleEnum, InvitableRoleEnum } from '@djibb/protocol/auth/rules';
-import { argsSchema as inviteArgsSchema } from '../src/list/mutators/inviteByIdentity';
+import { argsSchema as inviteArgsSchema } from '@djibb/protocol/list/mutators/inviteByIdentity';
 
 const validInviteArgs = {
     // `l/` + 21-char id body (ID_LENGTH), matching ListSchema.shape.id.

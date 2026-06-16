@@ -1,6 +1,6 @@
 import type { PatchOperation } from 'replicache';
 
-import { OWNER_ROLES } from './mutators/_shared';
+import { OWNER_ROLES } from '@djibb/protocol/list/mutators/_shared';
 import {
     getChangedInvitesSinceVersion,
     listAllCurrentInviteKeys,

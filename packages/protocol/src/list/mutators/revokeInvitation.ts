@@ -6,7 +6,7 @@ import { ListSchema } from '@djibb/protocol/list';
 import {
     InvitationIdentityKindEnum,
     normalizeIdentityValue,
-} from '../invitations';
+} from '@djibb/protocol/list/invitations';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,

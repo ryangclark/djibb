@@ -4,7 +4,7 @@ import {
     COALESCING_MUTATORS,
     FRICTION_TIER_MUTATORS,
     Mutations
-} from '$djibb/list/mutators/client';
+} from '@djibb/protocol/list/mutators/client';
 import {
     loadStack,
     popLast,

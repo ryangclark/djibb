@@ -32,7 +32,7 @@ import type {
     ListItemWritableFields,
     SetMetaFieldOutcome,
 } from '@djibb/protocol/list/store';
-import type { MutationEnvelope, MutationStatus } from './mutators';
+import type { MutationEnvelope, MutationStatus } from '@djibb/protocol/list/mutators';
 
 /**
  * TODO:

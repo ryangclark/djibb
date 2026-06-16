@@ -17,7 +17,7 @@ import {
     countOwners,
     findOwnerAccountId,
     SingleOwnerInvariantError,
-} from '../src/list/mutators/_shared';
+} from '@djibb/protocol/list/mutators/_shared';
 import { CreateAccount } from '../src/account/service';
 import type { Account } from '@djibb/protocol/account';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';

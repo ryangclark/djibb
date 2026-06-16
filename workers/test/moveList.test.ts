@@ -20,7 +20,7 @@ import {
     inverse as moveListInverse,
     name as moveListName,
     type MovePreflightDeps,
-} from '../src/list/mutators/moveList';
+} from '@djibb/protocol/list/mutators/moveList';
 import { GetMembership } from '../src/workspace/service';
 import { GetEntityVersion } from '../src/list/entity';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';

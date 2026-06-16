@@ -4,9 +4,9 @@ import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes } from '@djibb/protocol/id';
-import * as archiveList from '../src/list/mutators/archiveList';
-import * as unarchiveList from '../src/list/mutators/unarchiveList';
-import * as renameList from '../src/list/mutators/renameList';
+import * as archiveList from '@djibb/protocol/list/mutators/archiveList';
+import * as unarchiveList from '@djibb/protocol/list/mutators/unarchiveList';
+import * as renameList from '@djibb/protocol/list/mutators/renameList';
 
 // End-to-end coverage for A.6: archiveList ↔ unarchiveList round-trip,
 // inverse-pair declarations, and narrow set-family CAS on renameList.
