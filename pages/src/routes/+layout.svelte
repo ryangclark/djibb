@@ -1,6 +1,6 @@
 <script>
 	import { goto } from '$app/navigation';
-	import { newId } from '$djibb/id';
+	import { newId } from '@djibb/protocol/id';
 	import { initList } from '$lib/replicache/index.svelte.js';
 	import { setSessionState } from '$lib/session.svelte';
 	import WorkspaceSwitcher from '$lib/components/WorkspaceSwitcher.svelte';

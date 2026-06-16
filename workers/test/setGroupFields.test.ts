@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import type { PushRequestV1, ReadonlyJSONValue } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
-import { IdTypes, newId } from '../src/id';
+import { IdTypes, newId } from '@djibb/protocol/id';
 
 // End-to-end coverage for `setGroupFields` (umbrella set-family,
 // ADR 0005). No `createListGroup` mutator exists yet (D.4); groups

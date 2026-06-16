@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList, asLocalList } from '../src/list/durable_object';
-import { IdTypes } from '../src/id';
+import { IdTypes } from '@djibb/protocol/id';
 
 function getListStub(name: string) {
     const prefixed = `${IdTypes.list}/${name.padEnd(21, 'a').slice(0, 21)}`;

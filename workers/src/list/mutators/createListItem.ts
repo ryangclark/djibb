@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { BadMutationError } from '../../errors';
 import { ListElementUnion, ListItemSchema } from '..';
 import { appendChildElementRef, insertListItem } from '../sql';
-import { IdTypes } from '../../id';
+import { IdTypes } from '@djibb/protocol/id';
 import { ListSchema, TemplateSchema } from '..';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type { ClientMutator, Inverse, ServerMutator } from './_shared';

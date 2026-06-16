@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { QuantitySchema } from '..';
 import { NotFoundError } from '../../errors';
-import { ID_LENGTH, IdTypes } from '../../id';
+import { ID_LENGTH, IdTypes } from '@djibb/protocol/id';
 import { setItemValueAndVersion } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {

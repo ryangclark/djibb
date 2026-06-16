@@ -94,7 +94,7 @@ import {
     encodePullCookie,
     parsePullCookie,
 } from '../replicache/keyspaces';
-import { newId } from '../id';
+import { newId } from '@djibb/protocol/id';
 
 /**
  * Mutator names that change entity-level metadata (the fields projected

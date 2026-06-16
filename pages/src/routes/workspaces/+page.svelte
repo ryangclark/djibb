@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { getSessionState } from '$lib/session.svelte';
 	import { initList } from '$lib/replicache/index.svelte.js';
-	import { newId } from '$djibb/id';
+	import { newId } from '@djibb/protocol/id';
 
 	// ADR 0011 §7b.4: workspace create is now a client-side mint:
 	// generate a `w/<nanoid>` id, open a Replicache client at that

@@ -15,7 +15,7 @@ import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
-import { ID_LENGTH, IdTypes, newId } from '../src/id';
+import { ID_LENGTH, IdTypes, newId } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 function getStub(prefixed: string) {

@@ -10,7 +10,7 @@ import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
-import { IdTypes, newId } from '../src/id';
+import { IdTypes, newId } from '@djibb/protocol/id';
 import { ResolveInvitedWorkspaceBySlug } from '../src/workspace/service';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 

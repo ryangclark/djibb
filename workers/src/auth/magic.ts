@@ -36,7 +36,7 @@ import {
     GetAccountByEmail,
 } from '../account/service';
 import { CreateSession } from './session';
-import { randomString } from '../id';
+import { randomString } from '@djibb/protocol/id';
 import {
     BaseSessionCookieAttributes,
     CookieNames,

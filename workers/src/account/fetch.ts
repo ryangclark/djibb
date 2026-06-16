@@ -9,7 +9,7 @@ import {
     ListTrashedEntitiesForAccount,
 } from '../catalog/service';
 import { BadRequestError, UnauthenticatedError, UnauthorizedError } from '../errors';
-import { IdTypes } from '../id';
+import { IdTypes } from '@djibb/protocol/id';
 import { GetAccountByUsername, SetAccountUsername } from './username';
 
 export const AccountApp = new Hono<HonoEnv>();

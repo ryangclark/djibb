@@ -1,6 +1,6 @@
 import { WebSocket } from 'partysocket';
 import { dev } from '$app/environment';
-import { IdTypes } from '$djibb/id';
+import { IdTypes } from '@djibb/protocol/id';
 import { WS_QUERY_CLIENT_ID } from '$djibb/websocket/constants';
 
 /**

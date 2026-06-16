@@ -8,7 +8,7 @@ import type { PushRequestV1 } from 'replicache';
 
 import worker from '../src/index';
 import { CreateAccount } from '../src/account/service';
-import { ID_LENGTH, IdTypes, newId } from '../src/id';
+import { ID_LENGTH, IdTypes, newId } from '@djibb/protocol/id';
 import {
     GetWorkspacesByAccountId,
     mintPersonalWorkspaceEntity,

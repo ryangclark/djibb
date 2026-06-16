@@ -1,0 +1,18 @@
+{
+    "name": "@djibb/protocol",
+    "version": "0.0.0",
+    "description": "The djibb protocol: entity schemas, ID scheme, mutator contract, and wire encodings. Pure TypeScript, zero Cloudflare dependencies (ADR 0014).",
+    "private": true,
+    "type": "module",
+    "license": "Apache-2.0",
+    "exports": {
+        ".": "./src/index.ts",
+        "./id": "./src/id/index.ts"
+    },
+    "scripts": {
+        "typecheck": "tsc --noEmit -p tsconfig.json"
+    },
+    "devDependencies": {
+        "typescript": "^5.5.0"
+    }
+}

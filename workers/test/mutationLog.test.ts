@@ -12,7 +12,7 @@ import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
-import { IdTypes } from '../src/id';
+import { IdTypes } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 function getWorkspaceStub(suffix: string) {

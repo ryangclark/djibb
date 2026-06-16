@@ -20,7 +20,7 @@ import {
     EmitEntitySnapshotToCatalog,
 } from '../src/list/entity';
 import { ListTrashedEntitiesForAccount } from '../src/catalog/service';
-import { newId } from '../src/id';
+import { newId } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 import type { Account } from '../src/account';
 

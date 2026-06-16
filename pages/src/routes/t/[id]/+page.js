@@ -1,4 +1,4 @@
-import { IdTypes } from '$djibb/id';
+import { IdTypes } from '@djibb/protocol/id';
 
 /** @type {import('./$types').PageLoad} */
 export const load = ({ params }) => {

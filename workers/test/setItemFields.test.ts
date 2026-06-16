@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import type { PushRequestV1, ReadonlyJSONValue } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
-import { IdTypes, newId } from '../src/id';
+import { IdTypes, newId } from '@djibb/protocol/id';
 import type { ListItem, Quantity } from '../src/list';
 
 // End-to-end coverage for `setItemFields` (umbrella set-family

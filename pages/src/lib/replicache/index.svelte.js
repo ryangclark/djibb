@@ -1,7 +1,7 @@
 import { Replicache } from 'replicache';
 import { dev } from '$app/environment';
 import { mutators } from '$djibb/list/mutators/client';
-import { IdTypes } from '$djibb/id';
+import { IdTypes } from '@djibb/protocol/id';
 import { createUndoRuntime } from './withUndo.svelte.js';
 
 /**

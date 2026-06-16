@@ -23,7 +23,7 @@ import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import type { PushRequestV1, ReadonlyJSONObject } from 'replicache';
 
 import { DjibbList, asLocalList } from '../src/list/durable_object';
-import { IdTypes, newId } from '../src/id';
+import { IdTypes, newId } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 function getListStub(suffix: string) {

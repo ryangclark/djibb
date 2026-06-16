@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { AuthorizationRulesSchema } from '../auth/rules';
-import { ID_LENGTH, IdTypes } from '../id';
+import { ID_LENGTH, IdTypes } from '@djibb/protocol/id';
 import { DatelikeToDateSchema } from '../schema';
 
 /**

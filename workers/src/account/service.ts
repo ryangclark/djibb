@@ -1,7 +1,7 @@
 import { OAUTH_PROVIDER } from '../auth/constants';
 import { ParseError, UnexpectedError } from '../errors';
 import { AccountSchema, type Account } from './index';
-import { newId } from '../id';
+import { newId } from '@djibb/protocol/id';
 import { mintPersonalWorkspaceEntity } from '../workspace/service';
 import type { DjibbList } from '../list/durable_object';
 

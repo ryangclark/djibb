@@ -8,9 +8,9 @@
 	import { LIST_ELEMENT_TYPES } from '$djibb/list/constants';
 
 	import { ListItemSchema, ListSchema, TemplateSchema } from '$djibb/list/index';
-	import { IdTypes } from '$djibb/id';
+	import { IdTypes } from '@djibb/protocol/id';
 	import { z } from 'zod';
-	import { newId } from '$djibb/id';
+	import { newId } from '@djibb/protocol/id';
 	import { tryCatch, tryCatchAsync } from '$djibb/utils/trycatch';
 	import { fetchOwnedEntities } from '$lib/entities.js';
 	import { getSessionState } from '$lib/session.svelte.js';

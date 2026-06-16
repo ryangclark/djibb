@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { ID_LENGTH, IdTypes } from '../../id';
+import { ID_LENGTH, IdTypes } from '@djibb/protocol/id';
 import { unarchiveEntity } from '../sql';
 import { SYSTEM_ROLES, toStoredValue } from './_shared';
 import type { ClientMutator, Inverse, ServerMutator } from './_shared';

@@ -1,4 +1,4 @@
-import { IdTypes } from '$djibb/id';
+import { IdTypes } from '@djibb/protocol/id';
 
 /**
  * Reconstruct the prefixed entity ID for the share route. Twin of

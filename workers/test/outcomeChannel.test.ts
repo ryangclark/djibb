@@ -2,7 +2,7 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, it, expect } from 'vitest';
 
 import { DjibbList } from '../src/list/durable_object';
-import { IdTypes } from '../src/id';
+import { IdTypes } from '@djibb/protocol/id';
 import {
     decodeWSMessage,
     encodeWSMessage,

@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import type { PushRequestV1, ReadonlyJSONObject } from 'replicache';
 
 import { DjibbList, asLocalList } from '../src/list/durable_object';
-import { IdTypes } from '../src/id';
+import { IdTypes } from '@djibb/protocol/id';
 import type { AuthorizationRules } from '../src/auth/rules';
 
 // Coverage for the entity-metadata mutator triplet:

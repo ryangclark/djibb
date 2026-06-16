@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
-import { IdTypes } from '../src/id';
+import { IdTypes } from '@djibb/protocol/id';
 import * as archiveList from '../src/list/mutators/archiveList';
 import * as unarchiveList from '../src/list/mutators/unarchiveList';
 import * as renameList from '../src/list/mutators/renameList';

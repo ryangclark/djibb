@@ -15,7 +15,7 @@
       stays dumb and just reports the toggle.
 -->
 <script>
-	import { IdTypes } from '$djibb/id';
+	import { IdTypes } from '@djibb/protocol/id';
 
 	/**
 	 * @typedef {import('$djibb/list/index.ts').Template} Template

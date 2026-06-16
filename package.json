@@ -11,6 +11,7 @@
         "djibb": "./djibb"
     },
     "workspaces": [
+        "packages/*",
         "pages",
         "workers"
     ]

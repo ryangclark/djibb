@@ -25,7 +25,7 @@
 	import { initList } from '$lib/replicache/index.svelte.js';
 	import { getSessionState } from '$lib/session.svelte';
 	import { SEED_POOL_LIST_ID } from '$djibb/list';
-	import { IdTypes, newId } from '$djibb/id';
+	import { IdTypes, newId } from '@djibb/protocol/id';
 	import BlankPreview from '$lib/components/BlankPreview.svelte';
 
 	/**
