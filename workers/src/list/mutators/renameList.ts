@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
-import { renameEntity } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -36,7 +35,7 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     { listId, name: newName, expected },
-    { sql, nextVersion }
+    { sql, store, nextVersion }
 ) => {
     if (expected?.name !== undefined) {
         const rows = sql
@@ -52,7 +51,7 @@ export const server: ServerMutator<Args> = (
         if (!row) return { status: 'gone' };
         if (row.name !== expected.name) return { status: 'stale' };
     }
-    renameEntity(sql, { entityId: listId, name: newName, version: nextVersion });
+    store.renameEntity({ entityId: listId, name: newName, version: nextVersion });
 };
 
 export const client: ClientMutator<Args> = async (

@@ -10,6 +10,7 @@ import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
 import type { AuthorizationRole, AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { UnexpectedError } from '../../errors';
 import { DatelikeToDateSchema } from '@djibb/protocol/schema';
+import type { EntityStore } from '../store';
 
 /**
  * Roles permitted to mutate list state. Anonymous (`ownerless`) lists
@@ -70,7 +71,14 @@ export type MutationEnvelopeArgs = z.infer<typeof MutationEnvelopeArgsSchema>;
 
 /** Context passed to every server mutator after dispatch validation. */
 export type ServerMutatorCtx = {
+    /**
+     * Raw DO storage. Retained for mutators that still issue direct
+     * `sql.exec(...)` queries (e.g. set-family CAS pre-checks). New
+     * helper calls should go through `store` (the EntityStore port).
+     */
     sql: SqlStorage;
+    /** The EntityStore port (ADR 0014) — storage-bound `./sql` helpers. */
+    store: EntityStore;
     role: AuthorizationRole;
     accountId: string | null;
     timestamp_client: Date | null;

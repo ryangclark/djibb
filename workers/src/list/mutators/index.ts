@@ -255,7 +255,7 @@ export type ExecuteResult =
 
 export function executeServerMutation(
     mutation: Mutation,
-    ctxBase: Pick<ServerMutatorCtx, 'sql' | 'role' | 'nextVersion'>
+    ctxBase: Pick<ServerMutatorCtx, 'sql' | 'store' | 'role' | 'nextVersion'>
 ): ExecuteResult {
     const { envelope, rawBody } = mutation;
     const entry = (Mutations as Record<string, (typeof Mutations)[MutationName]>)[
