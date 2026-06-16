@@ -12,7 +12,7 @@ import {
     loadCollapsed,
     nextCursorId,
     saveCollapsed,
-} from '../../pages/src/lib/keymap/listViewSequence.js';
+} from '../../../pages/src/lib/keymap/listViewSequence.js';
 
 class MemoryStorage {
     private data = new Map<string, string>();

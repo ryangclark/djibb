@@ -58,7 +58,7 @@ import {
 } from './sql';
 import { createSqlStorageEntityStore } from './store';
 import type { Account } from '@djibb/protocol/account';
-import { tryCatch, tryCatchAsync, type Result } from '../utils/trycatch';
+import { tryCatch, tryCatchAsync, type Result } from '@djibb/protocol/trycatch';
 import {
     EmitEntityMembershipsToCatalog,
     EmitEntitySnapshotToCatalog,

@@ -20,7 +20,7 @@ const WORKER_PORT = 8787;
 const WORKER_URL = `http://localhost:${WORKER_PORT}`;
 const WORKER_READY_TIMEOUT_MS = 30_000;
 
-const workersDir = resolve(__dirname, 'workers');
+const workersDir = resolve(__dirname, 'packages/server-cf');
 const pagesDir = resolve(__dirname, 'pages');
 
 // Start the Worker via its own `npm run dev` script (same approach we

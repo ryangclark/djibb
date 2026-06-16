@@ -23,7 +23,7 @@
 	 * show a confirm modal. The mutator itself has no lockout
 	 * guard server-side; this is the UI's polite refusal.
 	 */
-	import { tryCatchAsync } from '$djibb/utils/trycatch';
+	import { tryCatchAsync } from '@djibb/protocol/trycatch';
 	import EntityInvites from '$lib/components/EntityInvites.svelte';
 
 	const ROLE_LABELS = /** @type {const} */ ({

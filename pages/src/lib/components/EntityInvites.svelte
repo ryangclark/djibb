@@ -22,7 +22,7 @@
 	 * account may manage the entity (owner/admin). The component does no
 	 * role check of its own.
 	 */
-	import { tryCatchAsync } from '$djibb/utils/trycatch';
+	import { tryCatchAsync } from '@djibb/protocol/trycatch';
 
 	const ROLE_LABELS = /** @type {const} */ ({
 		owner: 'Owner',

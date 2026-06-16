@@ -28,7 +28,7 @@
 	 * hides itself. On failure, the toast surfaces the reason and
 	 * the user can dismiss manually.
 	 */
-	import { tryCatchAsync } from '$djibb/utils/trycatch';
+	import { tryCatchAsync } from '@djibb/protocol/trycatch';
 	import { getSessionState } from '$lib/session.svelte';
 
 	/**

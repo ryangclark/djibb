@@ -1,4 +1,4 @@
-import { serializeError, type SerializedDjibbError } from '@djibb/protocol/errors';
+import { serializeError, type SerializedDjibbError } from './errors';
 
 // Types for the result object with discriminated union
 type Success<T> = {

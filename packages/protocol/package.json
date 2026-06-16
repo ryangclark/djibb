@@ -11,6 +11,7 @@
         "./schema": "./src/schema.ts",
         "./account": "./src/account/index.ts",
         "./errors": "./src/errors.ts",
+        "./trycatch": "./src/trycatch.ts",
         "./list": "./src/list/index.ts",
         "./list/constants": "./src/list/constants.ts",
         "./list/fork": "./src/list/fork.ts",

@@ -11,7 +11,7 @@
 	import { IdTypes } from '@djibb/protocol/id';
 	import { z } from 'zod';
 	import { newId } from '@djibb/protocol/id';
-	import { tryCatch, tryCatchAsync } from '$djibb/utils/trycatch';
+	import { tryCatch, tryCatchAsync } from '@djibb/protocol/trycatch';
 	import { fetchOwnedEntities } from '$lib/entities.js';
 	import { getSessionState } from '$lib/session.svelte.js';
 	import { createListViewVerbs } from '$lib/keymap/listViewVerbs.svelte.js';

@@ -7,7 +7,7 @@ import {
     buildKeymapRegistry,
     filterPaletteBindings,
     groupByCategory,
-} from '../../pages/src/lib/keymap/registry.js';
+} from '../../../pages/src/lib/keymap/registry.js';
 
 function noopDeps() {
     return {
