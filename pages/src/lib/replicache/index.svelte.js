@@ -1,7 +1,5 @@
-import { Replicache } from 'replicache';
 import { dev } from '$app/environment';
-import { mutators } from '@djibb/protocol/list/mutators/client';
-import { entityPath, makePusher, makePuller } from '@djibb/client/replicache';
+import { createReplicacheClient } from '@djibb/client/replicache';
 import { createUndoRuntime } from './withUndo.svelte.js';
 
 /**
@@ -163,43 +161,22 @@ function wrapMutators(rawMutate, { accountId }) {
 }
 
 /**
- * Initializes the Replicache Client stuff.
+ * Reads the app's Vite/SvelteKit environment and delegates to the
+ * framework-agnostic client factory in `@djibb/client`. The env access
+ * (`import.meta.env`, `$app/environment`) lives here on purpose —
+ * `@djibb/client` never reads env so it stays portable; pages owns the
+ * binding to Vite.
  *
  * @param {object} input List ID
  * @param {string | null} input.accountId Account ID
  * @param {string} input.listId List ID
  */
 export function InitReplicacheClient({ accountId, listId }) {
-	const licenseKey = import.meta.env.VITE_REPLICACHE_LICENSE_KEY;
-	if (!licenseKey) {
-		throw new Error('Missing VITE_REPLICACHE_LICENSE_KEY');
-	}
-
-	const protocol = `http${dev ? '' : 's'}:`;
-
-	const path = entityPath(listId);
-	const pullURL = `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/${path}/pull?l=${listId}`;
-	const pushURL = `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/${path}/push?l=${listId}`;
-
-	return new Replicache({
-		licenseKey,
-		// logLevel: import.meta.env.DEV ? 'debug' : 'error',
-		mutators: mutators,
-		// Template string to create something like `userId123:listId123`.
-		// If no Account ID, it'll be `null:listId123`.
-		name: `${accountId}:${listId}`,
-		// Event-driven sync: poke via websocket triggers pulls; no polling.
-		// pushDelay: null,
-		// pullInterval: null,
-		pullURL,
-		pushURL,
-		// Custom pusher/puller so the cross-origin push/pull sends the
-		// session cookie. Replicache's default fetch omits credentials
-		// and the worker would resolve the request as anonymous, which
-		// trips auth on lists owned by an authed account.
-		pusher: makePusher(pushURL),
-		puller: makePuller(pullURL),
-		// Bump when stored value shapes change; forces old clients to reset.
-		schemaVersion: '1'
+	return createReplicacheClient({
+		accountId,
+		listId,
+		licenseKey: import.meta.env.VITE_REPLICACHE_LICENSE_KEY,
+		baseUrl: import.meta.env.VITE_REPLICACHE_BASE_URL,
+		secure: !dev
 	});
 }
