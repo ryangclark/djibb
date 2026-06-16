@@ -5,7 +5,7 @@
 	import IconLink from '@tabler/icons-svelte/icons/link';
 	import IconX from '@tabler/icons-svelte/icons/x';
 
-	import { LIST_ELEMENT_TYPES } from '$djibb/list/constants';
+	import { LIST_ELEMENT_TYPES } from '@djibb/protocol/list/constants';
 
 	import { ListItemSchema, ListSchema, TemplateSchema } from '@djibb/protocol/list';
 	import { IdTypes } from '@djibb/protocol/id';

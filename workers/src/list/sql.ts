@@ -23,7 +23,7 @@ import {
     ReplicacheClientGroupSchema,
 } from '../replicache';
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
-import { DefaultAuthorizationRules } from './constants';
+import { DefaultAuthorizationRules } from '@djibb/protocol/list/constants';
 import type { MutationEnvelope, MutationStatus } from './mutators';
 
 /**

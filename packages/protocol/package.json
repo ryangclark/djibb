@@ -11,6 +11,7 @@
         "./schema": "./src/schema.ts",
         "./account": "./src/account/index.ts",
         "./list": "./src/list/index.ts",
+        "./list/constants": "./src/list/constants.ts",
         "./list/markdown": "./src/list/markdown.ts",
         "./auth/rules": "./src/auth/rules.ts",
         "./auth/constants": "./src/auth/constants.ts",
