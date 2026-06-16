@@ -1,4 +1,4 @@
-import { DjibbError } from '../errors';
+import { DjibbError } from '@djibb/protocol/errors';
 
 export enum AuthErrorCode {
     Unauthenticated = 'auth/unauthenticated',

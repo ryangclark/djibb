@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { NotFoundError } from '../../errors';
+import { NotFoundError } from '@djibb/protocol/errors';
 import { AccountRoleEnum } from '@djibb/protocol/auth/rules';
 import { ListSchema } from '@djibb/protocol/list';
 import {

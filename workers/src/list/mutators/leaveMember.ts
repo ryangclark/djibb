@@ -5,7 +5,7 @@ import {
     type AuthorizationRole,
     type AuthorizationRules,
 } from '@djibb/protocol/auth/rules';
-import { NotFoundError } from '../../errors';
+import { NotFoundError } from '@djibb/protocol/errors';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema, isEntityRowType } from '@djibb/protocol/list';
 import {
     countOwners,

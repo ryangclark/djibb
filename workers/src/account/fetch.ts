@@ -8,7 +8,7 @@ import {
     ListSharedWithAccount,
     ListTrashedEntitiesForAccount,
 } from '../catalog/service';
-import { BadRequestError, UnauthenticatedError, UnauthorizedError } from '../errors';
+import { BadRequestError, UnauthenticatedError, UnauthorizedError } from '@djibb/protocol/errors';
 import { IdTypes } from '@djibb/protocol/id';
 import { GetAccountByUsername, SetAccountUsername } from './username';
 

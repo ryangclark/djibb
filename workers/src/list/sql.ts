@@ -17,7 +17,7 @@ import {
     TablesAlreadyInitializedError,
     UnexpectedError,
     ValidationError,
-} from '../errors';
+} from '@djibb/protocol/errors';
 import {
     type ReplicacheClientGroup,
     ReplicacheClientGroupSchema,

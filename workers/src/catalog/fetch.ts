@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { HonoEnv } from '..';
 
 import { HandleSession } from '../auth/middleware';
-import { UnauthenticatedError, UnauthorizedError } from '../errors';
+import { UnauthenticatedError, UnauthorizedError } from '@djibb/protocol/errors';
 import { ListOwnedEntities } from './service';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';

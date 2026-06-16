@@ -42,7 +42,7 @@ import {
     TablesAlreadyInitializedError,
     UnauthorizedError,
     UnexpectedError,
-} from '../errors';
+} from '@djibb/protocol/errors';
 import {
     getChangedElements,
     getElementById,

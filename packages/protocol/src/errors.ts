@@ -1,4 +1,26 @@
-import type { StatusCode } from 'hono/utils/http-status';
+/**
+ * Numeric HTTP status code.
+ *
+ * Inlined from hono's `StatusCode` so `@djibb/protocol` stays free of any
+ * Cloudflare/hono dependency (ADR 0014). Kept as an explicit union of the
+ * registered HTTP status codes — rather than a bare `number` — so a typo'd
+ * status (e.g. `41` instead of `412`) is still a type error at the throw
+ * site. Values are assignable to `number`, so they flow into `ResponseInit`
+ * / hono's `status` field without a cast.
+ */
+export type StatusCode =
+    // 1xx informational
+    | 100 | 101 | 102 | 103
+    // 2xx success
+    | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 226
+    // 3xx redirection
+    | 300 | 301 | 302 | 303 | 304 | 305 | 306 | 307 | 308
+    // 4xx client error
+    | 400 | 401 | 402 | 403 | 404 | 405 | 406 | 407 | 408 | 409
+    | 410 | 411 | 412 | 413 | 414 | 415 | 416 | 417 | 418
+    | 421 | 422 | 423 | 424 | 425 | 426 | 428 | 429 | 431 | 451
+    // 5xx server error
+    | 500 | 501 | 502 | 503 | 504 | 505 | 506 | 507 | 508 | 510 | 511;
 
 export enum CoreErrorCode {
     AlreadyInitialized = 'core/already-initialized',
@@ -159,4 +181,3 @@ export function serializeError(e: unknown): SerializedDjibbError {
         'serialization error: unexpected instanceof'
     ).toJSON();
 }
-

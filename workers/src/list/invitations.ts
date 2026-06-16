@@ -6,7 +6,7 @@ import {
     type AuthorizationRules,
 } from '@djibb/protocol/auth/rules';
 import type { Account } from '@djibb/protocol/account';
-import { UnexpectedError } from '../errors';
+import { UnexpectedError } from '@djibb/protocol/errors';
 
 /**
  * ADR 0009: tokenless DO-resident invitations.

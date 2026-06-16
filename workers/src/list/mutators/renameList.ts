@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { NotFoundError } from '../../errors';
+import { NotFoundError } from '@djibb/protocol/errors';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {

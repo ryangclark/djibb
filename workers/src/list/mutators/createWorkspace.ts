@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
-import { ValidationError } from '../../errors';
+import { ValidationError } from '@djibb/protocol/errors';
 import { defaultSlugForId } from '../entity';
 import { SlotEnum, WorkspaceEntitySchema } from '@djibb/protocol/list';
 import type { WorkspaceEntity } from '@djibb/protocol/list';

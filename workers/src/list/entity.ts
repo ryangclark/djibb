@@ -4,7 +4,7 @@ import {
     type AuthorizationRules,
     AuthorizationRulesSchema,
 } from '@djibb/protocol/auth/rules';
-import { UnexpectedError } from '../errors';
+import { UnexpectedError } from '@djibb/protocol/errors';
 import { ENTITY_ROW_TYPES, SlotEnum, type Slot } from '@djibb/protocol/list';
 
 /**

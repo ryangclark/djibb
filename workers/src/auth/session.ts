@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { createDate, isWithinExpirationDate } from 'oslo';
 
 import { SESSION_EXPIRATION } from './constants';
-import { ParseError, UnexpectedError } from '../errors';
+import { ParseError, UnexpectedError } from '@djibb/protocol/errors';
 import { DatelikeToDateSchema } from '@djibb/protocol/schema';
 import { AccountSchema, type Account } from '@djibb/protocol/account';
 import { newId } from '@djibb/protocol/id';

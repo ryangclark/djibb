@@ -5,7 +5,7 @@ import {
     type AuthorizationRole,
     type AuthorizationRules,
 } from '@djibb/protocol/auth/rules';
-import { BadMutationError, NotFoundError } from '../../errors';
+import { BadMutationError, NotFoundError } from '@djibb/protocol/errors';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
 import {
     InvitationIdentityKindEnum,

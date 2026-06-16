@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { BadMutationError, NotFoundError } from '../../errors';
+import { BadMutationError, NotFoundError } from '@djibb/protocol/errors';
 import { WorkspaceEntitySchema } from '@djibb/protocol/list';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type { ClientMutator, Inverse, ServerMutator } from './_shared';

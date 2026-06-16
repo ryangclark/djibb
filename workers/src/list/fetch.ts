@@ -18,7 +18,7 @@ import {
     ParseError,
     UnexpectedError,
     ValidationError,
-} from '../errors';
+} from '@djibb/protocol/errors';
 import { UnauthorizedError } from '../auth/errors';
 import { ReplicachePullRequestSchema } from '../replicache';
 import { z } from 'zod';

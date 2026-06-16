@@ -30,7 +30,7 @@ import { setCookie } from 'hono/cookie';
 import { z } from 'zod';
 
 import type { HonoEnv } from '..';
-import { BadRequestError, UnexpectedError, ValidationError } from '../errors';
+import { BadRequestError, UnexpectedError, ValidationError } from '@djibb/protocol/errors';
 import {
     CreateAccount,
     GetAccountByEmail,

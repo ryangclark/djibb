@@ -5,7 +5,7 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { CookieOptions } from 'hono/utils/cookie';
 import { z } from 'zod';
 
-import { NotFoundError, UnexpectedError, ValidationError } from '../errors';
+import { NotFoundError, UnexpectedError, ValidationError } from '@djibb/protocol/errors';
 import {
     CreateAccount,
     GetAccountByEmail,

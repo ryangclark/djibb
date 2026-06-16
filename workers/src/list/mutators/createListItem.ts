@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { BadMutationError } from '../../errors';
+import { BadMutationError } from '@djibb/protocol/errors';
 import { ListElementUnion, ListItemSchema } from '@djibb/protocol/list';
 import { IdTypes } from '@djibb/protocol/id';
 import { ListSchema, TemplateSchema } from '@djibb/protocol/list';

@@ -9,7 +9,7 @@ import type { AuthorizationRole } from '@djibb/protocol/auth/rules';
 import type { EntityRow } from './list/entity';
 import type { Session } from './auth/session';
 import { Auth_App } from './auth/fetch';
-import { DjibbError } from './errors';
+import { DjibbError } from '@djibb/protocol/errors';
 import { DjibbList } from './list/durable_object';
 import { AccountApp, UserApp } from './account/fetch';
 

@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { HonoEnv } from '..';
 
 import { HandleSession } from '../auth/middleware';
-import { NotFoundError, UnauthenticatedError } from '../errors';
+import { NotFoundError, UnauthenticatedError } from '@djibb/protocol/errors';
 import { ResolveInvitedWorkspaceBySlug } from './service';
 
 /**

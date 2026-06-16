@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { QuantitySchema } from '@djibb/protocol/list';
-import { NotFoundError } from '../../errors';
+import { NotFoundError } from '@djibb/protocol/errors';
 import { ID_LENGTH, IdTypes } from '@djibb/protocol/id';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {

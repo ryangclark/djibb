@@ -8,7 +8,7 @@ import {
     CookieNames,
     OAUTH_REDIRECT_URI,
 } from './constants';
-import { UnauthenticatedError, UnexpectedError } from '../errors';
+import { UnauthenticatedError, UnexpectedError } from '@djibb/protocol/errors';
 import { HandleSession } from './middleware';
 import {
     handleGetMockSession,

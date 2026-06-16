@@ -1,4 +1,4 @@
-import { BadRequestError, FailedPreconditionError, NotFoundError, UnexpectedError } from '../errors';
+import { BadRequestError, FailedPreconditionError, NotFoundError, UnexpectedError } from '@djibb/protocol/errors';
 import { RESERVED_SLUGS } from '@djibb/protocol/list/slug';
 
 /**

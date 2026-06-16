@@ -8,7 +8,7 @@ import type {
 
 import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
 import type { AuthorizationRole, AuthorizationRules } from '@djibb/protocol/auth/rules';
-import { UnexpectedError } from '../../errors';
+import { UnexpectedError } from '@djibb/protocol/errors';
 import { DatelikeToDateSchema } from '@djibb/protocol/schema';
 import type { EntityStore } from '../store';
 

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { NotFoundError } from '../../errors';
+import { NotFoundError } from '@djibb/protocol/errors';
 import { WorkspaceEntitySchema } from '@djibb/protocol/list';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type {

@@ -1,4 +1,4 @@
-import { DjibbError } from '../errors';
+import { DjibbError } from '@djibb/protocol/errors';
 
 enum ReplicacheError {
     InvalidMutatorError = 'rep/invalid-mutator',

@@ -5,7 +5,7 @@ import {
     type WorkspaceWithMembership,
 } from './index';
 import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
-import { ParseError, UnexpectedError } from '../errors';
+import { ParseError, UnexpectedError } from '@djibb/protocol/errors';
 import { newId } from '@djibb/protocol/id';
 import type { Account } from '@djibb/protocol/account';
 import type { DjibbList } from '../list/durable_object';

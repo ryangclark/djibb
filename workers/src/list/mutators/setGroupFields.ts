@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { ListGroupSchema } from '@djibb/protocol/list';
-import { NotFoundError } from '../../errors';
+import { NotFoundError } from '@djibb/protocol/errors';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
