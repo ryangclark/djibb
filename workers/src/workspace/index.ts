@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import { AuthorizationRoleEnum } from '../auth/rules';
-import type { AuthorizationRole } from '../auth/rules';
-import { DatelikeToDateSchema } from '../schema';
+import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
+import type { AuthorizationRole } from '@djibb/protocol/auth/rules';
+import { DatelikeToDateSchema } from '@djibb/protocol/schema';
 
 export const WORKSPACE_ID_LENGTH = 22;
 

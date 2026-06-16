@@ -6,7 +6,7 @@
 	import { initialize as initWebsocket } from '$lib/websocket';
 	import { bindUndoKeymap } from '$lib/keymap/global.js';
 
-	import { decodeWSMessage } from '$djibb/websocket/constants';
+	import { decodeWSMessage } from '@djibb/protocol/websocket/constants';
 
 	import ConfirmToast from '$lib/components/ConfirmToast.svelte';
 	import InviteBanner from '$lib/components/InviteBanner.svelte';

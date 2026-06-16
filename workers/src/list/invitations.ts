@@ -4,7 +4,7 @@ import {
     AccountRoleEnum,
     type AccountRole,
     type AuthorizationRules,
-} from '../auth/rules';
+} from '@djibb/protocol/auth/rules';
 import type { Account } from '../account';
 import { UnexpectedError } from '../errors';
 

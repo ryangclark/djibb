@@ -4,7 +4,7 @@ import type { PushRequestV1, ReadonlyJSONObject } from 'replicache';
 
 import { DjibbList, asLocalList } from '../src/list/durable_object';
 import { IdTypes } from '@djibb/protocol/id';
-import type { AuthorizationRules } from '../src/auth/rules';
+import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 
 // Coverage for the entity-metadata mutator triplet:
 //   archiveList, setDescription, setListAuthRules.

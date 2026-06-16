@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-import { AuthorizationRoleEnum } from '../../auth/rules';
-import type { AuthorizationRules } from '../../auth/rules';
+import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
+import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '..';
 import { setEntityAuthorizationRules, setEntityWorkspaceId } from '../sql';
 import {

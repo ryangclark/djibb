@@ -19,7 +19,7 @@ import {
     type InvitePreflightDeps,
 } from '../src/list/invitations';
 import { GetAccountByEmail } from '../src/account/service';
-import type { AuthorizationRules } from '../src/auth/rules';
+import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 const NOW_SECONDS = 1_700_000_000; // Mon 2023-11-14, fixed for stability

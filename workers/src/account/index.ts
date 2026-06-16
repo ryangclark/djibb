@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { DatelikeToDateSchema } from '../schema';
+import { DatelikeToDateSchema } from '@djibb/protocol/schema';
 import { OAUTH_PROVIDER } from '../auth/constants';
 
 export const AccountSchema = z.object({

@@ -36,7 +36,7 @@
 	 * @property {string} entityId
 	 * @property {'list' | 'template' | 'workspace'} entityType
 	 * @property {string | null} entityName  may be null pre-load
-	 * @property {import('$djibb/auth/rules').AuthorizationRules | undefined} authorizationRules
+	 * @property {import('@djibb/protocol/auth/rules').AuthorizationRules | undefined} authorizationRules
 	 * @property {import('$lib/replicache/types').ClientListMutators | undefined} mutators
 	 * @property {readonly import('$djibb/account').Account[]} sessionAccounts
 	 * @property {string | null} currentAccountId

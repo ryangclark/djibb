@@ -6,7 +6,7 @@ import { IdTypes } from '@djibb/protocol/id';
 import {
     decodeWSMessage,
     encodeWSMessage,
-} from '../src/websocket/constants';
+} from '@djibb/protocol/websocket/constants';
 
 // B.1: per-mutation outcome channel substrate.
 //

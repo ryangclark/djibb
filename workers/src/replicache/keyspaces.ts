@@ -1,7 +1,7 @@
 import type { PatchOperation } from 'replicache';
 
-import { AuthorizationRoleEnum } from '../auth/rules';
-import type { AuthorizationRole } from '../auth/rules';
+import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
+import type { AuthorizationRole } from '@djibb/protocol/auth/rules';
 
 /**
  * Per-role hidden state in Replicache pulls (ADR 0009 §"PII gating

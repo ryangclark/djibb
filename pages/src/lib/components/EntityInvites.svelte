@@ -44,7 +44,7 @@
 	 *   Replicache keyspace. Visible only to owners/admins per the
 	 *   role-gated pull filter; the route filters `list_data` for keys
 	 *   beginning with `pending_invites/`.
-	 * @property {readonly import('$djibb/auth/rules').InvitableRole[]} [assignableRoles]
+	 * @property {readonly import('@djibb/protocol/auth/rules').InvitableRole[]} [assignableRoles]
 	 *   Roles offerable on an invite. Defaults to the full *invitable*
 	 *   set, which excludes `owner`: ownership is transferred via
 	 *   `transferOwnership`, never invited (single-owner invariant).
@@ -70,7 +70,7 @@
 	// one-time snapshot, not a reactive mirror of the prop.
 	// svelte-ignore state_referenced_locally
 	let inviteRole = $state(
-		/** @type {import('$djibb/auth/rules').InvitableRole} */ (
+		/** @type {import('@djibb/protocol/auth/rules').InvitableRole} */ (
 			assignableRoles.includes('editor') ? 'editor' : assignableRoles[0]
 		)
 	);

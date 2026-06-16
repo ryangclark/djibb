@@ -16,7 +16,7 @@
 	import { initList } from '$lib/replicache/index.svelte.js';
 	import { initialize as initWebsocket } from '$lib/websocket';
 
-	import { decodeWSMessage } from '$djibb/websocket/constants';
+	import { decodeWSMessage } from '@djibb/protocol/websocket/constants';
 
 	import ConfirmToast from '$lib/components/ConfirmToast.svelte';
 	import Share from '$lib/components/Share.svelte';

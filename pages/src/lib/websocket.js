@@ -1,7 +1,7 @@
 import { WebSocket } from 'partysocket';
 import { dev } from '$app/environment';
 import { IdTypes } from '@djibb/protocol/id';
-import { WS_QUERY_CLIENT_ID } from '$djibb/websocket/constants';
+import { WS_QUERY_CLIENT_ID } from '@djibb/protocol/websocket/constants';
 
 /**
  * Initialize the websocket for an entity. Per ADR 0006 the URL

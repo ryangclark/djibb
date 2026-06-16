@@ -60,7 +60,7 @@
 	 * @property {'list' | 'template'} entityType
 	 * @property {{
 	 *     name: string | null,
-	 *     authorization_rules: import('$djibb/auth/rules').AuthorizationRules,
+	 *     authorization_rules: import('@djibb/protocol/auth/rules').AuthorizationRules,
 	 *     workspace_id?: string | null
 	 * }} entity
 	 * @property {import('$lib/replicache/types').ClientListMutators} mutators
@@ -190,7 +190,7 @@
 	);
 
 	/**
-	 * @param {import('$djibb/auth/rules').DefaultRole} value
+	 * @param {import('@djibb/protocol/auth/rules').DefaultRole} value
 	 */
 	function setDefaultRole(value) {
 		draft.default_role = value;
@@ -198,7 +198,7 @@
 
 	/**
 	 * @param {string} accountId
-	 * @param {import('$djibb/auth/rules').AccountRole} role
+	 * @param {import('@djibb/protocol/auth/rules').AccountRole} role
 	 */
 	function setAccountRole(accountId, role) {
 		draft.authorized_accounts[accountId] = { role };
@@ -366,7 +366,7 @@
 							onchange={(e) =>
 								setAccountRole(
 									row.id,
-									/** @type {import('$djibb/auth/rules').AccountRole} */ (
+									/** @type {import('@djibb/protocol/auth/rules').AccountRole} */ (
 										e.currentTarget.value
 									)
 								)}

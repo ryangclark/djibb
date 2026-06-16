@@ -6,10 +6,10 @@ import type {
     WriteTransaction,
 } from 'replicache';
 
-import { AuthorizationRoleEnum } from '../../auth/rules';
-import type { AuthorizationRole, AuthorizationRules } from '../../auth/rules';
+import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
+import type { AuthorizationRole, AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { UnexpectedError } from '../../errors';
-import { DatelikeToDateSchema } from '../../schema';
+import { DatelikeToDateSchema } from '@djibb/protocol/schema';
 
 /**
  * Roles permitted to mutate list state. Anonymous (`ownerless`) lists

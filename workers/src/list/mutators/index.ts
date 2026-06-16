@@ -6,7 +6,7 @@ import type {
     WriteTransaction,
 } from 'replicache';
 
-import type { AuthorizationRules } from '../../auth/rules';
+import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { MutationEnvelopeArgsSchema } from './_shared';
 import type {
     ClientMutator,

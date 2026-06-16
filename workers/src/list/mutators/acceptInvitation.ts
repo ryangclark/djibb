@@ -4,7 +4,7 @@ import {
     AuthorizationRoleEnum,
     type AuthorizationRole,
     type AuthorizationRules,
-} from '../../auth/rules';
+} from '@djibb/protocol/auth/rules';
 import { BadMutationError, NotFoundError } from '../../errors';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '..';
 import {

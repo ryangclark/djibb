@@ -3,7 +3,7 @@ import { z } from 'zod';
 import {
     type AuthorizationRules,
     AuthorizationRulesSchema,
-} from '../auth/rules';
+} from '@djibb/protocol/auth/rules';
 import { UnexpectedError } from '../errors';
 import { ENTITY_ROW_TYPES, SlotEnum, type Slot } from '.';
 

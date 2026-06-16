@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { InvitableRoleEnum } from '../../auth/rules';
+import { InvitableRoleEnum } from '@djibb/protocol/auth/rules';
 import { BadMutationError, NotFoundError } from '../../errors';
 import { ListSchema } from '..';
 import {

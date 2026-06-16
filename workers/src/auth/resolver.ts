@@ -1,4 +1,4 @@
-import type { AuthorizationRole, AuthorizationRules } from './rules';
+import type { AuthorizationRole, AuthorizationRules } from '@djibb/protocol/auth/rules';
 
 export type Session = { account_id: string } | null;
 

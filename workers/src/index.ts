@@ -5,7 +5,7 @@ import { verifyRequestOrigin, type User } from 'lucia';
 import { CatalogApp } from './catalog/fetch';
 import { list_app, template_app, workspace_app } from './list/fetch';
 import { WorkspaceInviteApp } from './workspace/inviteResolver';
-import type { AuthorizationRole } from './auth/rules';
+import type { AuthorizationRole } from '@djibb/protocol/auth/rules';
 import type { EntityRow } from './list/entity';
 import type { Session } from './auth/session';
 import { Auth_App } from './auth/fetch';

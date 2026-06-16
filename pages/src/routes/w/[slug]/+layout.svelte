@@ -4,7 +4,7 @@
 	import { getSessionState } from '$lib/session.svelte';
 	import { initList } from '$lib/replicache/index.svelte.js';
 	import { initialize as initWebsocket } from '$lib/websocket';
-	import { decodeWSMessage } from '$djibb/websocket/constants';
+	import { decodeWSMessage } from '@djibb/protocol/websocket/constants';
 	import { resolveInvitedWorkspace } from '$lib/api/workspace';
 	import InviteBanner from '$lib/components/InviteBanner.svelte';
 	import { WORKSPACE_REPLICACHE_KEY } from './_context.js';

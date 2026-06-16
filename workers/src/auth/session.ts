@@ -3,7 +3,7 @@ import { createDate, isWithinExpirationDate } from 'oslo';
 
 import { SESSION_EXPIRATION } from './constants';
 import { ParseError, UnexpectedError } from '../errors';
-import { DatelikeToDateSchema } from '../schema';
+import { DatelikeToDateSchema } from '@djibb/protocol/schema';
 import { AccountSchema, type Account } from '../account';
 import { newId } from '@djibb/protocol/id';
 

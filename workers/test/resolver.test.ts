@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { resolveRole, canRead, canEdit } from '../src/auth/resolver';
-import type { AuthorizationRules } from '../src/auth/rules';
+import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 
 const ACCOUNT_ID = 'a/me';
 const session = { account_id: ACCOUNT_ID };

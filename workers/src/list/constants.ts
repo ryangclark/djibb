@@ -1,4 +1,4 @@
-import type { AuthorizationRules } from '../auth/rules';
+import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 
 export const DefaultAuthorizationRules: AuthorizationRules = {
     authorized_accounts: {},

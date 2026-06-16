@@ -9,7 +9,7 @@ import {
     type AuthorizationRole,
     AuthorizationRoleEnum,
     type AuthorizationRules,
-} from '../auth/rules';
+} from '@djibb/protocol/auth/rules';
 
 import {
     BadRequestError,

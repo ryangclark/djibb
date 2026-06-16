@@ -4,7 +4,7 @@ import {
     WorkspaceSchema,
     type WorkspaceWithMembership,
 } from './index';
-import { AuthorizationRoleEnum } from '../auth/rules';
+import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
 import { ParseError, UnexpectedError } from '../errors';
 import { newId } from '@djibb/protocol/id';
 import type { Account } from '../account';

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-import type { AuthorizationRules } from '../../auth/rules';
-import { DefaultRoleEnum } from '../../auth/rules';
+import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
+import { DefaultRoleEnum } from '@djibb/protocol/auth/rules';
 import { ValidationError } from '../../errors';
 import { IdTypes } from '@djibb/protocol/id';
 import { createElement, insertListGroup, insertListItem } from '../sql';

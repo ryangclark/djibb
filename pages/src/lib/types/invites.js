@@ -10,7 +10,7 @@
  * @typedef {Object} PendingInvite
  * @property {'email'} identity_kind
  * @property {string} identity_value
- * @property {import('$djibb/auth/rules').AccountRole} role
+ * @property {import('@djibb/protocol/auth/rules').AccountRole} role
  * @property {string} inviter_account_id
  * @property {number} time_created  unix seconds
  * @property {number} time_expires  unix seconds

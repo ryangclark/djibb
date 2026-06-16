@@ -7,10 +7,17 @@
     "license": "Apache-2.0",
     "exports": {
         ".": "./src/index.ts",
-        "./id": "./src/id/index.ts"
+        "./id": "./src/id/index.ts",
+        "./schema": "./src/schema.ts",
+        "./auth/rules": "./src/auth/rules.ts",
+        "./websocket/constants": "./src/websocket/constants.ts"
     },
     "scripts": {
         "typecheck": "tsc --noEmit -p tsconfig.json"
+    },
+    "dependencies": {
+        "replicache": "^15.0.1",
+        "zod": "^4.0.17"
     },
     "devDependencies": {
         "typescript": "^5.5.0"

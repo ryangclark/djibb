@@ -16,7 +16,7 @@ import {
     AuthorizationRoleEnum,
     AuthorizedAccountSchema,
     DefaultRoleEnum,
-} from '../src/auth/rules';
+} from '@djibb/protocol/auth/rules';
 import {
     EDIT_ROLES,
     OWNER_ROLES,

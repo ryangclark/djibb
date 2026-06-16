@@ -25,14 +25,14 @@ import {
 } from './mutators';
 import { OWNER_ROLES } from './mutators/_shared';
 
-import type { AuthorizationRole } from '../auth/rules';
+import type { AuthorizationRole } from '@djibb/protocol/auth/rules';
 import {
     encodeWSMessage,
     WS_QUERY_CLIENT_ID,
     WS_STATE,
     type MutationOutcomeStatus,
     type WSMessage,
-} from '../websocket/constants';
+} from '@djibb/protocol/websocket/constants';
 import type { Bindings } from '..';
 import {
     BadMutationError,

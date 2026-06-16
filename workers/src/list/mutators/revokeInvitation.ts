@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
-import { AccountRoleEnum } from '../../auth/rules';
+import { AccountRoleEnum } from '@djibb/protocol/auth/rules';
 import { ListSchema } from '..';
 import {
     InvitationIdentityKindEnum,

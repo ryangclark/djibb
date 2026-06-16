@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { AccountRoleEnum, InvitableRoleEnum } from '../src/auth/rules';
+import { AccountRoleEnum, InvitableRoleEnum } from '@djibb/protocol/auth/rules';
 import { argsSchema as inviteArgsSchema } from '../src/list/mutators/inviteByIdentity';
 
 const validInviteArgs = {
