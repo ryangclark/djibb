@@ -1,4 +1,5 @@
 import * as sql from './sql';
+import * as invitations from './invitations';
 
 /**
  * The `EntityStore` port (ADR 0014 Decision B).
@@ -26,8 +27,22 @@ type DropSqlArg<F> = F extends (sql: SqlStorage, ...rest: infer R) => infer Ret
     ? (...rest: R) => Ret
     : never;
 
+/**
+ * The DO-resident `pending_invites` helpers from `./invitations` (ADR
+ * 0009) are part of the same `SqlStorage` boundary as `./sql`, so they
+ * join the port. Only the three single-row helpers the invitation
+ * mutators call are surfaced — the table DDL, D1 projection, and
+ * reconciler stay backend-internal.
+ */
+type InvitationPortFns = Pick<
+    typeof invitations,
+    'getPendingInvite' | 'insertPendingInvite' | 'tombstonePendingInvite'
+>;
+
 export type EntityStore = {
     [K in keyof typeof sql]: DropSqlArg<(typeof sql)[K]>;
+} & {
+    [K in keyof InvitationPortFns]: DropSqlArg<InvitationPortFns[K]>;
 };
 
 /**
@@ -86,5 +101,8 @@ export function createSqlStorageEntityStore(storage: SqlStorage): EntityStore {
         getMutationLog: bind(sql.getMutationLog),
         setListItemValue: bind(sql.setListItemValue),
         setReplicacheClientGroup: bind(sql.setReplicacheClientGroup),
+        getPendingInvite: bind(invitations.getPendingInvite),
+        insertPendingInvite: bind(invitations.insertPendingInvite),
+        tombstonePendingInvite: bind(invitations.tombstonePendingInvite),
     };
 }

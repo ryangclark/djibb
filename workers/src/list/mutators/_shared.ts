@@ -72,12 +72,11 @@ export type MutationEnvelopeArgs = z.infer<typeof MutationEnvelopeArgsSchema>;
 /** Context passed to every server mutator after dispatch validation. */
 export type ServerMutatorCtx = {
     /**
-     * Raw DO storage. Retained for mutators that still issue direct
-     * `sql.exec(...)` queries (e.g. set-family CAS pre-checks). New
-     * helper calls should go through `store` (the EntityStore port).
+     * The EntityStore port (ADR 0014) — every storage read/write a
+     * mutator needs goes through here. No raw `SqlStorage` on the ctx:
+     * that is what keeps this type (and the whole mutator registry)
+     * free of Cloudflare types so it can live in `@djibb/protocol`.
      */
-    sql: SqlStorage;
-    /** The EntityStore port (ADR 0014) — storage-bound `./sql` helpers. */
     store: EntityStore;
     role: AuthorizationRole;
     accountId: string | null;

@@ -6,12 +6,10 @@ import {
     type AuthorizationRules,
 } from '@djibb/protocol/auth/rules';
 import { BadMutationError, NotFoundError } from '@djibb/protocol/errors';
-import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
+import { ListSchema } from '@djibb/protocol/list';
 import {
     InvitationIdentityKindEnum,
-    getPendingInvite,
     normalizeIdentityValue,
-    tombstonePendingInvite,
 } from '../invitations';
 import { parseStoredAuthorizationRules, toStoredValue } from './_shared';
 import type {
@@ -69,7 +67,7 @@ export const requiredRole: readonly AuthorizationRole[] =
 
 export const server: ServerMutator<Args> = (
     { listId, identity_kind, identity_value },
-    { sql, store, nextVersion, accountId, timestamp_client }
+    { store, nextVersion, accountId, timestamp_client }
 ) => {
     if (!accountId) {
         // The HTTP preflight rejects this before we get here, but the
@@ -85,7 +83,7 @@ export const server: ServerMutator<Args> = (
 
     // Re-read the live pending row from the DO. The HTTP preflight
     // checks D1, which is a projection; this read is authoritative.
-    const invite = getPendingInvite(sql, {
+    const invite = store.getPendingInvite({
         identity_kind,
         identity_value: normalizedValue,
     });
@@ -107,16 +105,7 @@ export const server: ServerMutator<Args> = (
 
     // Read the entity's current authorization_rules so we can splice
     // the acceptor into `authorized_accounts`.
-    const rows = sql
-        .exec(
-            `SELECT authorization_rules FROM list_elements
-             WHERE id = ?
-               AND type IN (${ENTITY_ROW_TYPES_SQL_LIST})
-               AND time_deleted IS NULL;`,
-            listId
-        )
-        .toArray();
-    const row = rows[0];
+    const row = store.getLiveEntityCasRow(listId);
     if (!row) {
         // Entity was deleted between preflight and commit.
         return { status: 'gone' };
@@ -150,7 +139,7 @@ export const server: ServerMutator<Args> = (
     // Tombstone the pending invite — bumps version so the next pull
     // surfaces `op:'del'` to anyone (e.g. owners) cached on the
     // `pending_invites/*` keyspace.
-    tombstonePendingInvite(sql, {
+    store.tombstonePendingInvite({
         identity_kind,
         identity_value: normalizedValue,
         nowSeconds,

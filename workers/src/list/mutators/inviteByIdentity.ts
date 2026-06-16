@@ -6,8 +6,6 @@ import { ListSchema } from '@djibb/protocol/list';
 import {
     INVITATION_TTL_MS,
     InvitationIdentityKindEnum,
-    insertPendingInvite,
-    getPendingInvite,
     normalizeIdentityValue,
 } from '../invitations';
 import { OWNER_ROLES, toStoredValue } from './_shared';
@@ -58,7 +56,7 @@ export const requiredRole = OWNER_ROLES;
 
 export const server: ServerMutator<Args> = (
     { listId, identity_kind, identity_value, role },
-    { sql, store, nextVersion, accountId, timestamp_client }
+    { store, nextVersion, accountId, timestamp_client }
 ) => {
     const inviter_account_id = accountId;
     if (!inviter_account_id) {
@@ -82,7 +80,7 @@ export const server: ServerMutator<Args> = (
     // (kind, value) primary key would conflict on insert; the
     // explicit check converts it to a structured 'stale' outcome and
     // surfaces a friendlier error path.
-    const existing = getPendingInvite(sql, {
+    const existing = store.getPendingInvite({
         identity_kind,
         identity_value: normalizedValue,
     });
@@ -95,7 +93,7 @@ export const server: ServerMutator<Args> = (
     const time_created = Math.floor(nowMs / 1000);
     const time_expires = Math.floor((nowMs + INVITATION_TTL_MS) / 1000);
 
-    insertPendingInvite(sql, {
+    store.insertPendingInvite({
         identity_kind,
         identity_value: normalizedValue,
         role,

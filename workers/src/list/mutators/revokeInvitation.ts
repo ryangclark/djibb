@@ -6,7 +6,6 @@ import { ListSchema } from '@djibb/protocol/list';
 import {
     InvitationIdentityKindEnum,
     normalizeIdentityValue,
-    tombstonePendingInvite,
 } from '../invitations';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type {
@@ -55,7 +54,7 @@ export type RevokePreState = {
 
 export const server: ServerMutator<Args> = (
     { listId, identity_kind, identity_value },
-    { sql, store, nextVersion, timestamp_client }
+    { store, nextVersion, timestamp_client }
 ) => {
     const normalizedValue = normalizeIdentityValue(
         identity_kind,
@@ -72,7 +71,7 @@ export const server: ServerMutator<Args> = (
     // row (ADR 0009 Slice 2). The post-commit reconciler picks up the
     // disappearance from `listPendingInvites` and flips the D1 audit
     // row to status='revoked'.
-    const tombstoned = tombstonePendingInvite(sql, {
+    const tombstoned = store.tombstonePendingInvite({
         identity_kind,
         identity_value: normalizedValue,
         nowSeconds,

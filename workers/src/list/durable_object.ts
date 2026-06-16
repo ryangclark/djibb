@@ -1679,7 +1679,6 @@ export class DjibbList extends DurableObject {
 
         try {
             const result = executeServerMutation(envelopeResult.mutation, {
-                sql: this.sql,
                 store: createSqlStorageEntityStore(this.sql),
                 role: authorizedRole,
                 nextVersion,
