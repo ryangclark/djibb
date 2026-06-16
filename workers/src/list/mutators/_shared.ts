@@ -10,7 +10,7 @@ import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
 import type { AuthorizationRole, AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { UnexpectedError } from '@djibb/protocol/errors';
 import { DatelikeToDateSchema } from '@djibb/protocol/schema';
-import type { EntityStore } from '../store';
+import type { MutatorStore } from '@djibb/protocol/list/store';
 
 /**
  * Roles permitted to mutate list state. Anonymous (`ownerless`) lists
@@ -72,12 +72,14 @@ export type MutationEnvelopeArgs = z.infer<typeof MutationEnvelopeArgsSchema>;
 /** Context passed to every server mutator after dispatch validation. */
 export type ServerMutatorCtx = {
     /**
-     * The EntityStore port (ADR 0014) — every storage read/write a
-     * mutator needs goes through here. No raw `SqlStorage` on the ctx:
-     * that is what keeps this type (and the whole mutator registry)
-     * free of Cloudflare types so it can live in `@djibb/protocol`.
+     * The mutator storage port (ADR 0014, `MutatorStore`) — every
+     * storage read/write a mutator needs goes through here. No raw
+     * `SqlStorage` on the ctx: that is what keeps this type (and the
+     * whole mutator registry) free of Cloudflare types so it can live
+     * in `@djibb/protocol`. The backend's full `EntityStore` is a
+     * structural superset, handed in at the DO call site.
      */
-    store: EntityStore;
+    store: MutatorStore;
     role: AuthorizationRole;
     accountId: string | null;
     timestamp_client: Date | null;

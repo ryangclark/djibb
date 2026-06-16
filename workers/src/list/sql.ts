@@ -24,6 +24,14 @@ import {
 } from '../replicache';
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { DefaultAuthorizationRules } from '@djibb/protocol/list/constants';
+import type {
+    FieldUpdateOutcome,
+    GroupFieldsBatchEntry,
+    ItemFieldsBatchEntry,
+    ListGroupWritableFields,
+    ListItemWritableFields,
+    SetMetaFieldOutcome,
+} from '@djibb/protocol/list/store';
 import type { MutationEnvelope, MutationStatus } from './mutators';
 
 /**
@@ -948,13 +956,6 @@ export function unarchiveListGroups(
 }
 
 /**
- * Outcome of `setEntityMetaField`. `gone` means the target row is
- * missing or soft-deleted; surfaced for parity with other set-family
- * helpers. ADR 0005 §"Defensive conflict policy".
- */
-export type SetMetaFieldOutcome = 'applied' | 'gone';
-
-/**
  * Read-modify-write a single key inside an entity row's `meta` JSON
  * column. Pass `value: null` to remove the key; if removing it
  * empties the object, the whole column is set back to NULL (so the
@@ -1246,33 +1247,6 @@ export function setItemValueAndVersion(
     }
 }
 
-/**
- * Writable fields on a list item. All optional — callers pass only the
- * keys they want to change. Immutable columns (id, type, time_created)
- * and auto-managed columns (version, time_updated, time_deleted) are
- * not in this surface; archive/restore goes through a separate mutator.
- */
-export type ListItemWritableFields = Partial<{
-    description: string;
-    name: string;
-    parent_element_ref: string;
-    references_entity_id: string | null;
-    value: Quantity;
-}>;
-
-/**
- * Outcome of an attempted field-level update.
- *
- *  - `applied` — write landed.
- *  - `stale`   — `expected` was present and didn't match current state;
- *                the entire mutation was a no-op (CAS conflict, ADR 0005).
- *  - `gone`    — target row not found / soft-deleted.
- *
- * `stale` and `gone` are silently dropped today; B.1 wires them into
- * the per-mutation outcome channel (ADR 0006).
- */
-export type FieldUpdateOutcome = 'applied' | 'stale' | 'gone';
-
 // JSON-stringify roundtrip used by CAS comparison. Stable for the
 // shapes stored in list_elements (primitives, null, Quantity object).
 function eq(a: unknown, b: unknown): boolean {
@@ -1404,12 +1378,6 @@ function checkItemCAS(
     return true;
 }
 
-export type ItemFieldsBatchEntry = {
-    itemId: string;
-    fields: ListItemWritableFields;
-    expected?: ListItemWritableFields;
-};
-
 /**
  * Bulk field-level item update for `setItemsAtomic`. All-or-nothing
  * across the batch: pre-checks every entry's `expected` against
@@ -1458,18 +1426,6 @@ export function updateListItemsFieldsAtomic(
     }
     return 'applied';
 }
-
-/**
- * Writable fields on a list group. Symmetric to `ListItemWritableFields`;
- * `child_element_refs` is intentionally excluded — reorder/create/archive
- * mutators own that array (A.7 / A.4 / A.5). Auto-managed columns are
- * the same set as items.
- */
-export type ListGroupWritableFields = Partial<{
-    description: string;
-    name: string;
-    parent_element_ref: string;
-}>;
 
 /**
  * Field-level group update for the `setGroupFields` mutator. Same
@@ -1564,12 +1520,6 @@ function checkGroupCAS(
     }
     return true;
 }
-
-export type GroupFieldsBatchEntry = {
-    groupId: string;
-    fields: ListGroupWritableFields;
-    expected?: ListGroupWritableFields;
-};
 
 /**
  * Bulk field-level group update for `setGroupsAtomic`. Symmetric to
