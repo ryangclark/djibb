@@ -27,7 +27,6 @@
 
 import type { Context } from 'hono';
 import { setCookie } from 'hono/cookie';
-import { customAlphabet, urlAlphabet } from 'nanoid';
 import { z } from 'zod';
 
 import type { HonoEnv } from '..';
@@ -37,6 +36,7 @@ import {
     GetAccountByEmail,
 } from '../account/service';
 import { CreateSession } from './session';
+import { randomString } from '../id';
 import {
     BaseSessionCookieAttributes,
     CookieNames,
@@ -45,7 +45,7 @@ import {
 
 // ─── Tunables ───────────────────────────────────────────────────────────────
 
-const TOKEN_LENGTH = 32; // ~190 bits over urlAlphabet — comfortable margin.
+const TOKEN_LENGTH = 32; // ~192 bits over the 64-char URL-safe alphabet.
 const TOKEN_TTL_SECONDS = 15 * 60; // ADR 0010 policy default.
 const MAGIC_PURPOSE_SIGNIN = 'signin';
 
@@ -91,9 +91,6 @@ export type RateLimitReason =
 type RateLimitResult =
     | { ok: true }
     | { ok: false; reason: RateLimitReason; retryAfterSec: number };
-
-// nanoid customAlphabet matches the workspace-invitations convention.
-const tokenGen = customAlphabet(urlAlphabet, TOKEN_LENGTH);
 
 // Email matching — pragmatic shape check, not RFC 5321 compliant.
 // Verification of *deliverability* happens implicitly: an attacker
@@ -422,7 +419,7 @@ export async function handleMagicRequest(c: Context<HonoEnv>) {
         );
     }
 
-    const rawToken = tokenGen();
+    const rawToken = randomString(TOKEN_LENGTH);
     const tokenHash = await hashToken(rawToken);
     const expires = now + TOKEN_TTL_SECONDS;
 
