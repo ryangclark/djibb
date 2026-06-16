@@ -1,8 +1,8 @@
 .DS_Store
 node_modules
-/pages/build
-/pages/.svelte-kit
-/pages/package
+/apps/djibb-com/build
+/apps/djibb-com/.svelte-kit
+/apps/djibb-com/package
 # Path-agnostic so these stay ignored after the ADR-0014 package moves
 # (workers → packages/server-cf, pages → apps/djibb-com). Local wrangler
 # state and the secret-bearing .dev.vars must never be committed; the

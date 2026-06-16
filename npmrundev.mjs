@@ -21,7 +21,7 @@ const WORKER_URL = `http://localhost:${WORKER_PORT}`;
 const WORKER_READY_TIMEOUT_MS = 30_000;
 
 const workersDir = resolve(__dirname, 'packages/server-cf');
-const pagesDir = resolve(__dirname, 'pages');
+const pagesDir = resolve(__dirname, 'apps/djibb-com');
 
 // Start the Worker via its own `npm run dev` script (same approach we
 // use for SvelteKit below). Passing `--port` after `--` forwards it to

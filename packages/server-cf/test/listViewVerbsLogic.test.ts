@@ -7,7 +7,7 @@ import {
     isSelectionEqualToSet,
     stepQuantityValue,
     toggleQuantityValue,
-} from '../../../pages/src/lib/keymap/listViewVerbsLogic.js';
+} from '../../../apps/djibb-com/src/lib/keymap/listViewVerbsLogic.js';
 
 describe('toggleQuantityValue', () => {
     it('bool unchecked → checked', () => {

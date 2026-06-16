@@ -1,7 +1,8 @@
 {
-	"name": "@djibb/pages",
+	"name": "@djibb/djibb-com",
 	"version": "0.0.1",
 	"private": true,
+	"license": "PolyForm-Shield-1.0.0",
 	"scripts": {
 		"dev": "vite dev",
 		"build": "vite build",
