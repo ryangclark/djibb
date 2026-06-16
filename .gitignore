@@ -16,3 +16,8 @@ vite.config.ts.timestamp-*
 # they travel with the repo (the contribute-a-list skill, future skills).
 .claude/*
 !.claude/skills/
+
+# Generated TypeScript declaration files under workers/src (the .ts
+# sources are authoritative; keep the hand-written env.d.ts).
+workers/src/**/*.d.ts
+!workers/src/**/env.d.ts
