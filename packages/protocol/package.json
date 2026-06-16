@@ -16,6 +16,7 @@
         "./list/fork": "./src/list/fork.ts",
         "./list/slug": "./src/list/slug.ts",
         "./list/markdown": "./src/list/markdown.ts",
+        "./list/invitations": "./src/list/invitations.ts",
         "./auth/rules": "./src/auth/rules.ts",
         "./auth/constants": "./src/auth/constants.ts",
         "./websocket/constants": "./src/websocket/constants.ts"

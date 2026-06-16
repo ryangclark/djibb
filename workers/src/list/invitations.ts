@@ -7,6 +7,45 @@ import {
 } from '@djibb/protocol/auth/rules';
 import type { Account } from '@djibb/protocol/account';
 import { UnexpectedError } from '@djibb/protocol/errors';
+import {
+    INVITATION_TTL_MS,
+    InvitationIdentityKindEnum,
+    InvitationStatusEnum,
+    PendingInviteRowSchema,
+    normalizeIdentityValue,
+    type InvitationIdentityKind,
+    type InvitationStatus,
+    type PendingInviteRow,
+} from '@djibb/protocol/list/invitations';
+
+// Re-export the pure invitation protocol so existing
+// `from '../invitations'` importers in this package keep resolving while
+// the SQL/D1 helpers below stay backend-resident (ADR 0014).
+export {
+    INVITATION_TTL_MS,
+    InvitationIdentityKindEnum,
+    InvitationStatusEnum,
+    PendingInviteRowSchema,
+    normalizeIdentityValue,
+    type InvitationIdentityKind,
+    type InvitationStatus,
+    type PendingInviteRow,
+};
+
+/**
+ * Parse a raw DO row into a `PendingInviteRow`, throwing on malformed
+ * data. Stays backend-side (not in `@djibb/protocol`) because it logs
+ * via `console`, which the runtime-agnostic protocol package doesn't
+ * assume as a global.
+ */
+function parseInviteRow(raw: unknown): PendingInviteRow {
+    const parsed = PendingInviteRowSchema.safeParse(raw);
+    if (!parsed.success) {
+        console.error('parseInviteRow error:', parsed.error.format(), raw);
+        throw new UnexpectedError();
+    }
+    return parsed.data;
+}
 
 /**
  * ADR 0009: tokenless DO-resident invitations.
@@ -34,38 +73,6 @@ import { UnexpectedError } from '@djibb/protocol/errors';
  * identity-kind-agnostic so `username` / `account_id` slot in as data,
  * not migrations.
  */
-
-export const InvitationIdentityKindEnum = z.enum(['email']);
-export type InvitationIdentityKind = z.infer<typeof InvitationIdentityKindEnum>;
-
-export const InvitationStatusEnum = z.enum([
-    'pending',
-    'accepted',
-    'revoked',
-    'expired',
-]);
-export type InvitationStatus = z.infer<typeof InvitationStatusEnum>;
-
-/**
- * Default invitation lifetime — 7 days, per ADR 0009 §"Other policy
- * defaults." Lazy-expire on read (no cron); the index keeps the row
- * until cascade-delete or audit prune.
- */
-export const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-/**
- * Normalize an identity value for storage and lookup. Email is
- * lower-cased; everything else passes through unchanged. The DO and D1
- * index both index by the normalized form so case-mismatched lookups
- * resolve cleanly.
- */
-export function normalizeIdentityValue(
-    kind: InvitationIdentityKind,
-    value: string
-): string {
-    if (kind === 'email') return value.trim().toLowerCase();
-    return value.trim();
-}
 
 // ---------- DO-side SQL ----------
 
@@ -109,37 +116,6 @@ export function ensurePendingInvitesTable(sql: SqlStorage): void {
     } catch {
         /* column already exists */
     }
-}
-
-export type PendingInviteRow = {
-    identity_kind: InvitationIdentityKind;
-    identity_value: string;
-    role: AccountRole;
-    inviter_account_id: string;
-    time_created: number; // unix seconds
-    time_expires: number; // unix seconds
-    time_deleted: number | null; // unix seconds; null ⇒ live
-    version: number;
-};
-
-const PendingInviteRowSchema = z.object({
-    identity_kind: InvitationIdentityKindEnum,
-    identity_value: z.string(),
-    role: AccountRoleEnum,
-    inviter_account_id: z.string(),
-    time_created: z.number(),
-    time_expires: z.number(),
-    time_deleted: z.number().nullable(),
-    version: z.number(),
-});
-
-function parseInviteRow(raw: unknown): PendingInviteRow {
-    const parsed = PendingInviteRowSchema.safeParse(raw);
-    if (!parsed.success) {
-        console.error('parseInviteRow error:', parsed.error.format(), raw);
-        throw new UnexpectedError();
-    }
-    return parsed.data;
 }
 
 // Common column projection — includes `time_deleted` so callers can
