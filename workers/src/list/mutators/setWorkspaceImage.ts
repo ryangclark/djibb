@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
 import { WorkspaceEntitySchema } from '@djibb/protocol/list';
-import { setEntityMetaField } from '../sql';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -75,14 +74,14 @@ function readCurrentImage(
 
 export const server: ServerMutator<Args> = (
     { workspaceId, image, expected },
-    { sql, nextVersion }
+    { sql, store, nextVersion }
 ) => {
     if (expected !== undefined) {
         const cur = readCurrentImage(sql, workspaceId);
         if (!cur.found) return { status: 'gone' };
         if (cur.image !== expected.image) return { status: 'stale' };
     }
-    const outcome = setEntityMetaField(sql, {
+    const outcome = store.setEntityMetaField({
         entityId: workspaceId,
         entityType: 'workspace',
         key: META_IMAGE_KEY,

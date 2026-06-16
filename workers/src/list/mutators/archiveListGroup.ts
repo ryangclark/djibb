@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 import { ListGroupSchema } from '@djibb/protocol/list';
-import { archiveListGroup as archiveListGroupSql } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     ClientMutator,
@@ -23,8 +22,8 @@ export const requiredRole = EDIT_ROLES;
  * row, so not in `ENTITY_METADATA_MUTATORS`. Cascade-on-archive is a
  * D.5 UI question; this mutator only flips the group row.
  */
-export const server: ServerMutator<Args> = ({ id }, { sql, nextVersion }) => {
-    archiveListGroupSql(sql, { groupId: id, version: nextVersion });
+export const server: ServerMutator<Args> = ({ id }, { store, nextVersion }) => {
+    store.archiveListGroup({ groupId: id, version: nextVersion });
 };
 
 export const client: ClientMutator<Args> = async (

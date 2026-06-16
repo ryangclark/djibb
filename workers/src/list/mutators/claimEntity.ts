@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
-import { setEntityAuthorizationRules, setEntityWorkspaceId } from '../sql';
 import {
     assertSingleOwner,
     findOwnerAccountId,
@@ -70,7 +69,7 @@ export const requiredRole = [AuthorizationRoleEnum.enum.ownerless] as const;
 
 export const server: ServerMutator<Args> = (
     { listId, workspaceId },
-    { sql, nextVersion, accountId }
+    { sql, store, nextVersion, accountId }
 ) => {
     if (!accountId) {
         // Anonymous callers also resolve to `ownerless`; there's no
@@ -111,7 +110,7 @@ export const server: ServerMutator<Args> = (
     };
 
     assertSingleOwner(updated);
-    setEntityAuthorizationRules(sql, {
+    store.setEntityAuthorizationRules({
         entityId: listId,
         authorization_rules: updated,
         version: nextVersion,
@@ -120,7 +119,7 @@ export const server: ServerMutator<Args> = (
     // File it under the claimer's personal workspace, if they have one.
     // Same version — both UPDATEs touch disjoint columns of one row.
     if (workspaceId) {
-        setEntityWorkspaceId(sql, {
+        store.setEntityWorkspaceId({
             entityId: listId,
             workspace_id: workspaceId,
             version: nextVersion,

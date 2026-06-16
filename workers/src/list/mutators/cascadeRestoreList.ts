@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 import { ID_LENGTH, IdTypes } from '@djibb/protocol/id';
-import { unarchiveEntity } from '../sql';
 import { SYSTEM_ROLES, toStoredValue } from './_shared';
 import type { ClientMutator, Inverse, ServerMutator } from './_shared';
 
@@ -73,9 +72,9 @@ export const requiredRole = SYSTEM_ROLES;
 
 export const server: ServerMutator<Args> = (
     { listId },
-    { sql, nextVersion }
+    { sql, store, nextVersion }
 ) => {
-    unarchiveEntity(sql, { entityId: listId, version: nextVersion });
+    store.unarchiveEntity({ entityId: listId, version: nextVersion });
 };
 
 /**

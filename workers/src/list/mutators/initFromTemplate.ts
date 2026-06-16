@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { ValidationError } from '../../errors';
-import { createElement } from '../sql';
 import { ListSchema, TemplateSchema } from '@djibb/protocol/list';
 import type { List, Template } from '@djibb/protocol/list';
 import { DEFAULT_LIST_TITLE } from '.';
@@ -70,7 +69,7 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     args,
-    { sql, accountId, timestamp_client }
+    { store, accountId, timestamp_client }
 ) => {
     const ts = timestamp_client ?? new Date();
     const authorization_rules: AuthorizationRules = accountId
@@ -102,7 +101,7 @@ export const server: ServerMutator<Args> = (
         version: 0,
     };
 
-    createElement(sql, entity);
+    store.createElement(entity);
 };
 
 export const client: ClientMutator<Args> = async (

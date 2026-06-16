@@ -8,7 +8,6 @@ import {
     normalizeIdentityValue,
     tombstonePendingInvite,
 } from '../invitations';
-import { setListVersion } from '../sql';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -56,7 +55,7 @@ export type RevokePreState = {
 
 export const server: ServerMutator<Args> = (
     { listId, identity_kind, identity_value },
-    { sql, nextVersion, timestamp_client }
+    { sql, store, nextVersion, timestamp_client }
 ) => {
     const normalizedValue = normalizeIdentityValue(
         identity_kind,
@@ -89,7 +88,7 @@ export const server: ServerMutator<Args> = (
     // Bump entity version so the next pull diffs surface the
     // invite's removal (Slice 2 emits `op:'del'` for the key).
     try {
-        setListVersion(sql, nextVersion);
+        store.setListVersion(nextVersion);
     } catch (error) {
         console.warn('`revokeInvitation` setListVersion warned:', error);
     }

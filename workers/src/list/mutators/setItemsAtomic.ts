@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { ListItemSchema, QuantitySchema } from '@djibb/protocol/list';
 import { NotFoundError } from '../../errors';
-import { updateListItemsFieldsAtomic } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -47,9 +46,9 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     { items },
-    { sql, nextVersion }
+    { store, nextVersion }
 ) => {
-    const outcome = updateListItemsFieldsAtomic(sql, {
+    const outcome = store.updateListItemsFieldsAtomic({
         entries: items.map(e => ({
             itemId: e.id,
             fields: e.fields,

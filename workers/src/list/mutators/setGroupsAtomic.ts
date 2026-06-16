@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { ListGroupSchema } from '@djibb/protocol/list';
 import { NotFoundError } from '../../errors';
-import { updateListGroupsFieldsAtomic } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -41,9 +40,9 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     { groups },
-    { sql, nextVersion }
+    { store, nextVersion }
 ) => {
-    const outcome = updateListGroupsFieldsAtomic(sql, {
+    const outcome = store.updateListGroupsFieldsAtomic({
         entries: groups.map(e => ({
             groupId: e.id,
             fields: e.fields,

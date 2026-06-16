@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { ValidationError } from '../../errors';
-import { createElement, insertListGroup, insertListItem } from '../sql';
 import {
     ListGroupSchema,
     ListItemSchema,
@@ -96,7 +95,7 @@ function rulesFor(accountId: string | null): AuthorizationRules {
           };
 }
 
-export const server: ServerMutator<Args> = (args, { sql, accountId, nextVersion, timestamp_client }) => {
+export const server: ServerMutator<Args> = (args, { store, accountId, nextVersion, timestamp_client }) => {
     const ts = timestamp_client ?? new Date();
 
     const entity: List = {
@@ -119,12 +118,12 @@ export const server: ServerMutator<Args> = (args, { sql, accountId, nextVersion,
     // Entity first (createElement guards entity-row types), then the
     // copied children at this mutation's version so a fresh pull
     // (`version > -1`) returns the whole tree.
-    createElement(sql, entity);
+    store.createElement(entity);
     for (const group of args.groups) {
-        insertListGroup(sql, { ...group, version: nextVersion });
+        store.insertListGroup({ ...group, version: nextVersion });
     }
     for (const item of args.items) {
-        insertListItem(sql, { ...item, version: nextVersion });
+        store.insertListItem({ ...item, version: nextVersion });
     }
 };
 

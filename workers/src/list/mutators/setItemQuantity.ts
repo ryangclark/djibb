@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { QuantitySchema } from '@djibb/protocol/list';
 import { NotFoundError } from '../../errors';
 import { ID_LENGTH, IdTypes } from '@djibb/protocol/id';
-import { setItemValueAndVersion } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -35,7 +34,7 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     { itemId, quantity, expected },
-    { sql, nextVersion }
+    { sql, store, nextVersion }
 ) => {
     if (expected?.quantity !== undefined) {
         const rows = sql
@@ -56,7 +55,7 @@ export const server: ServerMutator<Args> = (
             return { status: 'stale' };
         }
     }
-    setItemValueAndVersion(sql, {
+    store.setItemValueAndVersion({
         itemId,
         value: quantity,
         version: nextVersion,

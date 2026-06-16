@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 import { ListItemSchema } from '@djibb/protocol/list';
-import { unarchiveListItems as unarchiveListItemsSql } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     ClientMutator,
@@ -20,9 +19,9 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     { ids },
-    { sql, nextVersion }
+    { store, nextVersion }
 ) => {
-    unarchiveListItemsSql(sql, { itemIds: ids, version: nextVersion });
+    store.unarchiveListItems({ itemIds: ids, version: nextVersion });
 };
 
 export const client: ClientMutator<Args> = async (

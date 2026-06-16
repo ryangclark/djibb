@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { BadMutationError } from '../../errors';
 import { ListElementUnion, ListItemSchema } from '@djibb/protocol/list';
-import { appendChildElementRef, insertListItem } from '../sql';
 import { IdTypes } from '@djibb/protocol/id';
 import { ListSchema, TemplateSchema } from '@djibb/protocol/list';
 import { EDIT_ROLES, toStoredValue } from './_shared';
@@ -17,9 +16,9 @@ export type Args = z.infer<typeof argsSchema>;
 export const name = 'createListItem' as const;
 export const requiredRole = EDIT_ROLES;
 
-export const server: ServerMutator<Args> = ({ item }, { sql, nextVersion }) => {
-    insertListItem(sql, { ...item, version: nextVersion });
-    appendChildElementRef(sql, item.parent_element_ref, item.id);
+export const server: ServerMutator<Args> = ({ item }, { store, nextVersion }) => {
+    store.insertListItem({ ...item, version: nextVersion });
+    store.appendChildElementRef(item.parent_element_ref, item.id);
 };
 
 export const client: ClientMutator<Args> = async (tx, { item }) => {

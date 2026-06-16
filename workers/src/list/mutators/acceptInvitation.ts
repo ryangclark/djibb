@@ -13,7 +13,6 @@ import {
     normalizeIdentityValue,
     tombstonePendingInvite,
 } from '../invitations';
-import { setEntityAuthorizationRules, setListVersion } from '../sql';
 import { parseStoredAuthorizationRules, toStoredValue } from './_shared';
 import type {
     ClientMutator,
@@ -70,7 +69,7 @@ export const requiredRole: readonly AuthorizationRole[] =
 
 export const server: ServerMutator<Args> = (
     { listId, identity_kind, identity_value },
-    { sql, nextVersion, accountId, timestamp_client }
+    { sql, store, nextVersion, accountId, timestamp_client }
 ) => {
     if (!accountId) {
         // The HTTP preflight rejects this before we get here, but the
@@ -141,7 +140,7 @@ export const server: ServerMutator<Args> = (
             // `user`-set. Workspace-inherited blocks keep their tag.
             set_by: current.set_by === 'defaults' ? 'user' : current.set_by,
         };
-        setEntityAuthorizationRules(sql, {
+        store.setEntityAuthorizationRules({
             entityId: listId,
             authorization_rules: updated,
             version: nextVersion,
@@ -163,7 +162,7 @@ export const server: ServerMutator<Args> = (
     // the pull diff still picks up the invite tombstone.
     if (alreadyMember) {
         try {
-            setListVersion(sql, nextVersion);
+            store.setListVersion(nextVersion);
         } catch (error) {
             console.warn('`acceptInvitation` setListVersion warned:', error);
         }

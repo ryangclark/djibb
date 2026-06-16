@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 import { ListSchema } from '@djibb/protocol/list';
-import { unarchiveEntity, unarchiveEntityAndClearSlot } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     ClientMutator,
@@ -32,7 +31,7 @@ export const requiredRole = EDIT_ROLES;
  */
 export const server: ServerMutator<Args> = (
     { listId },
-    { sql, nextVersion }
+    { sql, store, nextVersion }
 ) => {
     // ADR 0008 / ADR 0011 §Step 10c: restoring a workspace that was
     // `slot='personal_workspace'` demotes it to an ordinary team
@@ -51,13 +50,13 @@ export const server: ServerMutator<Args> = (
         )
         .toArray()[0] as { type?: string; slot?: string | null } | undefined;
     if (row?.type === 'workspace' && row?.slot === 'personal_workspace') {
-        unarchiveEntityAndClearSlot(sql, {
+        store.unarchiveEntityAndClearSlot({
             entityId: listId,
             version: nextVersion,
         });
         return;
     }
-    unarchiveEntity(sql, { entityId: listId, version: nextVersion });
+    store.unarchiveEntity({ entityId: listId, version: nextVersion });
 };
 
 export const client: ClientMutator<Args> = async (

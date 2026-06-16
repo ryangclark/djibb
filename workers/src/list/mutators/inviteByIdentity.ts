@@ -10,7 +10,6 @@ import {
     getPendingInvite,
     normalizeIdentityValue,
 } from '../invitations';
-import { setListVersion } from '../sql';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type {
     ClientMutator,
@@ -59,7 +58,7 @@ export const requiredRole = OWNER_ROLES;
 
 export const server: ServerMutator<Args> = (
     { listId, identity_kind, identity_value, role },
-    { sql, nextVersion, accountId, timestamp_client }
+    { sql, store, nextVersion, accountId, timestamp_client }
 ) => {
     const inviter_account_id = accountId;
     if (!inviter_account_id) {
@@ -113,7 +112,7 @@ export const server: ServerMutator<Args> = (
     // `listVersion`; doing it here means the bump survives even if
     // the entity row was archived and the standard path no-ops.
     try {
-        setListVersion(sql, nextVersion);
+        store.setListVersion(nextVersion);
     } catch (error) {
         // setListVersion logs on rowsWritten mismatch but doesn't
         // throw. Defensive in case that policy changes.

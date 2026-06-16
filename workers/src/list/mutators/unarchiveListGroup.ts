@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 import { ListGroupSchema } from '@djibb/protocol/list';
-import { unarchiveListGroup as unarchiveListGroupSql } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     ClientMutator,
@@ -18,8 +17,8 @@ export type Args = z.infer<typeof argsSchema>;
 export const name = 'unarchiveListGroup' as const;
 export const requiredRole = EDIT_ROLES;
 
-export const server: ServerMutator<Args> = ({ id }, { sql, nextVersion }) => {
-    unarchiveListGroupSql(sql, { groupId: id, version: nextVersion });
+export const server: ServerMutator<Args> = ({ id }, { store, nextVersion }) => {
+    store.unarchiveListGroup({ groupId: id, version: nextVersion });
 };
 
 export const client: ClientMutator<Args> = async (

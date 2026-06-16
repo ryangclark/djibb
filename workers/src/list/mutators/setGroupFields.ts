@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { ListGroupSchema } from '@djibb/protocol/list';
 import { NotFoundError } from '../../errors';
-import { updateListGroupFields } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -39,9 +38,9 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     { id, fields, expected },
-    { sql, nextVersion }
+    { store, nextVersion }
 ) => {
-    const outcome = updateListGroupFields(sql, {
+    const outcome = store.updateListGroupFields({
         groupId: id,
         fields,
         expected,

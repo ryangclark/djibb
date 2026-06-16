@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
 import { WorkspaceEntitySchema } from '@djibb/protocol/list';
-import { bumpWorkspaceVersion } from '../sql';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -70,7 +69,7 @@ export const requiredRole = OWNER_ROLES;
 
 export const server: ServerMutator<Args> = (
     { workspaceId },
-    { sql, nextVersion },
+    { store, nextVersion },
 ) => {
     // The preflight ran the actual D1 slug claim. All we do here is
     // bump version + time_updated on the DO entity row so the
@@ -79,7 +78,7 @@ export const server: ServerMutator<Args> = (
     // rows; a misrouted call against a list/template id throws
     // `NotFoundError` (which the dispatcher converts to a skip-and-
     // ack — defensive, not security-critical).
-    bumpWorkspaceVersion(sql, { workspaceId, version: nextVersion });
+    store.bumpWorkspaceVersion({ workspaceId, version: nextVersion });
 };
 
 export const client: ClientMutator<Args> = async (

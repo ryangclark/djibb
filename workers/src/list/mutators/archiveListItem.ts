@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 import { ListItemSchema } from '@djibb/protocol/list';
-import { archiveListItem as archiveListItemSql } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     ClientMutator,
@@ -24,8 +23,8 @@ export const requiredRole = EDIT_ROLES;
  * Items remain in `list_elements` with `time_deleted` set; the pull
  * handler emits a `del` op against the row.
  */
-export const server: ServerMutator<Args> = ({ id }, { sql, nextVersion }) => {
-    archiveListItemSql(sql, { itemId: id, version: nextVersion });
+export const server: ServerMutator<Args> = ({ id }, { store, nextVersion }) => {
+    store.archiveListItem({ itemId: id, version: nextVersion });
 };
 
 export const client: ClientMutator<Args> = async (
