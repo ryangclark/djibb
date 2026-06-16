@@ -33,10 +33,10 @@
 	// so our inner Proxy's get trap never fires). $state.raw keeps
 	// the value un-wrapped and still triggers reactivity on
 	// re-assignment, which is all the template gate cares about.
-	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
+	/** @type {import("@djibb/client/types").ClientListMutators | undefined} */
 	let mutators = $state.raw();
 
-	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
+	/** @type {import("@djibb/client/types").ClientListMutators | undefined} */
 	let mutateWithUndo = $state.raw();
 
 	/** @type {any} */

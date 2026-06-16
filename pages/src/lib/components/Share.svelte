@@ -63,7 +63,7 @@
 	 *     authorization_rules: import('@djibb/protocol/auth/rules').AuthorizationRules,
 	 *     workspace_id?: string | null
 	 * }} entity
-	 * @property {import('$lib/replicache/types').ClientListMutators} mutators
+	 * @property {import('@djibb/client/types').ClientListMutators} mutators
 	 * @property {string | null} currentAccountId
 	 * @property {string} backHref
 	 * @property {PendingInvite[]} [pendingInvites]

@@ -25,8 +25,8 @@
 	 * @typedef Props
 	 * @property {*} data List data
 	 * @property {import('@djibb/protocol/list').List} list
-	 * @property {import('$lib/replicache/types').ClientListMutators} mutators
-	 * @property {import('$lib/replicache/types').ClientListMutators} mutateWithUndo
+	 * @property {import('@djibb/client/types').ClientListMutators} mutators
+	 * @property {import('@djibb/client/types').ClientListMutators} mutateWithUndo
 	 *   User-firing path that pushes stack entries. The list-view
 	 *   verbs (Cmd+Backspace, Space, +/−) call this so undo restores
 	 *   them; system / native-input handlers stay on `mutators`.

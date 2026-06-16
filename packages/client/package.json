@@ -6,7 +6,8 @@
     "type": "module",
     "license": "Apache-2.0",
     "exports": {
-        "./undoStack": "./src/undoStack.js"
+        "./undoStack": "./src/undoStack.js",
+        "./types": "./src/types.d.ts"
     },
     "scripts": {
         "typecheck": "tsc --noEmit -p tsconfig.json"

@@ -28,10 +28,10 @@
 	// JavaScript Proxies; Svelte's deep-reactive state proxy
 	// short-circuits property access on them. See /l/[id]/+page.svelte
 	// for the full explanation.
-	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
+	/** @type {import("@djibb/client/types").ClientListMutators | undefined} */
 	let mutators = $state.raw();
 
-	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
+	/** @type {import("@djibb/client/types").ClientListMutators | undefined} */
 	let mutateWithUndo = $state.raw();
 
 	/** @type {any} */

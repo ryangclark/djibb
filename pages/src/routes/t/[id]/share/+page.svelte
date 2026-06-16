@@ -23,7 +23,7 @@
 	// @ts-ignore
 	let list = $derived(list_data?.[data.list_id]);
 
-	/** @type {import("$lib/replicache/types.js").ClientListMutators | undefined} */
+	/** @type {import("@djibb/client/types").ClientListMutators | undefined} */
 	let mutators = $state.raw();
 
 	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */

@@ -37,7 +37,7 @@
 	/**
 	 * @typedef {Object} Props
 	 * @property {string} entityId  prefixed id, e.g. "l/…", "w/…"
-	 * @property {import('$lib/replicache/types').ClientListMutators} mutators
+	 * @property {import('@djibb/client/types').ClientListMutators} mutators
 	 * @property {string | null} currentAccountId
 	 * @property {PendingInvite[]} [pendingInvites]
 	 *   Live pending invitations, surfaced by the `pending_invites/*`

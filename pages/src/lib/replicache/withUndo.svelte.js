@@ -39,7 +39,7 @@ import {
  * system path; they don't recurse through this layer.
  *
  * Pure stack mechanics (push limit, load/save, key shape) live in
- * `./undoStack.js` — that module is testable without a Svelte
+ * `@djibb/client/undoStack` — that module is testable without a Svelte
  * harness. This file is the reactive shell.
  *
  * Friction tier (ADR 0005): mutators in `FRICTION_TIER_MUTATORS`
@@ -113,7 +113,7 @@ export function createUndoRuntime({ client, mutate, accountId, listId, onConfirm
      * the named `ClientListMutators` surface so call sites can reach
      * individual mutators (`mutateWithUndo.setItemFields(...)`).
      *
-     * @type {import('./types').ClientListMutators}
+     * @type {import('@djibb/client/types').ClientListMutators}
      */
     const mutateWithUndo = new Proxy(/** @type {any} */ ({}), {
         get(_, name) {
