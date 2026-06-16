@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { NotFoundError } from '../../errors';
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
-import { setEntityAuthorizationRules } from '../sql';
 import {
     countOwners,
     OWNER_ROLES,
@@ -69,7 +68,7 @@ function readCurrentRules(
 
 export const server: ServerMutator<Args> = (
     { listId, targetAccountId },
-    { sql, role, nextVersion }
+    { sql, store, role, nextVersion }
 ) => {
     const current = readCurrentRules(sql, listId);
     if (!current) return { status: 'gone' };
@@ -101,7 +100,7 @@ export const server: ServerMutator<Args> = (
         authorized_accounts: nextAccounts,
     };
 
-    setEntityAuthorizationRules(sql, {
+    store.setEntityAuthorizationRules({
         entityId: listId,
         authorization_rules: updated,
         version: nextVersion,

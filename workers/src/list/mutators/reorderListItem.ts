@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
 import { ListItemSchema } from '@djibb/protocol/list';
-import { reorderChildElement } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -45,7 +44,7 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     { id, toIndex, expected },
-    { sql, nextVersion }
+    { sql, store, nextVersion }
 ) => {
     // Look up the item's current parent so reorder doesn't need a
     // parentId arg (the array invariant lives on the item record).
@@ -60,7 +59,7 @@ export const server: ServerMutator<Args> = (
     if (!row) return { status: 'gone' };
     const parentId = row['parent_element_ref'] as string;
 
-    const outcome = reorderChildElement(sql, {
+    const outcome = store.reorderChildElement({
         parentId,
         childId: id,
         toIndex,

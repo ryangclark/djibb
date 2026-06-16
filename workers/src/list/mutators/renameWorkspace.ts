@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
 import { WorkspaceEntitySchema } from '@djibb/protocol/list';
-import { renameWorkspaceEntity } from '../sql';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -44,7 +43,7 @@ export const requiredRole = OWNER_ROLES;
 
 export const server: ServerMutator<Args> = (
     { workspaceId, name: newName, expected },
-    { sql, nextVersion }
+    { sql, store, nextVersion }
 ) => {
     if (expected?.name !== undefined) {
         const rows = sql
@@ -60,7 +59,7 @@ export const server: ServerMutator<Args> = (
         if (!row) return { status: 'gone' };
         if (row.name !== expected.name) return { status: 'stale' };
     }
-    renameWorkspaceEntity(sql, {
+    store.renameWorkspaceEntity({
         workspaceId,
         name: newName,
         version: nextVersion,

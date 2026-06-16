@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
-import { setEntityWorkspaceId } from '../sql';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -65,7 +64,7 @@ export const requiredRole = OWNER_ROLES;
 
 export const server: ServerMutator<Args> = (
     { listId, workspace_id, expected },
-    { sql, nextVersion }
+    { sql, store, nextVersion }
 ) => {
     const rows = sql
         .exec(
@@ -91,7 +90,7 @@ export const server: ServerMutator<Args> = (
     // Idempotent no-op: already in the target workspace.
     if (current === workspace_id) return;
 
-    setEntityWorkspaceId(sql, {
+    store.setEntityWorkspaceId({
         entityId: listId,
         workspace_id,
         version: nextVersion,

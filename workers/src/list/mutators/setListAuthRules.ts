@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { AuthorizationRulesSchema } from '@djibb/protocol/auth/rules';
 import { NotFoundError } from '../../errors';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
-import { setEntityAuthorizationRules } from '../sql';
 import { assertSingleOwner, OWNER_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -52,7 +51,7 @@ export const requiredRole = OWNER_ROLES;
 
 export const server: ServerMutator<Args> = (
     { listId, authorization_rules, expected },
-    { sql, nextVersion }
+    { sql, store, nextVersion }
 ) => {
     // ADR 0011 §Decision C: at most one principal `'owner'` per entity.
     // Non-principal collaborators with the same powers go through the
@@ -81,7 +80,7 @@ export const server: ServerMutator<Args> = (
             return { status: 'stale' };
         }
     }
-    setEntityAuthorizationRules(sql, {
+    store.setEntityAuthorizationRules({
         entityId: listId,
         authorization_rules,
         version: nextVersion,

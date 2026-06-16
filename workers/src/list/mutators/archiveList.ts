@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { BadMutationError, NotFoundError } from '../../errors';
 import { ListSchema } from '@djibb/protocol/list';
-import { archiveEntity } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type { ClientMutator, Inverse, ServerMutator } from './_shared';
 
@@ -35,7 +34,7 @@ export const requiredRole = EDIT_ROLES;
  */
 export const server: ServerMutator<Args> = (
     { listId },
-    { sql, nextVersion }
+    { sql, store, nextVersion }
 ) => {
     // ADR 0008 / ADR 0011 §Step 10c: personal workspaces cannot be
     // archived directly. The Settings UI swaps Delete for Start Fresh
@@ -57,7 +56,7 @@ export const server: ServerMutator<Args> = (
             `\`archiveList\` cannot archive a personal workspace; use \`startFresh\` instead`
         );
     }
-    archiveEntity(sql, { entityId: listId, version: nextVersion });
+    store.archiveEntity({ entityId: listId, version: nextVersion });
 };
 
 export const client: ClientMutator<Args> = async (

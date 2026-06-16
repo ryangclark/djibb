@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
-import { setEntityDescription } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {
     CapturePreState,
@@ -36,7 +35,7 @@ export const requiredRole = EDIT_ROLES;
 
 export const server: ServerMutator<Args> = (
     { listId, description, expected },
-    { sql, nextVersion }
+    { sql, store, nextVersion }
 ) => {
     if (expected?.description !== undefined) {
         const rows = sql
@@ -55,7 +54,7 @@ export const server: ServerMutator<Args> = (
         const current = (row.description as string | null) ?? '';
         if (current !== expected.description) return { status: 'stale' };
     }
-    setEntityDescription(sql, {
+    store.setEntityDescription({
         entityId: listId,
         description,
         version: nextVersion,

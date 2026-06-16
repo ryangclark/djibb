@@ -4,7 +4,6 @@ import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { NotFoundError } from '../../errors';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
-import { setEntityAuthorizationRules } from '../sql';
 import {
     assertSingleOwner,
     findOwnerAccountId,
@@ -73,7 +72,7 @@ export const requiredRole = [AuthorizationRoleEnum.enum.owner] as const;
 
 export const server: ServerMutator<Args> = (
     { listId, toAccountId, fromAccountId },
-    { sql, nextVersion, accountId }
+    { sql, store, nextVersion, accountId }
 ) => {
     if (!accountId) {
         // The role gate already requires `'owner'` which requires an
@@ -142,7 +141,7 @@ export const server: ServerMutator<Args> = (
     };
 
     assertSingleOwner(updated);
-    setEntityAuthorizationRules(sql, {
+    store.setEntityAuthorizationRules({
         entityId: listId,
         authorization_rules: updated,
         version: nextVersion,

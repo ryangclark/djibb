@@ -7,7 +7,6 @@ import {
 } from '@djibb/protocol/auth/rules';
 import { NotFoundError } from '../../errors';
 import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema, isEntityRowType } from '@djibb/protocol/list';
-import { setEntityAuthorizationRules } from '../sql';
 import {
     countOwners,
     parseStoredAuthorizationRules,
@@ -57,7 +56,7 @@ export const requiredRole: readonly AuthorizationRole[] =
 
 export const server: ServerMutator<Args> = (
     { listId },
-    { sql, accountId, nextVersion }
+    { sql, store, accountId, nextVersion }
 ) => {
     if (!accountId) return { status: 'gone' };
 
@@ -101,7 +100,7 @@ export const server: ServerMutator<Args> = (
         authorized_accounts: nextAccounts,
     };
 
-    setEntityAuthorizationRules(sql, {
+    store.setEntityAuthorizationRules({
         entityId: listId,
         authorization_rules: updated,
         version: nextVersion,

@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { BadMutationError, NotFoundError } from '../../errors';
 import { WorkspaceEntitySchema } from '@djibb/protocol/list';
-import { archiveEntity } from '../sql';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type { ClientMutator, Inverse, ServerMutator } from './_shared';
 
@@ -75,7 +74,7 @@ export const requiredRole = OWNER_ROLES;
  */
 export const server: ServerMutator<Args> = (
     { workspaceId },
-    { sql, nextVersion }
+    { sql, store, nextVersion }
 ) => {
     const row = sql
         .exec(
@@ -94,7 +93,7 @@ export const server: ServerMutator<Args> = (
             `\`startFresh\` requires a personal workspace; got type=${row.type} slot=${row.slot}`
         );
     }
-    archiveEntity(sql, { entityId: workspaceId, version: nextVersion });
+    store.archiveEntity({ entityId: workspaceId, version: nextVersion });
 };
 
 /**

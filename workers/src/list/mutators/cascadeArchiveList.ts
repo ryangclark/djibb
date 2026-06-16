@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 import { ID_LENGTH, IdTypes } from '@djibb/protocol/id';
-import { archiveEntity } from '../sql';
 import { SYSTEM_ROLES, toStoredValue } from './_shared';
 import type { ClientMutator, Inverse, ServerMutator } from './_shared';
 
@@ -69,9 +68,9 @@ export const requiredRole = SYSTEM_ROLES;
 
 export const server: ServerMutator<Args> = (
     { listId, cascade_source },
-    { sql, nextVersion }
+    { store, nextVersion }
 ) => {
-    archiveEntity(sql, {
+    store.archiveEntity({
         entityId: listId,
         version: nextVersion,
         cascadeSource: cascade_source,
