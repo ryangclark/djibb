@@ -4,7 +4,7 @@ import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList, asLocalList } from '../src/list/durable_object';
 import { IdTypes, newId } from '@djibb/protocol/id';
-import type { Quantity } from '../src/list';
+import type { Quantity } from '@djibb/protocol/list';
 
 // End-to-end integration coverage for the checkbox-toggle path:
 //   initList push → seed an item via SQL → setItemQuantity push → pull.

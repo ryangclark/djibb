@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { ListItemSchema, QuantitySchema } from '..';
+import { ListItemSchema, QuantitySchema } from '@djibb/protocol/list';
 import { NotFoundError } from '../../errors';
 import { updateListItemsFieldsAtomic } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';

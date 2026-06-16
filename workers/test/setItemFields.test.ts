@@ -4,7 +4,7 @@ import type { PushRequestV1, ReadonlyJSONValue } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '@djibb/protocol/id';
-import type { ListItem, Quantity } from '../src/list';
+import type { ListItem, Quantity } from '@djibb/protocol/list';
 
 // End-to-end coverage for `setItemFields` (umbrella set-family
 // mutator from ADR 0005). Mirrors the createListItem / setItemQuantity

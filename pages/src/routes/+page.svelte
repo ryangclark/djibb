@@ -24,12 +24,12 @@
 
 	import { initList } from '$lib/replicache/index.svelte.js';
 	import { getSessionState } from '$lib/session.svelte';
-	import { SEED_POOL_LIST_ID } from '$djibb/list';
+	import { SEED_POOL_LIST_ID } from '@djibb/protocol/list';
 	import { IdTypes, newId } from '@djibb/protocol/id';
 	import BlankPreview from '$lib/components/BlankPreview.svelte';
 
 	/**
-	 * @typedef {import('$djibb/list').ListItem} ListItem
+	 * @typedef {import('@djibb/protocol/list').ListItem} ListItem
 	 */
 
 	const sessionState = getSessionState();
@@ -42,7 +42,7 @@
 	/** @type {{ [id: string]: import('replicache').ReadonlyJSONValue }} */
 	let poolData = $state({});
 
-	/** @type {import('$djibb/list').List | undefined} */
+	/** @type {import('@djibb/protocol/list').List | undefined} */
 	// @ts-ignore — Replicache returns ReadonlyJSONValue; shape is a List.
 	let pool = $derived(poolData[SEED_POOL_LIST_ID]);
 
@@ -83,7 +83,7 @@
 	/** @type {{ [id: string]: import('replicache').ReadonlyJSONValue }} */
 	let blankData = $state({});
 
-	/** @type {import('$djibb/list').Template | undefined} */
+	/** @type {import('@djibb/protocol/list').Template | undefined} */
 	// @ts-ignore — Replicache returns ReadonlyJSONValue; shape is a Template.
 	let blank = $derived(chosenBlankId ? blankData[chosenBlankId] : undefined);
 
@@ -130,7 +130,7 @@
 	 * faithful copy (what the DO fork-verify preflight checks).
 	 *
 	 * @param {string} blankId
-	 * @param {import('$djibb/list').Template} src
+	 * @param {import('@djibb/protocol/list').Template} src
 	 * @param {{ [id: string]: import('replicache').ReadonlyJSONValue }} map
 	 */
 	function buildMintPlan(blankId, src, map) {

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
-import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '..';
+import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
 import { setEntityWorkspaceId } from '../sql';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type {

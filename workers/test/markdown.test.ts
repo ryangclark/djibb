@@ -22,7 +22,7 @@ import {
     type MarkdownItem,
     type MarkdownList,
 } from '../src/list/markdown';
-import type { List, ListGroup, ListItem } from '../src/list/index';
+import type { List, ListGroup, ListItem } from '@djibb/protocol/list';
 
 // --- fixtures --------------------------------------------------------------
 

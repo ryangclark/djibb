@@ -31,7 +31,7 @@ import {
 
 /**
  * @param {object} input
- * @param {() => import('$djibb/list').List | import('$djibb/list').Template} input.getList
+ * @param {() => import('@djibb/protocol/list').List | import('@djibb/protocol/list').Template} input.getList
  * @param {() => Record<string, any>} input.getData
  * @param {() => string} input.getListId
  *   Thunk for the active list id (same reactivity reason as

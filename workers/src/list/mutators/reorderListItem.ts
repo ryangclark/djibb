@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
-import { ListItemSchema } from '..';
+import { ListItemSchema } from '@djibb/protocol/list';
 import { reorderChildElement } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {

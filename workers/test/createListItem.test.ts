@@ -4,7 +4,7 @@ import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList, asLocalList } from '../src/list/durable_object';
 import { IdTypes, newId } from '@djibb/protocol/id';
-import type { ListItem, Quantity } from '../src/list';
+import type { ListItem, Quantity } from '@djibb/protocol/list';
 
 // End-to-end coverage for the "append item" path:
 //   initList push → createListItem push → verify SQL + pull patch.

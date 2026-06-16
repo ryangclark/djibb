@@ -7,7 +7,7 @@
 
 	import { LIST_ELEMENT_TYPES } from '$djibb/list/constants';
 
-	import { ListItemSchema, ListSchema, TemplateSchema } from '$djibb/list/index';
+	import { ListItemSchema, ListSchema, TemplateSchema } from '@djibb/protocol/list';
 	import { IdTypes } from '@djibb/protocol/id';
 	import { z } from 'zod';
 	import { newId } from '@djibb/protocol/id';
@@ -24,7 +24,7 @@
 	/**
 	 * @typedef Props
 	 * @property {*} data List data
-	 * @property {import('$djibb/list').List} list
+	 * @property {import('@djibb/protocol/list').List} list
 	 * @property {import('$lib/replicache/types').ClientListMutators} mutators
 	 * @property {import('$lib/replicache/types').ClientListMutators} mutateWithUndo
 	 *   User-firing path that pushes stack entries. The list-view
@@ -46,7 +46,7 @@
 	// the type literal and the ID prefix.
 	const EntitySchema = z.discriminatedUnion('type', [ListSchema, TemplateSchema]);
 
-	/** @type {import('$djibb/list').List | import('$djibb/list').Template} */
+	/** @type {import('@djibb/protocol/list').List | import('@djibb/protocol/list').Template} */
 	let list = $derived.by(() => {
 		if (typeof rawList === 'string') {
 			const result = tryCatch(() => JSON.parse(rawList));
@@ -117,7 +117,7 @@
 	}
 
 	/**
-	 * @param {import('$djibb/list').ListItem} item
+	 * @param {import('@djibb/protocol/list').ListItem} item
 	 * @param {string | null} entityId Pass null to clear the reference.
 	 */
 	async function pickReference(item, entityId) {
@@ -382,7 +382,7 @@
 		}
 
 		const now = new Date();
-		/** @type {import("$djibb/list/index").ListItem} */
+		/** @type {import("@djibb/protocol/list").ListItem} */
 		const listItem = {
 			id: newId('item'),
 			name: name.toString(),
@@ -607,7 +607,7 @@
 {/snippet}
 
 {#snippet group(
-	/** @type {import("$djibb/list/index.ts").ListGroup} */
+	/** @type {import("@djibb/protocol/list").ListGroup} */
 	elem
 )}
 	{@const is_collapsed = cursor.isCollapsed(elem.id)}
@@ -640,7 +640,7 @@
 {/snippet}
 
 {#snippet item(
-	/** @type {import("$djibb/list/index.ts").ListItem} */
+	/** @type {import("@djibb/protocol/list").ListItem} */
 	elem
 )}
 	{@const is_cursor = cursor.isCursor(elem.id)}
@@ -694,7 +694,7 @@
 {/snippet}
 
 {#snippet reference_picker(
-	/** @type {import("$djibb/list/index.ts").ListItem} */
+	/** @type {import("@djibb/protocol/list").ListItem} */
 	elem
 )}
 	<div class="ml-6 mb-2 border border-slate-300 bg-white rounded p-2 max-w-md">
@@ -762,7 +762,7 @@
 {/snippet}
 
 {#snippet list_description(
-	/** @type {import("$djibb/list/index.ts").ListElement['description']} */
+	/** @type {import("@djibb/protocol/list").ListElement['description']} */
 	description
 )}
 	{#if list.description}

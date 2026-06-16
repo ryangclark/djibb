@@ -8,8 +8,8 @@ import {
     ListItemSchema,
     ListSchema,
     TemplateSchema,
-} from '..';
-import type { List } from '..';
+} from '@djibb/protocol/list';
+import type { List } from '@djibb/protocol/list';
 import { DEFAULT_LIST_TITLE } from '.';
 import {
     EDIT_ROLES,

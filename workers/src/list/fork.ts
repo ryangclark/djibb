@@ -1,4 +1,4 @@
-import type { Quantity } from '.';
+import type { Quantity } from '@djibb/protocol/list';
 
 /**
  * Server-authoritative fork verification (Phase 1b of the Minted List

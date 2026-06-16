@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { BadMutationError, NotFoundError } from '../../errors';
-import { WorkspaceEntitySchema } from '..';
+import { WorkspaceEntitySchema } from '@djibb/protocol/list';
 import { archiveEntity } from '../sql';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type { ClientMutator, Inverse, ServerMutator } from './_shared';

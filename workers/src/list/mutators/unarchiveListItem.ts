@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { ListItemSchema } from '..';
+import { ListItemSchema } from '@djibb/protocol/list';
 import { unarchiveListItem as unarchiveListItemSql } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type {

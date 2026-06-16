@@ -1,10 +1,10 @@
 import { z } from 'zod';
 
 import { BadMutationError } from '../../errors';
-import { ListElementUnion, ListItemSchema } from '..';
+import { ListElementUnion, ListItemSchema } from '@djibb/protocol/list';
 import { appendChildElementRef, insertListItem } from '../sql';
 import { IdTypes } from '@djibb/protocol/id';
-import { ListSchema, TemplateSchema } from '..';
+import { ListSchema, TemplateSchema } from '@djibb/protocol/list';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type { ClientMutator, Inverse, ServerMutator } from './_shared';
 

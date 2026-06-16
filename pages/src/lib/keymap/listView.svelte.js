@@ -31,7 +31,7 @@ import {
 
 /**
  * @param {object} input
- * @param {() => import('$djibb/list').List | import('$djibb/list').Template} input.getList
+ * @param {() => import('@djibb/protocol/list').List | import('@djibb/protocol/list').Template} input.getList
  *   Thunk so callers can pass a $derived value without unwrapping it
  *   at construction time.
  * @param {() => Record<string, any>} input.getData

@@ -4,8 +4,8 @@ import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { ValidationError } from '../../errors';
 import { createElement } from '../sql';
 import { defaultSlugForId } from '../entity';
-import { SlotEnum, WorkspaceEntitySchema } from '..';
-import type { WorkspaceEntity } from '..';
+import { SlotEnum, WorkspaceEntitySchema } from '@djibb/protocol/list';
+import type { WorkspaceEntity } from '@djibb/protocol/list';
 import { DEFAULT_LIST_TITLE } from '.';
 import {
     EDIT_ROLES,

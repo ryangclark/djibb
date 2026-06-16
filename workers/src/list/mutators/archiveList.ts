@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { BadMutationError, NotFoundError } from '../../errors';
-import { ListSchema } from '..';
+import { ListSchema } from '@djibb/protocol/list';
 import { archiveEntity } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';
 import type { ClientMutator, Inverse, ServerMutator } from './_shared';

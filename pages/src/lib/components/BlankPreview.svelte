@@ -18,9 +18,9 @@
 	import { IdTypes } from '@djibb/protocol/id';
 
 	/**
-	 * @typedef {import('$djibb/list/index.ts').Template} Template
-	 * @typedef {import('$djibb/list/index.ts').ListGroup} ListGroup
-	 * @typedef {import('$djibb/list/index.ts').ListItem} ListItem
+	 * @typedef {import('@djibb/protocol/list').Template} Template
+	 * @typedef {import('@djibb/protocol/list').ListGroup} ListGroup
+	 * @typedef {import('@djibb/protocol/list').ListItem} ListItem
 	 */
 
 	let {

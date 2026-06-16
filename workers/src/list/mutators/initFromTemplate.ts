@@ -3,8 +3,8 @@ import { z } from 'zod';
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { ValidationError } from '../../errors';
 import { createElement } from '../sql';
-import { ListSchema, TemplateSchema } from '..';
-import type { List, Template } from '..';
+import { ListSchema, TemplateSchema } from '@djibb/protocol/list';
+import type { List, Template } from '@djibb/protocol/list';
 import { DEFAULT_LIST_TITLE } from '.';
 import {
     EDIT_ROLES,

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
-import { WorkspaceEntitySchema } from '..';
+import { WorkspaceEntitySchema } from '@djibb/protocol/list';
 import { setEntityMetaField } from '../sql';
 import { OWNER_ROLES, toStoredValue } from './_shared';
 import type {

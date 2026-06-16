@@ -8,7 +8,7 @@ import {
     type ListItem,
     ListSchema,
     type Quantity,
-} from '.';
+} from '@djibb/protocol/list';
 import {
     BadMutationError,
     DjibbError,

@@ -4,7 +4,7 @@ import type { PushRequestV1, ReadonlyJSONValue } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '@djibb/protocol/id';
-import type { ListItem } from '../src/list';
+import type { ListItem } from '@djibb/protocol/list';
 
 // End-to-end coverage for `setItemsAtomic` (bulk umbrella, ADR 0005).
 // The single-entry CAS path is already covered by setItemFields tests;

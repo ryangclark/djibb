@@ -1,8 +1,8 @@
 import { z } from 'zod';
 
-import { AuthorizationRulesSchema } from '@djibb/protocol/auth/rules';
-import { ID_LENGTH, IdTypes } from '@djibb/protocol/id';
-import { DatelikeToDateSchema } from '@djibb/protocol/schema';
+import { AuthorizationRulesSchema } from '../auth/rules';
+import { ID_LENGTH, IdTypes } from '../id';
+import { DatelikeToDateSchema } from '../schema';
 
 /**
  * Well-known "slot" assignments for entities that fill a singular role

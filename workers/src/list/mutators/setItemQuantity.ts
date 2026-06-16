@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { QuantitySchema } from '..';
+import { QuantitySchema } from '@djibb/protocol/list';
 import { NotFoundError } from '../../errors';
 import { ID_LENGTH, IdTypes } from '@djibb/protocol/id';
 import { setItemValueAndVersion } from '../sql';

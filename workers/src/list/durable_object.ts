@@ -16,7 +16,7 @@ import {
     type ListItem,
     type Template,
     type WorkspaceEntity,
-} from './index';
+} from '@djibb/protocol/list';
 import { forkContentSignature, mintArgsSignature } from './fork';
 import {
     executeServerMutation,

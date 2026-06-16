@@ -4,7 +4,7 @@ import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '@djibb/protocol/id';
-import type { ListItem } from '../src/list';
+import type { ListItem } from '@djibb/protocol/list';
 import * as archiveListItem from '../src/list/mutators/archiveListItem';
 import * as unarchiveListItem from '../src/list/mutators/unarchiveListItem';
 import * as archiveListItems from '../src/list/mutators/archiveListItems';

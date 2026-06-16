@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
 import { AccountRoleEnum } from '@djibb/protocol/auth/rules';
-import { ListSchema } from '..';
+import { ListSchema } from '@djibb/protocol/list';
 import {
     InvitationIdentityKindEnum,
     normalizeIdentityValue,

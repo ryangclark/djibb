@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { NotFoundError } from '../../errors';
 import { AccountRoleEnum, type AuthorizationRules } from '@djibb/protocol/auth/rules';
-import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '..';
+import { ENTITY_ROW_TYPES_SQL_LIST, ListSchema } from '@djibb/protocol/list';
 import { setEntityAuthorizationRules } from '../sql';
 import {
     assertSingleOwner,

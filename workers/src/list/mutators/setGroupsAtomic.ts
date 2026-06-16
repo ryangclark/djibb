@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { ListGroupSchema } from '..';
+import { ListGroupSchema } from '@djibb/protocol/list';
 import { NotFoundError } from '../../errors';
 import { updateListGroupsFieldsAtomic } from '../sql';
 import { EDIT_ROLES, toStoredValue } from './_shared';

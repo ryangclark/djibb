@@ -11,8 +11,8 @@ import {
     ListSchema,
     SlotEnum,
     TemplateSchema,
-} from '..';
-import type { List, Template } from '..';
+} from '@djibb/protocol/list';
+import type { List, Template } from '@djibb/protocol/list';
 import { DEFAULT_LIST_TITLE } from '.';
 import {
     EDIT_ROLES,

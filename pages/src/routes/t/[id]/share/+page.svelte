@@ -19,7 +19,7 @@
 	/** @type {{ [x: string]: import('replicache').ReadonlyJSONValue }} */
 	let list_data = $state({});
 
-	/** @type {import('$djibb/list').List} */
+	/** @type {import('@djibb/protocol/list').List} */
 	// @ts-ignore
 	let list = $derived(list_data?.[data.list_id]);
 
