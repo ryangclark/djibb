@@ -1704,6 +1704,7 @@ export class DjibbList extends DurableObject {
                 // The role gate denied this mutation. How we respond turns
                 // on whether the actor is AUTHENTICATED, because that's the
                 // only way to tell a permanent denial from a transient one.
+                // Full rationale + rejected alternatives: ADR 0020.
                 if (authorizedAccounts.length > 0) {
                     // Authenticated actor whose role genuinely can't run
                     // this mutation (e.g. a signed-in viewer, or an editor
