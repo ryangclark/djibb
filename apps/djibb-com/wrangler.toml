@@ -1,5 +1,10 @@
 name = "djibb"
 compatibility_date = "2026-06-16"
+# SvelteKit's server runtime imports node:async_hooks; without this flag
+# SSR/server routes throw at runtime. (Separate from the server-cf
+# Worker, which sets its own flag.) compatibility_date is past
+# 2024-09-23, so bare "nodejs_compat" gives the v2 behavior.
+compatibility_flags = [ "nodejs_compat" ]
 
 # Required for Pages to honor this config file at all — without it
 # wrangler ignores the whole file (and the bindings below) and deploys
