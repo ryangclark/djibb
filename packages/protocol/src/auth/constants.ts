@@ -9,8 +9,14 @@ import { z } from 'zod';
  */
 export const OAUTH_PROVIDER = z.enum(['djibb', 'google']);
 
-// Please ensure these match `OAUTH_PROVIDER` enum!
-export const OAUTH_PROVIDER_PRETTY = {
+export type OAuthProvider = z.infer<typeof OAUTH_PROVIDER>;
+
+/**
+ * Display name per provider. Typed as a total `Record` over the enum so
+ * adding a member to `OAUTH_PROVIDER` is a compile error here until the
+ * pretty name is supplied — the type enforces what a comment used to ask.
+ */
+export const OAUTH_PROVIDER_PRETTY: Record<OAuthProvider, string> = {
     djibb: 'djibb',
     google: 'Google',
 };

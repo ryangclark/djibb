@@ -23,7 +23,23 @@ const MATRIX = {
 
 const problems = [];
 
-for (const [tierDir, expected] of Object.entries(MATRIX)) {
+// Discover the workspace tiers from the root package.json `workspaces`
+// field — the single source of truth — instead of hardcoding them, so a
+// new tier (e.g. "libs/*") can't silently escape the gate. Each tier must
+// have a MATRIX rule; an unknown tier fails closed rather than passing
+// unchecked.
+const rootPkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
+const tierDirs = [...new Set((rootPkg.workspaces ?? []).map((ws) => ws.split('/')[0]))];
+
+for (const tierDir of tierDirs) {
+	const expected = MATRIX[tierDir];
+	if (!expected) {
+		problems.push(
+			`workspace tier "${tierDir}/" has no ADR-0016 license rule — add it to the MATRIX in scripts/check-licenses.mjs.`
+		);
+		continue;
+	}
+
 	const tierPath = join(repoRoot, tierDir);
 	if (!existsSync(tierPath)) continue;
 

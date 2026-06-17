@@ -1,3 +1,5 @@
+import type { MutatorStore } from '@djibb/protocol/list/store';
+
 import * as sql from './sql';
 import * as invitations from './invitations';
 
@@ -44,6 +46,20 @@ export type EntityStore = {
 } & {
     [K in keyof InvitationPortFns]: DropSqlArg<InvitationPortFns[K]>;
 };
+
+/**
+ * Compile-time guard for ADR 0014's "EntityStore is a structural superset
+ * of MutatorStore" invariant. The runtime relies on it (mutators receive
+ * `ctx.store: MutatorStore` but are handed the full `EntityStore`); this
+ * assignment makes the relationship a build error if it ever breaks —
+ * e.g. a `MutatorStore` method whose signature no `./sql` helper backs —
+ * rather than depending on the incidental check at the DO call site.
+ */
+type _EntityStoreSatisfiesMutatorStore = EntityStore extends MutatorStore
+    ? true
+    : never;
+const _entityStoreSatisfiesMutatorStore: _EntityStoreSatisfiesMutatorStore = true;
+void _entityStoreSatisfiesMutatorStore;
 
 /**
  * Cloudflare adapter: bind every `./sql` helper to a fixed `SqlStorage`
