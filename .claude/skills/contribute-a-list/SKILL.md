@@ -17,11 +17,27 @@ description: >-
 You have been asked for a list. You may:
 
 - **Read lists** at `djibb/seed`.
-- **Contribute your own** list in that directory, named by a unique kebab-case slug (note the directory is untracked in the root).
+- **Contribute your own** list in that directory, named by a unique kebab-case slug (note the directory is untracked in the root). The one-step way, from the repo root, writes the file into the holding pen *and* round-trips it for you:
+
+  ```sh
+  npm run djibb -- contribute --path <draft.md>   # or -m '<inline markdown>'
+  ```
+
+  It resolves the slug (flag → `slug:` frontmatter → kebab-cased `# Title`),
+  synthesizes the holding-pen frontmatter if the source has none, writes
+  `seed/contributed/<slug>.md`, and round-trips it on the spot.
+
 - **View formatting** at [LIST-FORMAT.md](./LIST-FORMAT.md).
-- **Self-check the round-trip** (optional but satisfying). From `workers/`:
-  your list should decode and re-encode to itself. If you want to be sure, parse
-  your file with `parseMarkdown` and re-`encodeMarkdown` it; equal output
-  means it's in canonical grammar.
+- **Self-check the round-trip** (optional but satisfying). Your list should
+  decode and re-encode to itself — equal output means it's in canonical
+  grammar. From the repo root:
+
+  ```sh
+  npm run djibb -- test-parse seed/contributed/<slug>.md
+  ```
+
+  reports `✓ model identity` and `✓ canonical fixpoint`. (The parser/encoder
+  live in `packages/server-cf`; `parseMarkdown` ∘ `encodeMarkdown` is what the
+  command runs under the hood if you'd rather check by hand.)
 - **Mention it** in your wrap-up so the human knows a proposal is waiting —
   e.g. "left an example List at `seed/contributed/<slug>.md`."

@@ -24,15 +24,27 @@ Optional group description.
 - [ ] Fuel — 3/10 gal        # partial count: value 3, target 10
 - [x] Olive oil — 2/2 tbsp   # complete count (value === target)
   An indented continuation line is the item's description.
+
+### A subgroup
+- [ ] Groups nest: `###`–`######` are subgroups of the group above.
 ```
 
 | djibb | Markdown |
 |---|---|
 | entity `name` | `# Heading` |
 | entity / group / item `description` | paragraph under the heading; for items, an indented continuation line |
-| `ListGroup` | `## Subheading` |
+| `ListGroup` (top level) | `## Subheading` |
+| nested `ListGroup` (subgroup) | `###`–`######`, one `#` per level deeper |
 | `ListItem`, `unit: 'boolean'` | `- [ ]` / `- [x]`, no tail |
 | `ListItem` count | `- [ ] name — <qty> <unit>` |
+
+**Groups nest, up to depth 4 (`######`).** Heading level *is* the depth:
+`##` = depth 0, `###` = depth 1, … `######` = depth 4 (the ceiling — where
+Markdown headings run out, enforced as a model invariant). A whole-line bold
+label (`**To Surgeon:**`) is lenient input for a subgroup of the most recent
+heading; it canonicalizes to that depth's heading on encode (consecutive bold
+labels are siblings, not a stack). Deeper-than-allowed input clamps rather
+than erroring. See ADR 0012 §G.
 
 **Frontmatter is emitted only when it carries something** — a Template
 type, a slug, or a lineage pointer. A plain List with none of these is just
