@@ -24,7 +24,15 @@ import { isDeepStrictEqual } from 'node:util';
 import { dirname, join, resolve } from 'node:path';
 
 import { parseMarkdown, encodeMarkdown } from '@djibb/protocol/list/markdown';
-import type { MarkdownList } from '@djibb/protocol/list/markdown';
+import type { MarkdownGroup, MarkdownList } from '@djibb/protocol/list/markdown';
+
+/** Total items in a group, recursing through nested subgroups. */
+function groupItemCount(g: MarkdownGroup): number {
+    return g.children.reduce(
+        (n, ch) => n + (ch.kind === 'item' ? 1 : groupItemCount(ch)),
+        0
+    );
+}
 
 /**
  * The seed/contributed dir of the djibb project we're standing in: walk up
@@ -101,7 +109,7 @@ async function testParseFile(path: string, label: string): Promise<FileResult> {
     // Content summary.
     const groups = model.children.filter(ch => ch.kind === 'group');
     const looseItems = model.children.filter(ch => ch.kind === 'item');
-    const grouped = groups.reduce((n, g) => n + (g.kind === 'group' ? g.items.length : 0), 0);
+    const grouped = groups.reduce((n, g) => n + (g.kind === 'group' ? groupItemCount(g) : 0), 0);
     const totalItems = looseItems.length + grouped;
     const extras: string[] = [];
     if (model.slug) extras.push(`slug=${model.slug}`);
@@ -466,28 +474,41 @@ function buildBlankContent(slug: string, blankId: string, model: MarkdownList) {
         time_deleted: null,
     });
 
+    // Mint a group and its whole subtree (ADR 0012 §G, option B): nested
+    // subgroups become real group rows parented to their enclosing group, in
+    // document order. `initList` writes whatever rows it's handed and imposes
+    // no group-parents-list rule, so nesting needs nothing more here. Ids stay
+    // deterministic from the position path, so re-promoting is idempotent.
+    const mintGroup = (g: MarkdownGroup, parentRef: string, path: string): string => {
+        const gid = detId('group', path);
+        const refs: string[] = [];
+        g.children.forEach((ch, i) => {
+            if (ch.kind === 'item') {
+                const iid = detId('item', `${path}.i${i}`);
+                items.push(mkItem(iid, gid, ch.name, ch.description, ch.quantity));
+                refs.push(iid);
+            } else {
+                refs.push(mintGroup(ch, gid, `${path}.s${i}`));
+            }
+        });
+        groups.push({
+            id: gid,
+            name: g.name,
+            ...(g.description ? { description: g.description } : {}),
+            parent_element_ref: parentRef,
+            child_element_refs: refs,
+            type: 'group',
+            version: 0,
+            time_created: ts,
+            time_updated: ts,
+            time_deleted: null,
+        });
+        return gid;
+    };
+
     model.children.forEach((child, ci) => {
         if (child.kind === 'group') {
-            const gid = detId('group', `${slug}#c${ci}`);
-            const groupItemRefs: string[] = [];
-            child.items.forEach((it, ii) => {
-                const iid = detId('item', `${slug}#c${ci}.i${ii}`);
-                items.push(mkItem(iid, gid, it.name, it.description, it.quantity));
-                groupItemRefs.push(iid);
-            });
-            groups.push({
-                id: gid,
-                name: child.name,
-                ...(child.description ? { description: child.description } : {}),
-                parent_element_ref: blankId,
-                child_element_refs: groupItemRefs,
-                type: 'group',
-                version: 0,
-                time_created: ts,
-                time_updated: ts,
-                time_deleted: null,
-            });
-            childElementRefs.push(gid);
+            childElementRefs.push(mintGroup(child, blankId, `${slug}#c${ci}`));
         } else {
             const iid = detId('item', `${slug}#c${ci}`);
             items.push(mkItem(iid, blankId, child.name, child.description, child.quantity));
@@ -683,7 +704,7 @@ async function cmdPromote(args: string[]): Promise<number> {
         const g = p.model.children.filter(ch => ch.kind === 'group').length;
         const it =
             p.model.children.filter(ch => ch.kind === 'item').length +
-            p.model.children.reduce((n, ch) => n + (ch.kind === 'group' ? ch.items.length : 0), 0);
+            p.model.children.reduce((n, ch) => n + (ch.kind === 'group' ? groupItemCount(ch) : 0), 0);
         console.log(
             `  ${c.bold(p.slug)} ${c.dim('→ ' + p.blankId)} · ${g} group(s) · ${it} item(s)`
         );

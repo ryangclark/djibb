@@ -216,10 +216,16 @@ describe('inviteByIdentity', () => {
                 },
             }),
         });
-        expect(result.error).not.toBeNull();
-        expect(result.error?.name).toMatch(/Unauthorized/i);
+        // An AUTHENTICATED actor whose role is genuinely too low is a
+        // PERMANENT denial, so `handleMutation` skip-and-acks rather than
+        // throwing: the push succeeds (no error), advances lastMutationID,
+        // and writes nothing. Replicache then reconciles the optimistic
+        // write on the next pull instead of wedging its retry loop on a
+        // 403. (An UNAUTHENTICATED denial still throws — it may be an
+        // expired session with real offline edits to preserve.)
+        expect(result.error).toBeNull();
 
-        // No DO row, no D1 row.
+        // No DO row, no D1 row — skip-and-ack writes nothing.
         const doCount = await runInDurableObject(stub, async (_i, state) =>
             state.storage.sql
                 .exec(`SELECT COUNT(*) AS c FROM pending_invites;`)
@@ -848,8 +854,11 @@ describe('revokeInvitation', () => {
                 },
             }),
         });
-        expect(revokeResult.error).not.toBeNull();
-        expect(revokeResult.error?.name).toMatch(/Unauthorized/i);
+        // Authenticated actor, role too low → PERMANENT denial →
+        // skip-and-ack (no error, nothing written, lastMutationID
+        // advances), so Replicache reconciles instead of wedging the push.
+        // See the `inviteByIdentity` editor-rejection test above.
+        expect(revokeResult.error).toBeNull();
 
         // Invite still present in both DO and D1 (live, not tombstoned).
         const doCount = await runInDurableObject(stub, async (_i, state) =>

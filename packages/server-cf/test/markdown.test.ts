@@ -34,7 +34,7 @@ const recipe: MarkdownList = {
         {
             kind: 'group',
             name: 'Ingredients',
-            items: [
+            children: [
                 bool('Chicken — skip the brine', false),
                 count('Salt', 0, 2, 'tsp'),
                 count('Olive oil', 2, 2, 'tbsp'), // complete -> [x]
@@ -44,7 +44,7 @@ const recipe: MarkdownList = {
             kind: 'group',
             name: 'Method',
             description: 'Sequential.',
-            items: [bool('Preheat oven to 425°F', true), bool('Pat chicken dry', false)],
+            children: [bool('Preheat oven to 425°F', true), bool('Pat chicken dry', false)],
         },
     ],
 };
@@ -66,10 +66,44 @@ const ungroupedOnly: MarkdownList = {
     children: [bool('A color you have no name for', false), bool('A sound that stops', true)],
 };
 
+// Nested groups (ADR 0012 §G, option B): a subgroup is a group with a group
+// parent. Canonically, items precede subgroups within a group.
+const nested: MarkdownList = {
+    type: 'template',
+    name: 'Surgical Safety',
+    children: [
+        {
+            kind: 'group',
+            name: 'Before skin incision',
+            description: 'with nurse, anaesthetist, and surgeon',
+            children: [
+                bool('Confirm the patient name', false),
+                {
+                    kind: 'group',
+                    name: 'Anticipated Critical Events',
+                    children: [
+                        {
+                            kind: 'group',
+                            name: 'To Surgeon:',
+                            children: [bool('Critical or non-routine steps?', false)],
+                        },
+                        {
+                            kind: 'group',
+                            name: 'To Nursing Team:',
+                            children: [count('Sponge count', 0, 2, 'counts')],
+                        },
+                    ],
+                },
+            ],
+        },
+    ],
+};
+
 const allFixtures: Array<[string, MarkdownList]> = [
     ['recipe (groups + descriptions)', recipe],
     ['template (frontmatter + lineage)', templateWithFrontmatter],
     ['ungrouped items only', ungroupedOnly],
+    ['nested groups (depth 2)', nested],
 ];
 
 // --- the satisfying part ---------------------------------------------------
@@ -169,11 +203,56 @@ describe('known limitations / sharp edges (ADR 0012)', () => {
         const group0 = model.children[0];
         expect(group0?.kind).toBe('group');
         if (group0?.kind === 'group') {
-            expect(group0.items.map((i: MarkdownItem) => i.name)).toEqual([
-                'Inside',
-                'MeantToBeLoose',
-            ]);
+            expect(group0.children.map(c => c.name)).toEqual(['Inside', 'MeantToBeLoose']);
         }
+    });
+});
+
+// --- nested groups & bold labels (ADR 0012 §G, option B) ------------------
+
+describe('nested groups (§G)', () => {
+    it('a deeper heading nests under the shallower one; depth = heading level', () => {
+        const md = '# X\n\n## A\n- [ ] a1\n\n### B\n- [ ] b1\n';
+        const a = parseMarkdown(md).children[0];
+        expect(a?.kind).toBe('group');
+        if (a?.kind !== 'group') return;
+        // A holds item a1 then subgroup B; B holds b1.
+        expect(a.children.map(c => c.kind)).toEqual(['item', 'group']);
+        const b = a.children[1];
+        expect(b?.kind === 'group' && b.name).toBe('B');
+    });
+
+    it('bold canonicalizes to its depth heading; consecutive bolds are siblings', () => {
+        const md = '# X\n\n## G\n\n### Sec\n**To Surgeon:**\n- [ ] a\n**To Nurse:**\n- [ ] b\n';
+        const out = encodeMarkdown(parseMarkdown(md));
+        expect(out).toContain('### Sec');
+        expect(out).toContain('#### To Surgeon:');
+        expect(out).toContain('#### To Nurse:');
+        // Siblings, not nested: only ONE depth-1 `### Sec`, two depth-2 bolds.
+        expect(out.match(/^#### /gm)).toHaveLength(2);
+        expect(out.match(/^### /gm)).toHaveLength(1);
+    });
+
+    it('a bold directly under ## lands at depth 1 (###)', () => {
+        const md = '# X\n\n## G\n**Nurse Verbally Confirms:**\n- [ ] a\n';
+        expect(encodeMarkdown(parseMarkdown(md))).toContain('### Nurse Verbally Confirms:');
+    });
+
+    it('clamps over-deep input to MAX_DEPTH (######), no 7-hash headings', () => {
+        const md = '# X\n\n## a\n### b\n#### c\n##### d\n###### e\n####### f\n';
+        const out = encodeMarkdown(parseMarkdown(md));
+        expect(out).not.toMatch(/^#######/m); // 7 hashes never emitted
+        expect(out.match(/^###### /gm)).toHaveLength(2); // e and clamped f
+    });
+
+    it('a skipped heading level collapses to a direct child', () => {
+        // `##` then `####` (skipping `###`): the deep heading becomes a depth-1
+        // child, not an orphan two levels down.
+        const md = '# X\n\n## A\n#### Deep\n- [ ] x\n';
+        const a = parseMarkdown(md).children[0];
+        if (a?.kind !== 'group') throw new Error('expected group');
+        expect(a.children).toHaveLength(1);
+        expect(a.children[0]?.kind).toBe('group');
     });
 });
 
@@ -197,7 +276,7 @@ describe('listToModel / listToMarkdown projection', () => {
             {
                 kind: 'group',
                 name: 'Section',
-                items: [
+                children: [
                     { kind: 'item', name: 'Alpha', quantity: { value: 1, target_value: 1, unit: 'boolean' } },
                     { kind: 'item', name: 'Beta', quantity: { value: 0, target_value: 3, unit: 'cups' } },
                 ],

@@ -68,32 +68,40 @@ export function saveCollapsed(listId, collapsed, storage) {
 export function buildFlatRows(list, data, collapsed) {
     /** @type {FlatRow[]} */
     const rows = [];
-    for (const child_ref of list.child_element_refs ?? []) {
-        const elem = data[child_ref];
-        if (!elem) continue;
-        // Skip soft-deleted rows. The render layer hides them too;
-        // keeping them out of the flat sequence prevents the cursor
-        // from landing on a row the user can't see.
-        if (elem.time_deleted) continue;
-        if (elem.type === 'group') {
-            rows.push({ id: child_ref, type: 'group', depth: 0, parentGroupId: null });
-            if (!collapsed.has(child_ref)) {
-                for (const grand of elem.child_element_refs ?? []) {
-                    const grandElem = data[grand];
-                    if (!grandElem) continue;
-                    if (grandElem.time_deleted) continue;
-                    rows.push({
-                        id: grand,
-                        type: 'item',
-                        depth: 1,
-                        parentGroupId: child_ref
-                    });
+    // Guard against a cyclic DAG (a group reachable from itself): the
+    // write-side invariant should forbid it, but recursion must not hang
+    // the view on bad state. Each group is visited at most once.
+    /** @type {Set<string>} */
+    const seenGroups = new Set();
+
+    /**
+     * @param {string[] | undefined} refs
+     * @param {number} depth
+     * @param {string | null} parentGroupId
+     */
+    const walk = (refs, depth, parentGroupId) => {
+        for (const ref of refs ?? []) {
+            const elem = data[ref];
+            if (!elem) continue;
+            // Skip soft-deleted rows. The render layer hides them too;
+            // keeping them out of the flat sequence prevents the cursor
+            // from landing on a row the user can't see.
+            if (elem.time_deleted) continue;
+            if (elem.type === 'group') {
+                if (seenGroups.has(ref)) continue;
+                seenGroups.add(ref);
+                rows.push({ id: ref, type: 'group', depth, parentGroupId });
+                // A collapsed group is a row, but its whole subtree is hidden.
+                if (!collapsed.has(ref)) {
+                    walk(elem.child_element_refs, depth + 1, ref);
                 }
+            } else if (elem.type === 'item') {
+                rows.push({ id: ref, type: 'item', depth, parentGroupId });
             }
-        } else if (elem.type === 'item') {
-            rows.push({ id: child_ref, type: 'item', depth: 0, parentGroupId: null });
         }
-    }
+    };
+
+    walk(list.child_element_refs, 0, null);
     return rows;
 }
 

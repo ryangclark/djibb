@@ -117,6 +117,105 @@ the `.ext` suffix winning over an `Accept:` header when both are present
 (curl, "copy link as markdown", and agents all reach for the suffix). The
 route is a thin content-negotiation shim; the encoder is the substance.
 
+### F. Subgroups and prose attachment (amendment, 2026-06-17)
+
+Dogfooding a wild checklist — the WHO Surgical Safety list
+(`seed/contributed/WHO-surgical-safety.md`, pulled from the WHO PDF) — broke
+two assumptions the original spike made about how people actually write
+checklists. Both are now fixed in the parser; the changes are additive and
+keep the round-trip property.
+
+**Fix 0 — prose attaches forward, to its container, not backward to the
+previous item.** The original parser had one catch-all bucket that glued any
+unrecognized line onto the *most recent item*. But a heading or a label
+introduces what *follows* it. The rule is now: an **indented** continuation
+line is the current item's description (unchanged, §B); any other loose prose
+describes the innermost open **container** — section, else group, else list —
+never the preceding item.
+
+**Subgroups (C, building toward B).** The model gains a `MarkdownSection`: a
+named bucket of items *within* a group. Two author surfaces parse into it —
+a `###`..`######` heading and an **all-bold line** (`**To Surgeon:**`, the
+WHO role labels). Canonical output spells both as `###` (bold is lenient
+input, exactly as plain `-` is lenient for `- [ ]`). This is **option C**: in
+the content model a section nests under a group, but the **DO mapping
+flattens** section items into the group — the label is a *divider, not a
+parent*. That flatten point (`djibb.ts`, the promote/mint path) is the seam
+where **option B** (mint a real nested group per section) will later plug in.
+Conditional subtrees (ADR 0019) build on B, not on C.
+
+Accepted limitations, in the same spirit as 1–3 above:
+
+4. **`###` and bold collapse to one section level.** The WHO list nests an
+   `###` over bold sub-labels; both become sibling sections, so an outer `###`
+   with only sub-sections under it round-trips as an *empty* section. B
+   restores the nesting.
+5. **A section is greedy, and a list-level footer has no home.** Once a
+   section opens, following top-level items join it (so the WHO "Is essential
+   imaging displayed?" item folds into the last role section — the §2 "`##` is
+   terminal" wart, one level down). Trailing list-level prose (the WHO
+   disclaimer + copyright) folds into the last open container's description,
+   which the encoder renders *above* that container's items. Round-trip is
+   still a fixpoint; the first-parse placement is just lossy.
+
+### G. Nested groups (option B) — decided, not yet built (2026-06-17)
+
+§F shipped option C (flat sections, flattened into the group at the DO layer).
+Option B is the agreed next step: groups nest. These rules are locked so the
+build doesn't relitigate them; conditional subtrees (ADR 0019) build on this.
+
+- **One primitive.** `MarkdownSection` collapses into a **nestable
+  `MarkdownGroup`** (`children: (MarkdownItem | MarkdownGroup)[]`). There is no
+  separate "section" type — a subgroup is just a group with a group parent.
+  This is also the substrate ADR 0019 will extend.
+- **Depth comes from syntax.** `#` = list title, `##` = group depth 0, `###` =
+  depth 1, … `######` = depth 4. Subgroups **canonicalize by depth**: the
+  canonical spelling of a depth-_n_ group is its heading level, full stop.
+- **Bold labels are subgroups, not headings.** An all-bold line
+  (`**To Surgeon:**`) opens a subgroup of the **most recent _true-heading_
+  group** — never of a previous bold group. So consecutive bold labels are
+  *siblings* under their heading, not a stack; a real heading resets the
+  anchor. A bold directly under `##` (no `###`) lands at depth 1. On encode it
+  takes the heading level for its depth (`**To Surgeon:**` under `###` →
+  `#### To Surgeon`). Bold-ness is **not** preserved — Markdown stays a lossy
+  view, one spelling per shape (exactly as `-` → `- [ ]`).
+- **Max depth 4 (`######`), enforced as a model invariant.** The ceiling is
+  where heading syntax runs out, not an arbitrary pick. It is enforced on the
+  **write side** (create/move mutators reject a group deeper than depth 4),
+  not only in the parser — otherwise JSON could hold a depth Markdown can't
+  spell, reintroducing the very asymmetry this ADR exists to avoid.
+- **Overflow clamps.** Lenient input below the floor (`#######`, or a bold
+  under `######`) **clamps** to the deepest valid level rather than erroring —
+  characterized by a test, like the limitations below.
+
+Building B **dissolves limitation 4** (the `###`/bold collapse): a bold now
+nests under its heading instead of becoming a sibling, so an `###` over bold
+sub-labels keeps its shape. **Limitation 5 persists** — it is Limitation 2
+(headings are terminal) generalized to every depth: once a subgroup heading
+opens, a following top-level bullet still joins the deepest open group (the WHO
+"Is essential imaging displayed?" item folds into the last role subgroup), and
+trailing list-level prose still has no home above the group it lands in. B
+makes the tree deeper; it does not give a bullet a way to climb back up.
+
+**Status note (B implementation):**
+
+- *Landed.* The parser/encoder/projection nest (the §F `MarkdownSection` type
+  and its DO-flattening are gone); the cursor flat-row sequence recurses with
+  true depth; the `djibb.ts` mint path emits real nested group rows; and the
+  write-side depth/cycle invariant is enforced — `findGroupTreeViolation`
+  (`list/groupDepth.ts`) rejects a payload past `MAX_DEPTH` or containing a
+  cycle, wired into `initList` and `mintFromBlank` (both server and client).
+  Finally, **UI depth styling** — `List.svelte` threads a `depth` param
+  through the `child`→`group` snippets: top-level sections keep the roomy
+  heading/spacing, while subgroups indent under their parent with a left rule
+  and a step-down heading scale (`GROUP_HEADING_CLASSES`, indexed by depth and
+  clamped at `MAX_DEPTH`), so nesting is now visually legible.
+- *Deferred.* (1) **Reparent guard** — `setGroupsAtomic` can set a group's
+  `parent_element_ref`, so when indent/outdent verbs go live they must run the
+  same check against the *existing* tree before reparenting. (2) **Cascade
+  recursion** — `archiveListGroup` still flips a single row; archiving a group
+  with subgroups needs to recurse (the long-standing "D.5 UI question").
+
 ## The round-trip property
 
 The headline guarantee, locked by `test/markdown.test.ts`:

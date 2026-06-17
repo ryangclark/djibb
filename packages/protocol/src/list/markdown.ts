@@ -47,12 +47,25 @@ export interface MarkdownItem {
     quantity: MarkdownQuantity;
 }
 
+/**
+ * A group nests (ADR 0012 §G, option B): its `children` are items and/or
+ * subgroups, in document order. A subgroup is just a group with a group
+ * parent — there is no separate "section" type. Depth is carried by heading
+ * level on the wire (`##` = depth 0 … `######` = depth 4); see {@link MAX_DEPTH}.
+ *
+ * Canonically, items precede subgroups within a group: once a subgroup heading
+ * opens it is terminal at its level (you can't pop back up to add a sibling
+ * item), the same "`##` is terminal" rule as ungrouped items, one level down.
+ */
 export interface MarkdownGroup {
     kind: 'group';
     name: string;
     description?: string;
-    items: MarkdownItem[];
+    children: MarkdownGroupChild[];
 }
+
+/** A child of a group: an item or a nested subgroup. */
+export type MarkdownGroupChild = MarkdownItem | MarkdownGroup;
 
 /** A direct child of the List: an ungrouped item or a group. */
 export type MarkdownChild = MarkdownGroup | MarkdownItem;
@@ -71,6 +84,14 @@ export interface MarkdownList {
 const BOOLEAN_UNIT = 'boolean';
 /** ` — ` — em dash with single spaces, separating an item name from its quantity. */
 const QTY_SEP = ' — ';
+/**
+ * Deepest group depth (ADR 0012 §G). `##` is depth 0, so depth 4 is `######`
+ * — the deepest heading Markdown has. This is the encoding's natural ceiling,
+ * not an arbitrary number; the parser clamps deeper input to it. The matching
+ * *write-side* invariant (create/move mutators rejecting deeper groups) is the
+ * other half — without it JSON could hold a depth Markdown can't spell.
+ */
+export const MAX_DEPTH = 4;
 
 // ---------------------------------------------------------------------------
 // Encode: MarkdownList -> string (canonical).
@@ -96,19 +117,31 @@ export function encodeMarkdown(list: MarkdownList): string {
 
     for (const child of list.children) {
         out.push('');
-        if (child.kind === 'group') {
-            out.push(`## ${child.name}`);
-            if (child.description) out.push('', child.description);
-            for (const item of child.items) {
-                out.push(...encodeItem(item));
-            }
-        } else {
-            out.push(...encodeItem(child));
-        }
+        if (child.kind === 'group') encodeGroup(child, 0, out);
+        else out.push(...encodeItem(child));
     }
 
     // Single trailing newline; no leading blank line.
     return out.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+}
+
+/**
+ * Emit a group and its subtree (ADR 0012 §G). The heading level *is* the
+ * depth: `##` at depth 0 … `######` at depth 4. Subgroups canonicalize to
+ * their depth's heading, even when the input wrote them as bold labels — one
+ * spelling per shape, exactly as `-` canonicalizes to `- [ ]`.
+ */
+function encodeGroup(group: MarkdownGroup, depth: number, out: string[]): void {
+    out.push(`${'#'.repeat(depth + 2)} ${group.name}`);
+    if (group.description) out.push('', group.description);
+    for (const child of group.children) {
+        if (child.kind === 'item') {
+            out.push(...encodeItem(child));
+        } else {
+            out.push('');
+            encodeGroup(child, depth + 1, out);
+        }
+    }
 }
 
 /**
@@ -161,8 +194,11 @@ function encodeQuantity(q: MarkdownQuantity): string {
 // ---------------------------------------------------------------------------
 
 const ITEM_RE = /^-\s+(?:\[([ xX])\]\s+)?(.*)$/;
-const GROUP_RE = /^##\s+(.*)$/;
 const TITLE_RE = /^#\s+(.*)$/;
+/** `##`+ opens a (sub)group; depth = hashes − 2, clamped to {@link MAX_DEPTH}. */
+const HEADING_RE = /^(#{2,})\s+(.*)$/;
+/** A line that is *entirely* bold, e.g. `**To Surgeon:**` — a subgroup label. */
+const BOLD_LABEL_RE = /^\*\*(.+?)\*\*\s*$/;
 
 /**
  * Parse Markdown into the content model. Lenient by design: accepts plain
@@ -183,50 +219,84 @@ export function parseMarkdown(md: string): MarkdownList {
     if (typeof data.slug === 'string') list.slug = data.slug;
     if (typeof data.forked_from === 'string') list.forked_from = data.forked_from;
 
-    // `cursor` is whichever description bucket trailing prose flows into:
-    // the list, the current group, or the current item.
-    let currentGroup: MarkdownGroup | null = null;
+    // `stack[d]` is the open group at depth d; the List is the implicit parent
+    // of depth-0 groups. Items and loose prose land in the deepest open group
+    // (or the list) — except prose indented under an item, which is that
+    // item's continuation. `lastHeadingDepth` anchors bold labels (§G).
+    const stack: MarkdownGroup[] = [];
+    let lastHeadingDepth = -1;
     let currentItem: MarkdownItem | null = null;
-    let descTarget: { description?: string } | null = null;
 
-    const pushDesc = (text: string) => {
-        if (!descTarget) return;
-        descTarget.description = descTarget.description
-            ? `${descTarget.description}\n${text}`
-            : text;
+    const appendDesc = (t: { description?: string }, text: string) => {
+        t.description = t.description ? `${t.description}\n${text}` : text;
+    };
+    /** The deepest open container — what loose prose describes. */
+    const container = (): { description?: string } => stack[stack.length - 1] ?? list;
+
+    /**
+     * Open a (sub)group at `depth` as a child of the group above it, dropping
+     * any deeper open groups. Skipped heading levels and over-deep input have
+     * already been clamped by the caller, so `depth <= stack.length`.
+     */
+    const openGroup = (name: string, depth: number): void => {
+        const group: MarkdownGroup = { kind: 'group', name, children: [] };
+        (depth === 0 ? list.children : stack[depth - 1]!.children).push(group);
+        stack.length = depth; // drop deeper levels; stack[depth] becomes `group`
+        stack.push(group);
+        currentItem = null;
     };
 
     for (const raw of lines) {
-        const line = raw.replace(/\s+$/, '');
-        if (line.trim() === '') continue;
+        const indented = /^\s+\S/.test(raw); // leading whitespace before content
+        const line = raw.trim();
+        if (line === '') continue;
 
-        const titleMatch = !list.name && TITLE_RE.exec(line);
-        if (titleMatch) {
-            list.name = (titleMatch[1] ?? '').trim();
-            descTarget = list;
+        if (!list.name) {
+            const titleMatch = TITLE_RE.exec(line);
+            if (titleMatch) {
+                list.name = (titleMatch[1] ?? '').trim();
+                currentItem = null;
+                continue;
+            }
+        }
+
+        const headingMatch = HEADING_RE.exec(line);
+        if (headingMatch) {
+            // Depth from heading level (`##` = 0), clamped two ways: never past
+            // MAX_DEPTH, and never more than one below the deepest open group
+            // — a skipped level (`##` then `####`) collapses to a child (§G).
+            const depth = Math.min(headingMatch[1]!.length - 2, stack.length, MAX_DEPTH);
+            openGroup((headingMatch[2] ?? '').trim(), depth);
+            lastHeadingDepth = depth;
             continue;
         }
 
-        const groupMatch = GROUP_RE.exec(line);
-        if (groupMatch) {
-            currentGroup = { kind: 'group', name: (groupMatch[1] ?? '').trim(), items: [] };
-            currentItem = null;
-            descTarget = currentGroup;
-            list.children.push(currentGroup);
-            continue;
+        // A bold-only line is a subgroup of the most recent *true-heading*
+        // group (§G): depth = lastHeadingDepth + 1, clamped. It does NOT update
+        // `lastHeadingDepth`, so consecutive bolds are siblings, not a stack.
+        if (lastHeadingDepth >= 0) {
+            const boldMatch = BOLD_LABEL_RE.exec(line);
+            if (boldMatch) {
+                openGroup((boldMatch[1] ?? '').trim(), Math.min(lastHeadingDepth + 1, MAX_DEPTH));
+                continue;
+            }
         }
 
-        const itemMatch = ITEM_RE.exec(line);
+        // Top-level bullets only: an *indented* bullet is a sub-item, which the
+        // model doesn't have yet — it falls through to item description
+        // (deferred to conditional subtrees, ADR 0019).
+        const itemMatch = !indented ? ITEM_RE.exec(line) : null;
         if (itemMatch) {
             currentItem = parseItem(itemMatch[1], itemMatch[2] ?? '');
-            descTarget = currentItem;
-            if (currentGroup) currentGroup.items.push(currentItem);
-            else list.children.push(currentItem);
+            (stack[stack.length - 1]?.children ?? list.children).push(currentItem);
             continue;
         }
 
-        // Indented or trailing prose -> description of whatever's current.
-        pushDesc(line.trim());
+        // Prose. Indented under an item -> that item's continuation. Otherwise
+        // it describes the deepest open container — never the previous item
+        // (Fix 0: a heading/label introduces what *follows*, not what precedes).
+        if (indented && currentItem) appendDesc(currentItem, line);
+        else appendDesc(container(), line);
     }
 
     return list;
@@ -351,24 +421,30 @@ export function listToModel(
         },
     });
 
-    const children: MarkdownChild[] = [];
-    for (const ref of entity.child_element_refs) {
-        const el = byId.get(ref);
-        if (!el) continue; // dangling ref — read-time concern, skip.
-        if (el.type === 'group') {
-            children.push({
-                kind: 'group',
-                name: el.name,
-                ...(el.description ? { description: el.description } : {}),
-                items: el.child_element_refs
-                    .map(r => byId.get(r))
-                    .filter((e): e is ListItem => !!e && e.type === 'item')
-                    .map(toItem),
-            });
-        } else if (el.type === 'item') {
-            children.push(toItem(el));
+    // Resolve a ref list into model children, recursing into nested groups.
+    // Depth bounds the recursion defensively against a cyclic DAG (the
+    // write-side invariant should already forbid both cycles and depth >
+    // MAX_DEPTH; this just refuses to loop forever on bad state).
+    const toChildren = (refs: string[], depth: number): MarkdownChild[] => {
+        const out: MarkdownChild[] = [];
+        for (const ref of refs) {
+            const el = byId.get(ref);
+            if (!el) continue; // dangling ref — read-time concern, skip.
+            if (el.type === 'item') {
+                out.push(toItem(el));
+            } else if (el.type === 'group' && depth <= MAX_DEPTH) {
+                out.push({
+                    kind: 'group',
+                    name: el.name,
+                    ...(el.description ? { description: el.description } : {}),
+                    children: toChildren(el.child_element_refs, depth + 1),
+                });
+            }
         }
-    }
+        return out;
+    };
+
+    const children = toChildren(entity.child_element_refs, 0);
 
     return {
         type: entity.type,

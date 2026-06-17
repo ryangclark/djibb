@@ -46,6 +46,23 @@
 	// the type literal and the ID prefix.
 	const EntitySchema = z.discriminatedUnion('type', [ListSchema, TemplateSchema]);
 
+	/**
+	 * Depth-aware group heading styling (ADR 0012 §G, slice 4). Index =
+	 * nesting depth: 0 = a top-level section, deeper = a subgroup. The
+	 * heading shrinks and quiets as you descend so nested subgroups read
+	 * as subordinate rather than as more same-size <h3>s (the WHO
+	 * "Anticipated Critical Events → To Surgeon:" tree). We clamp to the
+	 * last entry for safety; the write-side guard already caps real depth
+	 * at MAX_DEPTH (= index 4 here).
+	 */
+	const GROUP_HEADING_CLASSES = [
+		'text-xl font-semibold',
+		'text-lg font-semibold',
+		'text-base font-semibold text-slate-800',
+		'text-sm font-semibold text-slate-700',
+		'text-xs font-semibold uppercase tracking-wide text-slate-600',
+	];
+
 	/** @type {import('@djibb/protocol/list').List | import('@djibb/protocol/list').Template} */
 	let list = $derived.by(() => {
 		if (typeof rawList === 'string') {
@@ -501,7 +518,7 @@
 			which jitters focus when a peer inserts above your position.
 		-->
 		{#each list.child_element_refs as child_ref (child_ref)}
-			{@render child(child_ref)}
+			{@render child(child_ref, 0)}
 		{:else}
 			{@render empty_list()}
 		{/each}
@@ -584,7 +601,7 @@
 	</div>
 {/snippet}
 
-{#snippet child(/** @type {string} */ child_ref)}
+{#snippet child(/** @type {string} */ child_ref, /** @type {number} */ depth)}
 	{@const child = data[child_ref]}
 	<!--
 		Silently skip missing or soft-deleted children. Parent
@@ -597,7 +614,7 @@
 	-->
 	{#if child && !child.time_deleted}
 		{#if child.type === LIST_ELEMENT_TYPES.GROUP}
-			{@render group(child)}
+			{@render group(child, depth)}
 		{:else if child.type === LIST_ELEMENT_TYPES.ITEM}
 			{@render item(child)}
 		{:else}
@@ -608,20 +625,29 @@
 
 {#snippet group(
 	/** @type {import("@djibb/protocol/list").ListGroup} */
-	elem
+	elem,
+	/** @type {number} */
+	depth
 )}
 	{@const is_collapsed = cursor.isCollapsed(elem.id)}
 	{@const is_cursor = cursor.isCursor(elem.id)}
 	{@const is_selected = cursor.isSelected(elem.id)}
+	{@const heading_class = GROUP_HEADING_CLASSES[Math.min(depth, GROUP_HEADING_CLASSES.length - 1)]}
+	<!--
+		Depth-aware nesting (slice 4): top-level sections (depth 0) keep
+		the roomy `my-8`; subgroups indent under their parent with a left
+		rule + tighter spacing so the tree is visually legible.
+	-->
+	{@const indent_class = depth === 0 ? 'my-8' : 'my-3 ml-3 pl-3 border-l border-slate-200'}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<section
-		class="my-8 px-1 {is_cursor ? 'ring-1 ring-slate-400' : ''} {is_selected ? 'bg-sky-100' : is_cursor ? 'bg-slate-100' : ''}"
+		class="{indent_class} px-1 {is_cursor ? 'ring-1 ring-slate-400' : ''} {is_selected ? 'bg-sky-100' : is_cursor ? 'bg-slate-100' : ''}"
 		data-elem-id={elem.id}
 		data-elem-type={elem.type}
 		onclick={() => cursor.setCursor(elem.id)}
 	>
-		<h3 class="text-xl flex items-center gap-1">
+		<h3 class="{heading_class} flex items-center gap-1">
 			<span class="text-slate-500 select-none w-3 inline-block">
 				{is_collapsed ? '▸' : '▾'}
 			</span>
@@ -630,7 +656,7 @@
 		{#if !is_collapsed}
 			<div class="flex flex-col">
 				{#each elem.child_element_refs as child_ref (child_ref)}
-					{@render child(child_ref)}
+					{@render child(child_ref, depth + 1)}
 				{:else}
 					<p>Group has no child elements!</p>
 				{/each}

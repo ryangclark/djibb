@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { DefaultRoleEnum } from '@djibb/protocol/auth/rules';
 import { ValidationError } from '@djibb/protocol/errors';
+import { findGroupTreeViolation } from '@djibb/protocol/list/groupDepth';
 import { IdTypes } from '@djibb/protocol/id';
 import {
     ListGroupSchema,
@@ -143,6 +144,17 @@ export const server: ServerMutator<Args> = (
         version: 0,
     };
 
+    // Reject a group tree that busts the nesting ceiling or forms a cycle
+    // (ADR 0012 §G). The Markdown importer clamps, but a raw push doesn't —
+    // this is the write-side half of the invariant.
+    const violation = findGroupTreeViolation(args.childElementRefs ?? [], args.groups ?? []);
+    if (violation) {
+        console.error(
+            `\`initList()\` group tree violation: ${violation.reason} at ${violation.groupId}`
+        );
+        throw new ValidationError();
+    }
+
     // Entity first (createElement guards entity-row types), then any
     // content children at this mutation's version so a fresh pull
     // (`version > -1`) returns the whole tree.
@@ -187,6 +199,14 @@ export const client: ClientMutator<Args> = async (
         version: 1,
         workspace_id: args.workspaceId,
     };
+
+    const violation = findGroupTreeViolation(args.childElementRefs ?? [], args.groups ?? []);
+    if (violation) {
+        console.error(
+            `\`initList()\` group tree violation: ${violation.reason} at ${violation.groupId}`
+        );
+        throw new ValidationError();
+    }
 
     const schema = isTemplate ? TemplateSchema : ListSchema;
     const parseResult = schema.safeParse(entity);

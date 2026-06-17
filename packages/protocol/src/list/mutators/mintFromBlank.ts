@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { ValidationError } from '@djibb/protocol/errors';
+import { findGroupTreeViolation } from '@djibb/protocol/list/groupDepth';
 import {
     ListGroupSchema,
     ListItemSchema,
@@ -115,6 +116,16 @@ export const server: ServerMutator<Args> = (args, { store, accountId, nextVersio
         version: 0,
     };
 
+    // Reject a group tree that busts the nesting ceiling or forms a cycle
+    // (ADR 0012 §G) — the write-side half of the depth invariant.
+    const violation = findGroupTreeViolation(args.childElementRefs, args.groups);
+    if (violation) {
+        console.error(
+            `\`mintFromBlank()\` group tree violation: ${violation.reason} at ${violation.groupId}`
+        );
+        throw new ValidationError();
+    }
+
     // Entity first (createElement guards entity-row types), then the
     // copied children at this mutation's version so a fresh pull
     // (`version > -1`) returns the whole tree.
@@ -155,6 +166,14 @@ export const client: ClientMutator<Args> = async (tx, args, { accountId, timesta
         console.error(
             '`mintFromBlank()` entity validation error:',
             z.prettifyError(parseResult.error)
+        );
+        throw new ValidationError();
+    }
+
+    const violation = findGroupTreeViolation(args.childElementRefs, args.groups);
+    if (violation) {
+        console.error(
+            `\`mintFromBlank()\` group tree violation: ${violation.reason} at ${violation.groupId}`
         );
         throw new ValidationError();
     }

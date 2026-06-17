@@ -210,6 +210,59 @@ describe('buildFlatRows', () => {
         const rows = buildFlatRows(list, data, new Set());
         expect(rows.map((r) => r.id)).toEqual(['i/x']);
     });
+
+    // --- nested groups (ADR 0012 §G, option B) ---------------------------
+
+    it('nests a subgroup: depth and parentGroupId track the tree', () => {
+        const list = { child_element_refs: ['g/1'] };
+        const data = {
+            'g/1': makeGroup('g/1', ['i/a', 'g/2']),
+            'i/a': makeItem('i/a'),
+            'g/2': makeGroup('g/2', ['i/b']),
+            'i/b': makeItem('i/b'),
+        };
+        const rows = buildFlatRows(list, data, new Set());
+        expect(rows).toEqual([
+            { id: 'g/1', type: 'group', depth: 0, parentGroupId: null },
+            { id: 'i/a', type: 'item', depth: 1, parentGroupId: 'g/1' },
+            { id: 'g/2', type: 'group', depth: 1, parentGroupId: 'g/1' },
+            { id: 'i/b', type: 'item', depth: 2, parentGroupId: 'g/2' },
+        ]);
+    });
+
+    it('collapsing an outer group hides the whole subtree, inner group included', () => {
+        const list = { child_element_refs: ['g/1'] };
+        const data = {
+            'g/1': makeGroup('g/1', ['g/2']),
+            'g/2': makeGroup('g/2', ['i/b']),
+            'i/b': makeItem('i/b'),
+        };
+        const rows = buildFlatRows(list, data, new Set(['g/1']));
+        expect(rows.map((r) => r.id)).toEqual(['g/1']);
+    });
+
+    it('collapsing only the inner group keeps the outer subtree but hides the inner items', () => {
+        const list = { child_element_refs: ['g/1'] };
+        const data = {
+            'g/1': makeGroup('g/1', ['g/2']),
+            'g/2': makeGroup('g/2', ['i/b']),
+            'i/b': makeItem('i/b'),
+        };
+        const rows = buildFlatRows(list, data, new Set(['g/2']));
+        expect(rows.map((r) => r.id)).toEqual(['g/1', 'g/2']);
+    });
+
+    it('does not hang on a cyclic group reference', () => {
+        // g/1 -> g/2 -> g/1 (bad state the write-side should forbid). Each
+        // group is emitted once; recursion terminates.
+        const list = { child_element_refs: ['g/1'] };
+        const data = {
+            'g/1': makeGroup('g/1', ['g/2']),
+            'g/2': makeGroup('g/2', ['g/1']),
+        };
+        const rows = buildFlatRows(list, data, new Set());
+        expect(rows.map((r) => r.id)).toEqual(['g/1', 'g/2']);
+    });
 });
 
 describe('nextCursorId', () => {

@@ -1,5 +1,7 @@
 <script>
-	import { goto } from '$app/navigation';
+	import { untrack } from 'svelte';
+
+	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 
 	import { initList } from '$lib/replicache/index.svelte.js';
@@ -62,15 +64,23 @@
 		// entity, before the real account is known.
 		if (!sessionState.hasLoaded) return;
 
+		// The `?new=1` marker authorizes the one-time optimistic init for a
+		// genuine creation. Read it untracked: we strip it from the URL the
+		// moment it's consumed (below), and we don't want that rewrite to
+		// re-run this effect and needlessly rebuild the Replicache client.
+		const isNew = untrack(() => page.url.searchParams.get('new') === '1');
+
 		const replicacheList = initList({
 			accountId: sessionState.currentAccountId,
-			// Don't fire the client-side initList shortcut when the
-			// invitee is arriving from a `?from_invite=1` link: we
-			// know the entity exists server-side, and the optimistic
-			// local init would write the invitee as owner, hiding
-			// the InviteBanner before pull reconciliation lands.
-			skipClientInit:
-				page.url.searchParams.get('from_invite') === '1',
+			// Only a genuine creation (the `?new=1` marker set by the
+			// "+ New list" button) fires the optimistic local initList.
+			// Every other arrival — direct nav, deep link, invitation
+			// link, or the homepage example Blank — opens an entity that
+			// already exists server-side, so firing init would push a
+			// doomed mutation and write the local actor as owner (hiding
+			// the InviteBanner before pull reconciliation lands).
+			// Subsumes the old `from_invite` skip.
+			skipClientInit: !isNew,
 			// Attribute a freshly created list to the active workspace
 			// (no-op when opening an existing list — store isn't empty).
 			workspaceId: sessionState.currentWorkspaceId,
@@ -101,6 +111,22 @@
 		mutators = replicacheList.mutate;
 		mutateWithUndo = replicacheList.mutateWithUndo;
 		undoRuntime = replicacheList.undoRuntime;
+
+		// The marker has now been consumed by the init decision above (its
+		// only job), whether or not an optimistic write actually fired —
+		// `initList` no-ops the create on a non-empty store. Strip it so a
+		// copied or refreshed URL can't re-fire a doomed init against the
+		// now-existing entity. (The server skip-and-acks such a push, but
+		// not firing it is cleaner.) Untracked so the rewrite doesn't
+		// re-run this effect.
+		if (isNew) {
+			untrack(() => {
+				const params = new URLSearchParams(page.url.searchParams);
+				params.delete('new');
+				const qs = params.toString();
+				replaceState(`${page.url.pathname}${qs ? `?${qs}` : ''}`, page.state);
+			});
+		}
 
 		const ws = initWebsocket(data.list_id, replicacheList.client.clientID);
 		ws.addEventListener('message', (event) => {
@@ -156,12 +182,7 @@
 
 <svelte:boundary {failed}>
 	{#if list && mutators && mutateWithUndo && undoRuntime}
-		<List
-			data={list_data}
-			{list}
-			{mutators}
-			{mutateWithUndo}
-			{undoRuntime}
+		<List data={list_data} {list} {mutators} {mutateWithUndo} {undoRuntime}
 		></List>
 	{:else}
 		<p>Loading list…</p>
@@ -169,7 +190,10 @@
 </svelte:boundary>
 
 <UndoToast event={toastEvent} onUndo={() => onUndoClick?.()} />
-<ConfirmToast pending={pendingConfirm} setPending={(p) => (pendingConfirm = p)} />
+<ConfirmToast
+	pending={pendingConfirm}
+	setPending={(p) => (pendingConfirm = p)}
+/>
 
 <!-- @UPGRADE
  Move the failure UI to within the <List> component for true
@@ -184,7 +208,7 @@
 	resetFn
 )}
 	{#if error instanceof ZodError}
-		<div class="flex justify-between ">
+		<div class="flex justify-between">
 			<h2 class="text-2xl">Validation Error</h2>
 			<button class="border px-3" onclick={resetFn}>Reset</button>
 		</div>

@@ -1701,16 +1701,48 @@ export class DjibbList extends DurableObject {
                 console.log(
                     `\`handleMutation()\` unauthorized: ${result.reason}`
                 );
-                // Emit `auth` over the outcome channel BEFORE throwing.
-                // The HTTP push response will fail too; the channel
-                // gives the runtime a structured per-mutation
-                // signal so it can stop retrying that envelope.
-                this.emitMutationOutcome(
-                    envelope.clientID,
-                    envelope.id,
-                    'auth'
-                );
-                throw new UnauthorizedError(result.reason);
+                // The role gate denied this mutation. How we respond turns
+                // on whether the actor is AUTHENTICATED, because that's the
+                // only way to tell a permanent denial from a transient one.
+                // Full rationale + rejected alternatives: ADR 0020.
+                if (authorizedAccounts.length > 0) {
+                    // Authenticated actor whose role genuinely can't run
+                    // this mutation (e.g. a signed-in viewer, or an editor
+                    // whose access was revoked while offline). PERMANENT:
+                    // emit `auth` for the undo runtime's toast, then
+                    // skip-and-ack — advance lastMutationID, write no rows.
+                    // Replicache reconciles on the next pull (the optimistic
+                    // write rolls back) instead of wedging the push in an
+                    // infinite 403 retry. The write gate already rejected
+                    // the change; acking only says "processed, no effect,"
+                    // never "applied."
+                    this.emitMutationOutcome(
+                        envelope.clientID,
+                        envelope.id,
+                        'auth'
+                    );
+                    mutationStatus = 'skipped';
+                } else {
+                    // Unauthenticated request (no session — `HandleSession`
+                    // blanks an expired/invalid cookie to null rather than
+                    // throwing). This can be an OWNER whose token expired
+                    // while editing offline; their role resolves to the
+                    // entity's `default_role` (`restricted` on an owned
+                    // list) and the gate denies. Skip-and-ack here would
+                    // silently DISCARD real offline edits. Throw instead:
+                    // Replicache keeps the mutation pending and retries, so
+                    // once the user re-authenticates (fresh cookie) the very
+                    // same push lands with no data loss. The genuinely-
+                    // anonymous doomed-init case (homepage example Blank) is
+                    // prevented client-side (skipClientInit gated on
+                    // `?new=1`), so it never reaches here to wedge the loop.
+                    this.emitMutationOutcome(
+                        envelope.clientID,
+                        envelope.id,
+                        'auth'
+                    );
+                    throw new UnauthorizedError(result.reason);
+                }
             } else {
                 console.log(
                     `\`handleMutation()\` skipped "${envelope.name}": ${result.reason}`

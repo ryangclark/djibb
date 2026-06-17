@@ -50,7 +50,10 @@
 		if (adopted) return;
 		if (!sessionState.hasLoaded || !sessionState.currentAccountId) return;
 		adopted = true;
-		adoptPendingMints(sessionState.currentAccountId, sessionState.currentWorkspaceId);
+		adoptPendingMints(
+			sessionState.currentAccountId,
+			sessionState.currentWorkspaceId
+		);
 	});
 
 	/**
@@ -76,7 +79,12 @@
 				// skipClientInit: the entity already exists server-side; never
 				// optimistically re-create it. The claim mutation queues and
 				// pushes; the server promotes ownerless → owner.
-				const rc = initList({ accountId, listId, workspaceId, skipClientInit: true });
+				const rc = initList({
+					accountId,
+					listId,
+					workspaceId,
+					skipClientInit: true
+				});
 				clients.push(rc);
 				await rc.mutate.claimEntity({ listId, workspaceId });
 			} catch (err) {
@@ -103,15 +111,21 @@
 	}
 
 	function newList() {
-		// Visiting /l/<fresh-id> is the create-list flow: the list page
-		// detects an empty Replicache store and fires `initList`.
-		goto(`/${newId('list')}`);
+		// Visiting /l/<fresh-id> is the create-list flow. The `?new=1`
+		// marker tells the list page this is a genuine creation, so it may
+		// fire the optimistic `initList`. Without it, an empty local store
+		// is ambiguous (brand-new entity vs. fresh client opening an
+		// existing one), and firing init against an existing read-only
+		// Blank would push a doomed mutation. The server now skip-and-acks
+		// such pushes (it reconciles), but the marker avoids firing them at
+		// all — no wasted round-trip, no empty-shell flicker on the Blank.
+		goto(`/${newId('list')}?new=1`);
 	}
 
 	function newTemplate() {
 		// Same flow as newList, but the `t/` prefix routes through the
 		// template app and the init mutator stamps `type: 'template'`.
-		goto(`/${newId('template')}`);
+		goto(`/${newId('template')}?new=1`);
 	}
 </script>
 
