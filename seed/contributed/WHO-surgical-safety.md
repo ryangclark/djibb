@@ -1,6 +1,6 @@
 ---
 djibb: template
-slug: WHO-surgical-safety
+slug: who-surgical-safety
 contributed_by: World Health Organization
 status: proposed
 tags: [medicine, surgery, safety]

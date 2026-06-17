@@ -474,41 +474,41 @@ function buildBlankContent(slug: string, blankId: string, model: MarkdownList) {
         time_deleted: null,
     });
 
+    // Mint a group and its whole subtree (ADR 0012 §G, option B): nested
+    // subgroups become real group rows parented to their enclosing group, in
+    // document order. `initList` writes whatever rows it's handed and imposes
+    // no group-parents-list rule, so nesting needs nothing more here. Ids stay
+    // deterministic from the position path, so re-promoting is idempotent.
+    const mintGroup = (g: MarkdownGroup, parentRef: string, path: string): string => {
+        const gid = detId('group', path);
+        const refs: string[] = [];
+        g.children.forEach((ch, i) => {
+            if (ch.kind === 'item') {
+                const iid = detId('item', `${path}.i${i}`);
+                items.push(mkItem(iid, gid, ch.name, ch.description, ch.quantity));
+                refs.push(iid);
+            } else {
+                refs.push(mintGroup(ch, gid, `${path}.s${i}`));
+            }
+        });
+        groups.push({
+            id: gid,
+            name: g.name,
+            ...(g.description ? { description: g.description } : {}),
+            parent_element_ref: parentRef,
+            child_element_refs: refs,
+            type: 'group',
+            version: 0,
+            time_created: ts,
+            time_updated: ts,
+            time_deleted: null,
+        });
+        return gid;
+    };
+
     model.children.forEach((child, ci) => {
         if (child.kind === 'group') {
-            const gid = detId('group', `${slug}#c${ci}`);
-            const groupItemRefs: string[] = [];
-            // INTERIM (ADR 0012 §G): the Markdown model now nests, but
-            // `initList` still parents every group to the list, so we flatten
-            // the group's whole item subtree into this one group (DO-flat, as
-            // §F option C did). The nested-group mint — minting a real group
-            // per subgroup — lands with the `initList` change in slice 2;
-            // subgroup names are dropped here until then.
-            const collect = (g: MarkdownGroup, path: string): void => {
-                g.children.forEach((ch, i) => {
-                    if (ch.kind === 'item') {
-                        const iid = detId('item', `${path}.i${i}`);
-                        items.push(mkItem(iid, gid, ch.name, ch.description, ch.quantity));
-                        groupItemRefs.push(iid);
-                    } else {
-                        collect(ch, `${path}.s${i}`);
-                    }
-                });
-            };
-            collect(child, `${slug}#c${ci}`);
-            groups.push({
-                id: gid,
-                name: child.name,
-                ...(child.description ? { description: child.description } : {}),
-                parent_element_ref: blankId,
-                child_element_refs: groupItemRefs,
-                type: 'group',
-                version: 0,
-                time_created: ts,
-                time_updated: ts,
-                time_deleted: null,
-            });
-            childElementRefs.push(gid);
+            childElementRefs.push(mintGroup(child, blankId, `${slug}#c${ci}`));
         } else {
             const iid = detId('item', `${slug}#c${ci}`);
             items.push(mkItem(iid, blankId, child.name, child.description, child.quantity));
