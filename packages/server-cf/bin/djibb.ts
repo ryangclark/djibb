@@ -24,7 +24,12 @@ import { isDeepStrictEqual } from 'node:util';
 import { dirname, join, resolve } from 'node:path';
 
 import { parseMarkdown, encodeMarkdown } from '@djibb/protocol/list/markdown';
-import type { MarkdownList } from '@djibb/protocol/list/markdown';
+import type { MarkdownGroup, MarkdownList } from '@djibb/protocol/list/markdown';
+
+/** Total items in a group, counting both direct items and section items. */
+function groupItemCount(g: MarkdownGroup): number {
+    return g.items.length + (g.sections ?? []).reduce((n, s) => n + s.items.length, 0);
+}
 
 /**
  * The seed/contributed dir of the djibb project we're standing in: walk up
@@ -101,7 +106,7 @@ async function testParseFile(path: string, label: string): Promise<FileResult> {
     // Content summary.
     const groups = model.children.filter(ch => ch.kind === 'group');
     const looseItems = model.children.filter(ch => ch.kind === 'item');
-    const grouped = groups.reduce((n, g) => n + (g.kind === 'group' ? g.items.length : 0), 0);
+    const grouped = groups.reduce((n, g) => n + (g.kind === 'group' ? groupItemCount(g) : 0), 0);
     const totalItems = looseItems.length + grouped;
     const extras: string[] = [];
     if (model.slug) extras.push(`slug=${model.slug}`);
@@ -475,6 +480,16 @@ function buildBlankContent(slug: string, blankId: string, model: MarkdownList) {
                 items.push(mkItem(iid, gid, it.name, it.description, it.quantity));
                 groupItemRefs.push(iid);
             });
+            // C semantics (Fix 0 / §F): a section is a divider, not a parent —
+            // its items flatten into the group. This is the seam where B would
+            // instead mint a nested group per section.
+            (child.sections ?? []).forEach((sec, si) => {
+                sec.items.forEach((it, ii) => {
+                    const iid = detId('item', `${slug}#c${ci}.s${si}.i${ii}`);
+                    items.push(mkItem(iid, gid, it.name, it.description, it.quantity));
+                    groupItemRefs.push(iid);
+                });
+            });
             groups.push({
                 id: gid,
                 name: child.name,
@@ -683,7 +698,7 @@ async function cmdPromote(args: string[]): Promise<number> {
         const g = p.model.children.filter(ch => ch.kind === 'group').length;
         const it =
             p.model.children.filter(ch => ch.kind === 'item').length +
-            p.model.children.reduce((n, ch) => n + (ch.kind === 'group' ? ch.items.length : 0), 0);
+            p.model.children.reduce((n, ch) => n + (ch.kind === 'group' ? groupItemCount(ch) : 0), 0);
         console.log(
             `  ${c.bold(p.slug)} ${c.dim('→ ' + p.blankId)} · ${g} group(s) · ${it} item(s)`
         );

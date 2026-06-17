@@ -117,6 +117,47 @@ the `.ext` suffix winning over an `Accept:` header when both are present
 (curl, "copy link as markdown", and agents all reach for the suffix). The
 route is a thin content-negotiation shim; the encoder is the substance.
 
+### F. Subgroups and prose attachment (amendment, 2026-06-17)
+
+Dogfooding a wild checklist — the WHO Surgical Safety list
+(`seed/contributed/WHO-surgical-safety.md`, pulled from the WHO PDF) — broke
+two assumptions the original spike made about how people actually write
+checklists. Both are now fixed in the parser; the changes are additive and
+keep the round-trip property.
+
+**Fix 0 — prose attaches forward, to its container, not backward to the
+previous item.** The original parser had one catch-all bucket that glued any
+unrecognized line onto the *most recent item*. But a heading or a label
+introduces what *follows* it. The rule is now: an **indented** continuation
+line is the current item's description (unchanged, §B); any other loose prose
+describes the innermost open **container** — section, else group, else list —
+never the preceding item.
+
+**Subgroups (C, building toward B).** The model gains a `MarkdownSection`: a
+named bucket of items *within* a group. Two author surfaces parse into it —
+a `###`..`######` heading and an **all-bold line** (`**To Surgeon:**`, the
+WHO role labels). Canonical output spells both as `###` (bold is lenient
+input, exactly as plain `-` is lenient for `- [ ]`). This is **option C**: in
+the content model a section nests under a group, but the **DO mapping
+flattens** section items into the group — the label is a *divider, not a
+parent*. That flatten point (`djibb.ts`, the promote/mint path) is the seam
+where **option B** (mint a real nested group per section) will later plug in.
+Conditional subtrees (ADR 0019) build on B, not on C.
+
+Accepted limitations, in the same spirit as 1–3 above:
+
+4. **`###` and bold collapse to one section level.** The WHO list nests an
+   `###` over bold sub-labels; both become sibling sections, so an outer `###`
+   with only sub-sections under it round-trips as an *empty* section. B
+   restores the nesting.
+5. **A section is greedy, and a list-level footer has no home.** Once a
+   section opens, following top-level items join it (so the WHO "Is essential
+   imaging displayed?" item folds into the last role section — the §2 "`##` is
+   terminal" wart, one level down). Trailing list-level prose (the WHO
+   disclaimer + copyright) folds into the last open container's description,
+   which the encoder renders *above* that container's items. Round-trip is
+   still a fixpoint; the first-parse placement is just lossy.
+
 ## The round-trip property
 
 The headline guarantee, locked by `test/markdown.test.ts`:

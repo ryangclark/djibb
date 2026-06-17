@@ -47,11 +47,30 @@ export interface MarkdownItem {
     quantity: MarkdownQuantity;
 }
 
+/**
+ * PROTOTYPE (Fix 0 / ADR-0012 §F): a subgroup *within* a group — the WHO
+ * Surgical Safety list's `### Anticipated Critical Events` and its bold role
+ * labels (`**To Surgeon:**`). A section is a labelled bucket of items; the
+ * `kind` discriminant is reserved for the eventual nested-group model (B).
+ * In the content model sections nest under a group; the *DO mapping* is the
+ * consumer's call — C flattens section items into the group (the label is a
+ * divider, not a parent), B would mint real nested groups.
+ */
+export interface MarkdownSection {
+    kind: 'section';
+    name: string;
+    description?: string;
+    items: MarkdownItem[];
+}
+
 export interface MarkdownGroup {
     kind: 'group';
     name: string;
     description?: string;
+    /** Direct items, before any section. Canonically: items precede sections. */
     items: MarkdownItem[];
+    /** Subgroups; present only when the group has at least one. */
+    sections?: MarkdownSection[];
 }
 
 /** A direct child of the List: an ungrouped item or a group. */
@@ -101,6 +120,16 @@ export function encodeMarkdown(list: MarkdownList): string {
             if (child.description) out.push('', child.description);
             for (const item of child.items) {
                 out.push(...encodeItem(item));
+            }
+            // PROTOTYPE (Fix 0 / §F): subgroups canonicalize to `###`, even
+            // when the input wrote them as bold labels. An empty section is
+            // still emitted (a bare `###`) so the round-trip is a fixpoint.
+            for (const section of child.sections ?? []) {
+                out.push('', `### ${section.name}`);
+                if (section.description) out.push('', section.description);
+                for (const item of section.items) {
+                    out.push(...encodeItem(item));
+                }
             }
         } else {
             out.push(...encodeItem(child));
@@ -163,6 +192,10 @@ function encodeQuantity(q: MarkdownQuantity): string {
 const ITEM_RE = /^-\s+(?:\[([ xX])\]\s+)?(.*)$/;
 const GROUP_RE = /^##\s+(.*)$/;
 const TITLE_RE = /^#\s+(.*)$/;
+/** PROTOTYPE (Fix 0 / §F): `###`..`######` open a subgroup (section). */
+const SECTION_RE = /^#{3,6}\s+(.*)$/;
+/** A line that is *entirely* bold, e.g. `**To Surgeon:**` — a section label. */
+const BOLD_LABEL_RE = /^\*\*(.+?)\*\*\s*$/;
 
 /**
  * Parse Markdown into the content model. Lenient by design: accepts plain
@@ -183,50 +216,72 @@ export function parseMarkdown(md: string): MarkdownList {
     if (typeof data.slug === 'string') list.slug = data.slug;
     if (typeof data.forked_from === 'string') list.forked_from = data.forked_from;
 
-    // `cursor` is whichever description bucket trailing prose flows into:
-    // the list, the current group, or the current item.
+    // Structural cursors. Items land in the innermost open container
+    // (section > group > list); prose lands there too — *unless* it's indented
+    // under an item, which makes it that item's continuation/description.
     let currentGroup: MarkdownGroup | null = null;
+    let currentSection: MarkdownSection | null = null;
     let currentItem: MarkdownItem | null = null;
-    let descTarget: { description?: string } | null = null;
 
-    const pushDesc = (text: string) => {
-        if (!descTarget) return;
-        descTarget.description = descTarget.description
-            ? `${descTarget.description}\n${text}`
-            : text;
+    const appendDesc = (t: { description?: string }, text: string) => {
+        t.description = t.description ? `${t.description}\n${text}` : text;
     };
+    /** The innermost open container — what loose prose describes. */
+    const container = (): { description?: string } =>
+        currentSection ?? currentGroup ?? list;
 
     for (const raw of lines) {
-        const line = raw.replace(/\s+$/, '');
-        if (line.trim() === '') continue;
+        const indented = /^\s+\S/.test(raw); // leading whitespace before content
+        const line = raw.trim();
+        if (line === '') continue;
 
-        const titleMatch = !list.name && TITLE_RE.exec(line);
-        if (titleMatch) {
-            list.name = (titleMatch[1] ?? '').trim();
-            descTarget = list;
-            continue;
+        if (!list.name) {
+            const titleMatch = TITLE_RE.exec(line);
+            if (titleMatch) {
+                list.name = (titleMatch[1] ?? '').trim();
+                currentItem = null;
+                continue;
+            }
         }
 
         const groupMatch = GROUP_RE.exec(line);
         if (groupMatch) {
             currentGroup = { kind: 'group', name: (groupMatch[1] ?? '').trim(), items: [] };
+            currentSection = null;
             currentItem = null;
-            descTarget = currentGroup;
             list.children.push(currentGroup);
             continue;
         }
 
-        const itemMatch = ITEM_RE.exec(line);
+        // PROTOTYPE (Fix 0 / §F): a `###` heading or an all-bold line opens a
+        // section, but only inside a group (a section needs a parent). `###`
+        // and bold collapse to one section level — the WHO list's h3-then-bold
+        // nesting flattens to siblings; B (real nested groups) would keep it.
+        if (currentGroup) {
+            const sectionMatch = SECTION_RE.exec(line) ?? BOLD_LABEL_RE.exec(line);
+            if (sectionMatch) {
+                currentSection = { kind: 'section', name: (sectionMatch[1] ?? '').trim(), items: [] };
+                currentItem = null;
+                (currentGroup.sections ??= []).push(currentSection);
+                continue;
+            }
+        }
+
+        // Top-level bullets only: an *indented* bullet is a sub-item, which
+        // this model doesn't have yet — it falls through to item description
+        // (deferred to B / conditional subtrees).
+        const itemMatch = !indented ? ITEM_RE.exec(line) : null;
         if (itemMatch) {
             currentItem = parseItem(itemMatch[1], itemMatch[2] ?? '');
-            descTarget = currentItem;
-            if (currentGroup) currentGroup.items.push(currentItem);
-            else list.children.push(currentItem);
+            (currentSection?.items ?? currentGroup?.items ?? list.children).push(currentItem);
             continue;
         }
 
-        // Indented or trailing prose -> description of whatever's current.
-        pushDesc(line.trim());
+        // Prose. Indented under an item -> that item's continuation. Otherwise
+        // it describes the innermost open container — never the previous item
+        // (Fix 0: a heading/label introduces what *follows*, not what precedes).
+        if (indented && currentItem) appendDesc(currentItem, line);
+        else appendDesc(container(), line);
     }
 
     return list;
