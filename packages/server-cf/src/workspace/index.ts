@@ -5,7 +5,7 @@ import { DatelikeToDateSchema } from '@djibb/protocol/schema';
 
 export const WORKSPACE_ID_LENGTH = 22;
 
-export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/;
+export const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/;
 
 /**
  * ADR 0011 §Step 4: workspace memberships now carry an entity-level

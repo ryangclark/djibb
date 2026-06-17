@@ -12,7 +12,7 @@
  * 3-40 chars, lowercase alphanumeric + hyphen, no leading/trailing
  * hyphen.
  */
-export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/;
+export const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/;
 
 /**
  * The default slug an entity gets at mint: the id's suffix after the
