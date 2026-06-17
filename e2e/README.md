@@ -74,6 +74,7 @@ AGENT_BROWSER_HEADED=1 bash e2e/magic-link.sh
 | `magic-link.sh`       | Sign in to a fresh email via magic link, land on /workspaces, confirm Account row appears on /accounts |
 | `rate-limit.sh`       | Magic-link rate-limit guard: server returns 429+`reason` on rapid resend; client form shows "Resend in Ns" countdown |
 | `entity-invite.sh`    | Two-session ADR 0009 invitation flow: inviter creates a list, sends an email invite; invitee signs in via magic link, lands on `/l/<id>?from_invite=1`, accepts; invitee can view the list, inviter's pending-invite drains in real time. |
+| `example-list.sh`     | Homepage example List: the read-only Seed Pool Blank renders, mint-on-engage forks it into an owned List (toggle preserved), and "+ New list" creates a fresh List via the `?new=1` marker — all with no doomed `initList` push-403 in the console. Skips phase A if the local Seed Pool holds no Blank. |
 
 ## Knowingly out of scope
 

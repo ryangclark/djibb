@@ -55,10 +55,15 @@
 
 		const replicacheList = initList({
 			accountId: sessionState.currentAccountId,
-			// See /l/[id]/+page.svelte: skip the optimistic local
-			// initList when arriving via invitation link.
-			skipClientInit:
-				page.url.searchParams.get('from_invite') === '1',
+			// Only a genuine creation (the `?new=1` marker set by the
+			// "+ New template" button) fires the optimistic local
+			// initList. Every other arrival — direct nav, deep link,
+			// invitation link, or the homepage example Blank — opens an
+			// entity that already exists server-side, so firing init
+			// would push a doomed mutation and (until pull lands) flash
+			// an empty shell over the real content. Subsumes the old
+			// `from_invite` skip.
+			skipClientInit: page.url.searchParams.get('new') !== '1',
 			// Attribute a freshly created template to the active workspace
 			// (no-op when opening an existing one — store isn't empty).
 			workspaceId: sessionState.currentWorkspaceId,
@@ -131,12 +136,7 @@
 
 <svelte:boundary {failed}>
 	{#if list && mutators && mutateWithUndo && undoRuntime}
-		<List
-			data={list_data}
-			{list}
-			{mutators}
-			{mutateWithUndo}
-			{undoRuntime}
+		<List data={list_data} {list} {mutators} {mutateWithUndo} {undoRuntime}
 		></List>
 	{:else}
 		<p>Loading template…</p>
@@ -144,7 +144,10 @@
 </svelte:boundary>
 
 <UndoToast event={toastEvent} onUndo={() => onUndoClick?.()} />
-<ConfirmToast pending={pendingConfirm} setPending={(p) => (pendingConfirm = p)} />
+<ConfirmToast
+	pending={pendingConfirm}
+	setPending={(p) => (pendingConfirm = p)}
+/>
 
 {#snippet failed(
 	/** @type {unknown} */
@@ -153,7 +156,7 @@
 	resetFn
 )}
 	{#if error instanceof ZodError}
-		<div class="flex justify-between ">
+		<div class="flex justify-between">
 			<h2 class="text-2xl">Validation Error</h2>
 			<button class="border px-3" onclick={resetFn}>Reset</button>
 		</div>
