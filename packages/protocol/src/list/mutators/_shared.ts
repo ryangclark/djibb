@@ -84,6 +84,17 @@ export type ServerMutatorCtx = {
     accountId: string | null;
     timestamp_client: Date | null;
     nextVersion: number;
+    /**
+     * The caller is the platform operator (`OPERATOR_ACCOUNT_ID`). Computed
+     * at the DO dispatch site, where `env` is reachable, as
+     * `envelope.accountId === OPERATOR_ACCOUNT_ID`. Trustworthy because the
+     * cross-account check (durable_object.ts) has already verified
+     * `envelope.accountId` belongs to the session before dispatch — only
+     * the operator's session can produce a true here. Mutators consult it
+     * to gate privileged-only writes (e.g. `initList`'s `slot`/
+     * `defaultRole`).
+     */
+    isOperator: boolean;
 };
 
 /** Context passed to every client mutator (Replicache transaction). */
