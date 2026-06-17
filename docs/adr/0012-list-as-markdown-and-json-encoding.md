@@ -188,8 +188,19 @@ build doesn't relitigate them; conditional subtrees (ADR 0019) build on this.
   under `######`) **clamps** to the deepest valid level rather than erroring —
   characterized by a test, like the limitations below.
 
-Building B **dissolves limitations 4 and 5** (the `###`/bold collapse and the
-greedy single-level section); they are removed when it lands.
+Building B **dissolves limitation 4** (the `###`/bold collapse): a bold now
+nests under its heading instead of becoming a sibling, so an `###` over bold
+sub-labels keeps its shape. **Limitation 5 persists** — it is Limitation 2
+(headings are terminal) generalized to every depth: once a subgroup heading
+opens, a following top-level bullet still joins the deepest open group (the WHO
+"Is essential imaging displayed?" item folds into the last role subgroup), and
+trailing list-level prose still has no home above the group it lands in. B
+makes the tree deeper; it does not give a bullet a way to climb back up.
+
+**Status note:** option B landed in the parser/encoder/projection; the §F
+option-C `MarkdownSection` type and its DO-flattening are gone. The DO *mint*
+path (`djibb.ts`) still flattens for now — `initList` parents every group to
+the list — until the mutator slice lets a group parent a group.
 
 ## The round-trip property
 

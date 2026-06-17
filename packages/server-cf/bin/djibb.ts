@@ -26,9 +26,12 @@ import { dirname, join, resolve } from 'node:path';
 import { parseMarkdown, encodeMarkdown } from '@djibb/protocol/list/markdown';
 import type { MarkdownGroup, MarkdownList } from '@djibb/protocol/list/markdown';
 
-/** Total items in a group, counting both direct items and section items. */
+/** Total items in a group, recursing through nested subgroups. */
 function groupItemCount(g: MarkdownGroup): number {
-    return g.items.length + (g.sections ?? []).reduce((n, s) => n + s.items.length, 0);
+    return g.children.reduce(
+        (n, ch) => n + (ch.kind === 'item' ? 1 : groupItemCount(ch)),
+        0
+    );
 }
 
 /**
@@ -475,21 +478,24 @@ function buildBlankContent(slug: string, blankId: string, model: MarkdownList) {
         if (child.kind === 'group') {
             const gid = detId('group', `${slug}#c${ci}`);
             const groupItemRefs: string[] = [];
-            child.items.forEach((it, ii) => {
-                const iid = detId('item', `${slug}#c${ci}.i${ii}`);
-                items.push(mkItem(iid, gid, it.name, it.description, it.quantity));
-                groupItemRefs.push(iid);
-            });
-            // C semantics (Fix 0 / §F): a section is a divider, not a parent —
-            // its items flatten into the group. This is the seam where B would
-            // instead mint a nested group per section.
-            (child.sections ?? []).forEach((sec, si) => {
-                sec.items.forEach((it, ii) => {
-                    const iid = detId('item', `${slug}#c${ci}.s${si}.i${ii}`);
-                    items.push(mkItem(iid, gid, it.name, it.description, it.quantity));
-                    groupItemRefs.push(iid);
+            // INTERIM (ADR 0012 §G): the Markdown model now nests, but
+            // `initList` still parents every group to the list, so we flatten
+            // the group's whole item subtree into this one group (DO-flat, as
+            // §F option C did). The nested-group mint — minting a real group
+            // per subgroup — lands with the `initList` change in slice 2;
+            // subgroup names are dropped here until then.
+            const collect = (g: MarkdownGroup, path: string): void => {
+                g.children.forEach((ch, i) => {
+                    if (ch.kind === 'item') {
+                        const iid = detId('item', `${path}.i${i}`);
+                        items.push(mkItem(iid, gid, ch.name, ch.description, ch.quantity));
+                        groupItemRefs.push(iid);
+                    } else {
+                        collect(ch, `${path}.s${i}`);
+                    }
                 });
-            });
+            };
+            collect(child, `${slug}#c${ci}`);
             groups.push({
                 id: gid,
                 name: child.name,
