@@ -197,10 +197,21 @@ opens, a following top-level bullet still joins the deepest open group (the WHO
 trailing list-level prose still has no home above the group it lands in. B
 makes the tree deeper; it does not give a bullet a way to climb back up.
 
-**Status note:** option B landed in the parser/encoder/projection; the §F
-option-C `MarkdownSection` type and its DO-flattening are gone. The DO *mint*
-path (`djibb.ts`) still flattens for now — `initList` parents every group to
-the list — until the mutator slice lets a group parent a group.
+**Status note (B implementation):**
+
+- *Landed.* The parser/encoder/projection nest (the §F `MarkdownSection` type
+  and its DO-flattening are gone); the cursor flat-row sequence recurses with
+  true depth; the `djibb.ts` mint path emits real nested group rows; and the
+  write-side depth/cycle invariant is enforced — `findGroupTreeViolation`
+  (`list/groupDepth.ts`) rejects a payload past `MAX_DEPTH` or containing a
+  cycle, wired into `initList` and `mintFromBlank` (both server and client).
+- *Deferred.* (1) **Reparent guard** — `setGroupsAtomic` can set a group's
+  `parent_element_ref`, so when indent/outdent verbs go live they must run the
+  same check against the *existing* tree before reparenting. (2) **Cascade
+  recursion** — `archiveListGroup` still flips a single row; archiving a group
+  with subgroups needs to recurse (the long-standing "D.5 UI question"). (3)
+  **UI depth styling** — nested groups render, but every level is an `<h3>`
+  with no indent, so depth isn't yet visually legible.
 
 ## The round-trip property
 

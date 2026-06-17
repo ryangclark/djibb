@@ -17,6 +17,7 @@
         "./list/fork": "./src/list/fork.ts",
         "./list/slug": "./src/list/slug.ts",
         "./list/markdown": "./src/list/markdown.ts",
+        "./list/groupDepth": "./src/list/groupDepth.ts",
         "./list/invitations": "./src/list/invitations.ts",
         "./list/store": "./src/list/store.ts",
         "./list/mutators": "./src/list/mutators/index.ts",
