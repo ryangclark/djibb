@@ -1,5 +1,7 @@
 <script>
-	import { goto } from '$app/navigation';
+	import { untrack } from 'svelte';
+
+	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 
 	import { initList } from '$lib/replicache/index.svelte.js';
@@ -53,6 +55,11 @@
 		// this gate is necessary. tl;dr: direct nav races session load.
 		if (!sessionState.hasLoaded) return;
 
+		// See /l/[id]/+page.svelte: the `?new=1` marker authorizes the
+		// one-time optimistic init, read untracked so stripping it (below)
+		// doesn't re-run this effect.
+		const isNew = untrack(() => page.url.searchParams.get('new') === '1');
+
 		const replicacheList = initList({
 			accountId: sessionState.currentAccountId,
 			// Only a genuine creation (the `?new=1` marker set by the
@@ -63,7 +70,7 @@
 			// would push a doomed mutation and (until pull lands) flash
 			// an empty shell over the real content. Subsumes the old
 			// `from_invite` skip.
-			skipClientInit: page.url.searchParams.get('new') !== '1',
+			skipClientInit: !isNew,
 			// Attribute a freshly created template to the active workspace
 			// (no-op when opening an existing one — store isn't empty).
 			workspaceId: sessionState.currentWorkspaceId,
@@ -85,6 +92,19 @@
 		mutators = replicacheList.mutate;
 		mutateWithUndo = replicacheList.mutateWithUndo;
 		undoRuntime = replicacheList.undoRuntime;
+
+		// Marker consumed (see /l/[id]/+page.svelte): strip it so a copied
+		// or refreshed URL can't re-fire a doomed init against the
+		// now-existing entity. Untracked so the rewrite doesn't re-run this
+		// effect.
+		if (isNew) {
+			untrack(() => {
+				const params = new URLSearchParams(page.url.searchParams);
+				params.delete('new');
+				const qs = params.toString();
+				replaceState(`${page.url.pathname}${qs ? `?${qs}` : ''}`, page.state);
+			});
+		}
 
 		const ws = initWebsocket(data.list_id, replicacheList.client.clientID);
 		ws.addEventListener('message', (event) => {

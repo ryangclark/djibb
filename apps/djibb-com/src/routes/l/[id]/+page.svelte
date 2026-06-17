@@ -1,5 +1,7 @@
 <script>
-	import { goto } from '$app/navigation';
+	import { untrack } from 'svelte';
+
+	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 
 	import { initList } from '$lib/replicache/index.svelte.js';
@@ -62,6 +64,12 @@
 		// entity, before the real account is known.
 		if (!sessionState.hasLoaded) return;
 
+		// The `?new=1` marker authorizes the one-time optimistic init for a
+		// genuine creation. Read it untracked: we strip it from the URL the
+		// moment it's consumed (below), and we don't want that rewrite to
+		// re-run this effect and needlessly rebuild the Replicache client.
+		const isNew = untrack(() => page.url.searchParams.get('new') === '1');
+
 		const replicacheList = initList({
 			accountId: sessionState.currentAccountId,
 			// Only a genuine creation (the `?new=1` marker set by the
@@ -72,7 +80,7 @@
 			// doomed mutation and write the local actor as owner (hiding
 			// the InviteBanner before pull reconciliation lands).
 			// Subsumes the old `from_invite` skip.
-			skipClientInit: page.url.searchParams.get('new') !== '1',
+			skipClientInit: !isNew,
 			// Attribute a freshly created list to the active workspace
 			// (no-op when opening an existing list — store isn't empty).
 			workspaceId: sessionState.currentWorkspaceId,
@@ -103,6 +111,22 @@
 		mutators = replicacheList.mutate;
 		mutateWithUndo = replicacheList.mutateWithUndo;
 		undoRuntime = replicacheList.undoRuntime;
+
+		// The marker has now been consumed by the init decision above (its
+		// only job), whether or not an optimistic write actually fired —
+		// `initList` no-ops the create on a non-empty store. Strip it so a
+		// copied or refreshed URL can't re-fire a doomed init against the
+		// now-existing entity. (The server skip-and-acks such a push, but
+		// not firing it is cleaner.) Untracked so the rewrite doesn't
+		// re-run this effect.
+		if (isNew) {
+			untrack(() => {
+				const params = new URLSearchParams(page.url.searchParams);
+				params.delete('new');
+				const qs = params.toString();
+				replaceState(`${page.url.pathname}${qs ? `?${qs}` : ''}`, page.state);
+			});
+		}
 
 		const ws = initWebsocket(data.list_id, replicacheList.client.clientID);
 		ws.addEventListener('message', (event) => {
