@@ -1,6 +1,13 @@
 name = "djibb"
 compatibility_date = "2026-06-16"
 
+# Required for Pages to honor this config file at all — without it
+# wrangler ignores the whole file (and the bindings below) and deploys
+# with project defaults. Matches the @sveltejs/adapter-cloudflare build
+# output, so `wrangler pages deploy` finds the assets with no positional
+# dir arg.
+pages_build_output_dir = ".svelte-kit/cloudflare"
+
 d1_databases = [
     { binding = "DJIBB_AUTH", database_name = "djibb-auth", database_id = "f839093e-e2d9-4861-8a3f-05dca1d1a749" },
 ]

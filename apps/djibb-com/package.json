@@ -6,13 +6,13 @@
 	"scripts": {
 		"dev": "vite dev",
 		"build": "vite build",
-		"preview": "npm run build && wrangler pages dev .svelte-kit/cloudflare",
+		"preview": "npm run build && wrangler pages dev",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json --watch",
 		"test": "playwright test",
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
-		"deploy": "npm run build && wrangler pages deploy .svelte-kit/cloudflare"
+		"deploy": "npm run build && wrangler pages deploy"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^4.20260610.1",

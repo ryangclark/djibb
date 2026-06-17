@@ -22,7 +22,6 @@ import { mutators } from '@djibb/protocol/list/mutators/client';
  * @param {object} input
  * @param {string | null} input.accountId Account ID (`null` ⇒ anonymous)
  * @param {string} input.listId Entity ID; its prefix selects the route
- * @param {string} input.licenseKey Replicache license key
  * @param {string} input.baseUrl API host, no protocol (e.g. `api.djibb.com`)
  * @param {boolean} [input.secure=true] https when true; false for local dev
  *
@@ -32,18 +31,15 @@ import { mutators } from '@djibb/protocol/list/mutators/client';
  * mutator. Annotating it as a bare `Replicache` would erase that
  * generic and collapse `.mutate` to an empty surface.
  */
-export function createReplicacheClient({ accountId, listId, licenseKey, baseUrl, secure = true }) {
-	if (!licenseKey) {
-		throw new Error('Missing Replicache license key');
-	}
-
+export function createReplicacheClient({ accountId, listId, baseUrl, secure = true }) {
 	const protocol = secure ? 'https:' : 'http:';
 	const path = entityPath(listId);
 	const pullURL = `${protocol}//${baseUrl}/${path}/pull?l=${listId}`;
 	const pushURL = `${protocol}//${baseUrl}/${path}/push?l=${listId}`;
 
 	return new Replicache({
-		licenseKey,
+		// Replicache no longer requires a license key (it went open
+		// source; `licenseKey` is now optional and unused). Omitted.
 		mutators: mutators,
 		// Template string to create something like `userId123:listId123`.
 		// If no Account ID, it'll be `null:listId123`.

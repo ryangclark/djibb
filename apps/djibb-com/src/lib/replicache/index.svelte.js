@@ -137,7 +137,6 @@ export function InitReplicacheClient({ accountId, listId }) {
 	return createReplicacheClient({
 		accountId,
 		listId,
-		licenseKey: import.meta.env.VITE_REPLICACHE_LICENSE_KEY,
 		baseUrl: import.meta.env.VITE_REPLICACHE_BASE_URL,
 		secure: !dev
 	});
