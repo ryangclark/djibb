@@ -46,6 +46,8 @@ real nesting, not before it.
 
 ## Related
 
-- ADR 0012 §F — subgroups (C → B), the prerequisite.
+- ADR 0012 §F — subgroups, option C (shipped).
+- ADR 0012 §G — nested groups, option B (decided): the nestable `MarkdownGroup`
+  this builds on.
 - ADR 0011 — DjibbList as universal entity substrate (where a subtree
   primitive would live).

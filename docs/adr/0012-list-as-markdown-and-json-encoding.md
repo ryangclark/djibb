@@ -158,6 +158,39 @@ Accepted limitations, in the same spirit as 1–3 above:
    which the encoder renders *above* that container's items. Round-trip is
    still a fixpoint; the first-parse placement is just lossy.
 
+### G. Nested groups (option B) — decided, not yet built (2026-06-17)
+
+§F shipped option C (flat sections, flattened into the group at the DO layer).
+Option B is the agreed next step: groups nest. These rules are locked so the
+build doesn't relitigate them; conditional subtrees (ADR 0019) build on this.
+
+- **One primitive.** `MarkdownSection` collapses into a **nestable
+  `MarkdownGroup`** (`children: (MarkdownItem | MarkdownGroup)[]`). There is no
+  separate "section" type — a subgroup is just a group with a group parent.
+  This is also the substrate ADR 0019 will extend.
+- **Depth comes from syntax.** `#` = list title, `##` = group depth 0, `###` =
+  depth 1, … `######` = depth 4. Subgroups **canonicalize by depth**: the
+  canonical spelling of a depth-_n_ group is its heading level, full stop.
+- **Bold labels are subgroups, not headings.** An all-bold line
+  (`**To Surgeon:**`) opens a subgroup of the **most recent _true-heading_
+  group** — never of a previous bold group. So consecutive bold labels are
+  *siblings* under their heading, not a stack; a real heading resets the
+  anchor. A bold directly under `##` (no `###`) lands at depth 1. On encode it
+  takes the heading level for its depth (`**To Surgeon:**` under `###` →
+  `#### To Surgeon`). Bold-ness is **not** preserved — Markdown stays a lossy
+  view, one spelling per shape (exactly as `-` → `- [ ]`).
+- **Max depth 4 (`######`), enforced as a model invariant.** The ceiling is
+  where heading syntax runs out, not an arbitrary pick. It is enforced on the
+  **write side** (create/move mutators reject a group deeper than depth 4),
+  not only in the parser — otherwise JSON could hold a depth Markdown can't
+  spell, reintroducing the very asymmetry this ADR exists to avoid.
+- **Overflow clamps.** Lenient input below the floor (`#######`, or a bold
+  under `######`) **clamps** to the deepest valid level rather than erroring —
+  characterized by a test, like the limitations below.
+
+Building B **dissolves limitations 4 and 5** (the `###`/bold collapse and the
+greedy single-level section); they are removed when it lands.
+
 ## The round-trip property
 
 The headline guarantee, locked by `test/markdown.test.ts`:
