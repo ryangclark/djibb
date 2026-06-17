@@ -1,7 +1,12 @@
 # ADR 0014: Protocol / client / backend package split; the `EntityStore` port
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-14
+- **Accepted:** 2026-06-16 — implemented: `@djibb/protocol`, `@djibb/client`,
+  and `@djibb/server-cloudflare` (`packages/server-cf`) extracted; the
+  frontend relocated to `apps/djibb-com`; the `EntityStore` port landed as
+  `MutatorStore` in the protocol with a Cloudflare `SqlStorage` adapter
+  behind it; the `$djibb` source alias removed.
 
 ## Context
 

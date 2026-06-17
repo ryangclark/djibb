@@ -1,0 +1,183 @@
+/**
+ * Numeric HTTP status code.
+ *
+ * Inlined from hono's `StatusCode` so `@djibb/protocol` stays free of any
+ * Cloudflare/hono dependency (ADR 0014). Kept as an explicit union of the
+ * registered HTTP status codes — rather than a bare `number` — so a typo'd
+ * status (e.g. `41` instead of `412`) is still a type error at the throw
+ * site. Values are assignable to `number`, so they flow into `ResponseInit`
+ * / hono's `status` field without a cast.
+ */
+export type StatusCode =
+    // 1xx informational
+    | 100 | 101 | 102 | 103
+    // 2xx success
+    | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 226
+    // 3xx redirection
+    | 300 | 301 | 302 | 303 | 304 | 305 | 306 | 307 | 308
+    // 4xx client error
+    | 400 | 401 | 402 | 403 | 404 | 405 | 406 | 407 | 408 | 409
+    | 410 | 411 | 412 | 413 | 414 | 415 | 416 | 417 | 418
+    | 421 | 422 | 423 | 424 | 425 | 426 | 428 | 429 | 431 | 451
+    // 5xx server error
+    | 500 | 501 | 502 | 503 | 504 | 505 | 506 | 507 | 508 | 510 | 511;
+
+export enum CoreErrorCode {
+    AlreadyInitialized = 'core/already-initialized',
+    BadMutation = 'core/bad-mutation',
+    BadRequest = 'core/bad-request',
+    FailedPrecondition = 'core/failed-precondition',
+    NotFound = 'core/not-found',
+    ParseError = 'core/parse-error',
+    ValidationError = 'core/validation-error',
+    UnexpectedError = 'core/unexpected-error',
+    UnauthenticatedError = 'core/unauthenticated-error',
+    UnauthorizedError = 'core/unauthorized-error',
+    // Add more error codes as needed
+}
+
+/**
+ * Any namespaced Djibb error code. `CoreErrorCode` is the shared core set;
+ * subsystems define their own enums (e.g. `AuthErrorCode`, `ReplicacheError`)
+ * whose members are `${namespace}/${kind}` strings and so widen into this.
+ *
+ * Modeled as the literal `namespace/kind` shape rather than a bare `string`
+ * so a typo'd code (`'unauthorized'` with no namespace) is still a type
+ * error, while subsystem enums stay accepted without `errors.ts` having to
+ * import them (which would be a cycle — they import `DjibbError` from here).
+ * The explicit `CoreErrorCode` arm keeps autocomplete for the core set.
+ */
+export type DjibbErrorCode = CoreErrorCode | `${string}/${string}`;
+
+export interface SerializedDjibbError {
+    name: string;
+    message: string;
+    code: DjibbErrorCode;
+    httpStatusCode: StatusCode;
+    stack?: string;
+}
+
+/**
+ * Custom Djibb error class that extends the built-in `Error` class.
+ */
+export class DjibbError extends Error {
+    public code: DjibbErrorCode;
+    public httpStatusCode: StatusCode = 500;
+
+    constructor(
+        message: string,
+        code: DjibbErrorCode,
+        statusCode: StatusCode
+    ) {
+        super(message);
+        Object.setPrototypeOf(this, new.target.prototype);
+        this.code = code;
+        this.httpStatusCode = statusCode;
+
+        this.name = this.constructor.name;
+    }
+
+    toJSON(): SerializedDjibbError {
+        return {
+            name: this.name,
+            message: this.message,
+            code: this.code,
+            httpStatusCode: this.httpStatusCode,
+            stack: this.stack,
+        };
+    }
+}
+
+export class BadMutationError extends DjibbError {
+    constructor(message: string = 'Bad Mutation') {
+        super(message, CoreErrorCode.BadMutation, 400);
+    }
+}
+
+export class BadRequestError extends DjibbError {
+    constructor(message: string = 'Bad Request') {
+        super(message, CoreErrorCode.BadRequest, 400);
+    }
+}
+
+// FailedPrecondition indicates operation was rejected because the
+// system is not in a state required for the operation's execution.
+// For example, updating the quantity of a deleted item.
+export class FailedPreconditionError extends DjibbError {
+    constructor(message: string) {
+        super(message, CoreErrorCode.FailedPrecondition, 412);
+    }
+}
+
+export class NotFoundError extends DjibbError {
+    constructor(message: string = 'Resource Not Found') {
+        super(message, CoreErrorCode.NotFound, 404);
+    }
+}
+
+export class ParseError extends DjibbError {
+    constructor(message: string = 'Parse Error') {
+        super(message, CoreErrorCode.ParseError, 400);
+    }
+}
+
+export class TablesAlreadyInitializedError extends DjibbError {
+    constructor(message: string = 'tables already initialized') {
+        super(message, CoreErrorCode.AlreadyInitialized, 412);
+    }
+}
+
+export class ValidationError extends DjibbError {
+    constructor(message: string = 'Validation Error') {
+        super(message, CoreErrorCode.ValidationError, 400);
+    }
+}
+
+export class UnauthenticatedError extends DjibbError {
+    constructor(message: string = 'Unauthenticated') {
+        super(message, CoreErrorCode.UnauthenticatedError, 401);
+    }
+}
+
+export class UnauthorizedError extends DjibbError {
+    constructor(message: string = 'Unauthorized') {
+        super(message, CoreErrorCode.UnauthorizedError, 403);
+    }
+}
+
+export class UnexpectedError extends DjibbError {
+    constructor(message: string = 'Internal Server Error') {
+        super(message, CoreErrorCode.UnexpectedError, 500);
+    }
+}
+
+/**
+ * Turns a serialized error back into a real instance
+ * (e.g., for logging, analytics, or rethrowing)
+ */
+export function deserializeDjibbError(e: SerializedDjibbError): DjibbError {
+    const err = new DjibbError(e.message, e.code, e.httpStatusCode);
+    err.name = e.name;
+    if (e.stack) err.stack = e.stack;
+    return err;
+}
+
+/**
+ * Explicit helper for safety and clarity
+ */
+export function serializeError(e: unknown): SerializedDjibbError {
+    if (e instanceof DjibbError) return e.toJSON();
+    if (e instanceof Error) {
+        return {
+            name: e.name,
+            message: e.message,
+            code: CoreErrorCode.UnexpectedError,
+            httpStatusCode: 500,
+            stack: e.stack,
+        };
+    }
+
+    return new UnexpectedError(
+        'serialization error: unexpected instanceof'
+    ).toJSON();
+}

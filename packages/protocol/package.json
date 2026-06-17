@@ -1,0 +1,38 @@
+{
+    "name": "@djibb/protocol",
+    "version": "0.0.0",
+    "description": "The djibb protocol: entity schemas, ID scheme, mutator contract, and wire encodings. Pure TypeScript, zero Cloudflare dependencies (ADR 0014).",
+    "private": true,
+    "type": "module",
+    "license": "Apache-2.0",
+    "exports": {
+        ".": "./src/index.ts",
+        "./id": "./src/id/index.ts",
+        "./schema": "./src/schema.ts",
+        "./account": "./src/account/index.ts",
+        "./errors": "./src/errors.ts",
+        "./trycatch": "./src/trycatch.ts",
+        "./list": "./src/list/index.ts",
+        "./list/constants": "./src/list/constants.ts",
+        "./list/fork": "./src/list/fork.ts",
+        "./list/slug": "./src/list/slug.ts",
+        "./list/markdown": "./src/list/markdown.ts",
+        "./list/invitations": "./src/list/invitations.ts",
+        "./list/store": "./src/list/store.ts",
+        "./list/mutators": "./src/list/mutators/index.ts",
+        "./list/mutators/*": "./src/list/mutators/*.ts",
+        "./auth/rules": "./src/auth/rules.ts",
+        "./auth/constants": "./src/auth/constants.ts",
+        "./websocket/constants": "./src/websocket/constants.ts"
+    },
+    "scripts": {
+        "typecheck": "tsc --noEmit -p tsconfig.json"
+    },
+    "dependencies": {
+        "replicache": "^15.0.1",
+        "zod": "^4.0.17"
+    },
+    "devDependencies": {
+        "typescript": "^6.0.3"
+    }
+}

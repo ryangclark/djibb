@@ -5,13 +5,14 @@
     "private": true,
     "scripts": {
         "start": "node npmrundev.mjs",
-        "djibb": "node workers/bin/djibb.ts"
+        "djibb": "node packages/server-cf/bin/djibb.ts",
+        "licenses:check": "node scripts/check-licenses.mjs"
     },
     "bin": {
         "djibb": "./djibb"
     },
     "workspaces": [
-        "pages",
-        "workers"
+        "packages/*",
+        "apps/*"
     ]
 }

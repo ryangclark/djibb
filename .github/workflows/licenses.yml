@@ -1,0 +1,20 @@
+name: licenses
+
+# License-matrix gate (ADR-0016): every packages/* stays Apache-2.0 and
+# every apps/* stays PolyForm Shield 1.0.0, each with a LICENSE file, so
+# the licensing can't silently drift as packages are added.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check-licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/check-licenses.mjs

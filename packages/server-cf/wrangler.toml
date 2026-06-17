@@ -1,0 +1,45 @@
+name = "djibb-server"
+main = "src/index.ts"
+compatibility_date = "2026-06-16"
+compatibility_flags = [ "nodejs_compat" ]
+
+#kv_namespaces = [
+  # namespace = "djibb_auth_dev"
+  # I named it "dev" before I realized that it runs locally unless you 
+  # use the "-remote" flag. Oops.
+#  { binding = "KV_AUTH", id = "444794b9d1e8414880006307d2dc635a" }
+#]
+
+# [env.production]
+d1_databases = [
+  { binding = "DJIBB_AUTH", database_name = "djibb-auth", database_id = "f839093e-e2d9-4861-8a3f-05dca1d1a749" },
+]
+
+[durable_objects]
+bindings = [
+  { name = "DJIBB_LIST", class_name = "DjibbList" },
+]
+
+# Durable Object migrations.
+# Docs: https://developers.cloudflare.com/workers/learning/using-durable-objects#configure-durable-object-classes-with-migrations
+[[migrations]]
+tag = "20241001"
+new_sqlite_classes = ["DjibbList"]
+
+# Email
+[[send_email]]
+name = "EMAIL"
+# `remote = true` routes `wrangler dev` sends through the LIVE Cloudflare
+# email service (real messages, real sender reputation). It was the
+# source of 763 failed sends from local dev (wrong sender domain, see
+# EMAIL_FROM below). Left off so `wrangler dev` simulates sends locally;
+# real delivery only happens from a deployed Worker. Re-enable
+# deliberately (and briefly) if you ever need to test live delivery.
+# remote = true
+
+[vars]
+# Sender for all outbound mail (invites, magic links, ownership
+# transfers). Read via `resolveEmailFrom(env)` — the single source of
+# truth, so the address lives in config, not hardcoded across the email
+# module. Must be on a domain we control (djibb.com).
+EMAIL_FROM = "no-reply@djibb.com"

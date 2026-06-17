@@ -1,0 +1,31 @@
+{
+    "compilerOptions": {
+        /* Language / environment — pure TS, no Cloudflare, no DOM.
+           The empty `types` array is load-bearing: it stops ambient
+           Worker/Node globals leaking in, so anything Cloudflare-shaped
+           that sneaks into the protocol is a typecheck error (ADR 0014). */
+        "target": "es2022",
+        "lib": ["es2022"],
+        "types": [],
+
+        /* Modules — bundler resolution; consumers compile from source. */
+        "module": "es2022",
+        "moduleResolution": "bundler",
+        "resolveJsonModule": true,
+
+        /* Emit — type-check only; consumers bundle the .ts directly. */
+        "noEmit": true,
+
+        /* Interop — mirror the workers project so shared code is consistent. */
+        "isolatedModules": true,
+        "verbatimModuleSyntax": true,
+        "allowSyntheticDefaultImports": true,
+        "forceConsistentCasingInFileNames": true,
+
+        /* Type checking — match the strictness shared code is written against. */
+        "strict": true,
+        "noUncheckedIndexedAccess": true,
+        "skipLibCheck": true
+    },
+    "include": ["src"]
+}

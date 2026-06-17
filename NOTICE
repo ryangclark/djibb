@@ -3,6 +3,21 @@ Copyright 2026 Ryan Lark
 
 This product includes software developed by Ryan Lark.
 
+Per-package licenses (ADR-0016). This repository is licensed per package
+along the packages/ vs apps/ boundary. The repository-root LICENSE is
+Apache-2.0 and is the default; each package also carries its own LICENSE
+file and a `license` field in its package.json:
+
+  @djibb/protocol          (packages/protocol)    Apache-2.0
+  @djibb/client            (packages/client)      Apache-2.0  [see Replicache below]
+  @djibb/server-cloudflare (packages/server-cf)   Apache-2.0
+  @djibb/djibb-com         (apps/djibb-com)       PolyForm Shield 1.0.0 (source-available)
+
+The entire engine (protocol + client + server) is open source under
+Apache-2.0. The frontend apps under apps/* are source-available — NOT open
+source — under the PolyForm Shield License 1.0.0: usable for any purpose
+except building a competing product. See each app's LICENSE and README.
+
 This product depends on Replicache, which is licensed under the Rocicorp
 Terms of Service (https://roci.dev/terms.html) and is not distributed
 under the Apache License. Replicache is not covered by this NOTICE file

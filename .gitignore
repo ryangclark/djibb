@@ -1,11 +1,14 @@
 .DS_Store
 node_modules
-/pages/build
-/pages/.svelte-kit
-/pages/package
-/workers/.wrangler
-/workers/.dev.vars
-/pages/.wrangler
+/apps/djibb-com/build
+/apps/djibb-com/.svelte-kit
+/apps/djibb-com/package
+# Path-agnostic so these stay ignored after the ADR-0014 package moves
+# (workers → packages/server-cf, pages → apps/djibb-com). Local wrangler
+# state and the secret-bearing .dev.vars must never be committed; the
+# checked-in .dev.vars.example is a different name and stays tracked.
+.wrangler/
+.dev.vars
 .env
 .env.*
 !.env.example
@@ -16,3 +19,8 @@ vite.config.ts.timestamp-*
 # they travel with the repo (the contribute-a-list skill, future skills).
 .claude/*
 !.claude/skills/
+
+# Generated TypeScript declaration files under the server-cf src (the
+# .ts sources are authoritative; keep the hand-written env.d.ts).
+packages/server-cf/src/**/*.d.ts
+!packages/server-cf/src/**/env.d.ts
