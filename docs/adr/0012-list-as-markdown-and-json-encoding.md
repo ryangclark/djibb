@@ -205,13 +205,16 @@ makes the tree deeper; it does not give a bullet a way to climb back up.
   write-side depth/cycle invariant is enforced — `findGroupTreeViolation`
   (`list/groupDepth.ts`) rejects a payload past `MAX_DEPTH` or containing a
   cycle, wired into `initList` and `mintFromBlank` (both server and client).
+  Finally, **UI depth styling** — `List.svelte` threads a `depth` param
+  through the `child`→`group` snippets: top-level sections keep the roomy
+  heading/spacing, while subgroups indent under their parent with a left rule
+  and a step-down heading scale (`GROUP_HEADING_CLASSES`, indexed by depth and
+  clamped at `MAX_DEPTH`), so nesting is now visually legible.
 - *Deferred.* (1) **Reparent guard** — `setGroupsAtomic` can set a group's
   `parent_element_ref`, so when indent/outdent verbs go live they must run the
   same check against the *existing* tree before reparenting. (2) **Cascade
   recursion** — `archiveListGroup` still flips a single row; archiving a group
-  with subgroups needs to recurse (the long-standing "D.5 UI question"). (3)
-  **UI depth styling** — nested groups render, but every level is an `<h3>`
-  with no indent, so depth isn't yet visually legible.
+  with subgroups needs to recurse (the long-standing "D.5 UI question").
 
 ## The round-trip property
 
