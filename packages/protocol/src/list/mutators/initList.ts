@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { DefaultRoleEnum } from '@djibb/protocol/auth/rules';
-import { ValidationError } from '@djibb/protocol/errors';
+import { UnauthorizedError, ValidationError } from '@djibb/protocol/errors';
 import { findGroupTreeViolation } from '@djibb/protocol/list/groupDepth';
 import { IdTypes } from '@djibb/protocol/id';
 import {
@@ -39,13 +39,13 @@ import type { ClientMutator, Inverse, ServerMutator } from './_shared';
  * unlisted reader gets — a `viewer` Blank is publicly readable but not
  * editable. Both are optional and default to today's behavior.
  *
- * NOTE (deferred auth): `slot` and `defaultRole` are client-settable
- * here, which is a squat/spam surface — an anonymous caller could claim
- * the global `seed_pool` slot or mint `viewer` entities at will. This
- * matches the project's acknowledged "unauthenticated at first, lock
- * down later" posture for the Seed Pool; a server-side guard (e.g.
- * `slot: 'seed_pool'` only from a system/admin context) lands when the
- * holding pen moves to prod, without changing this wire shape.
+ * **Operator-gated metadata.** `slot` and `defaultRole` are still
+ * client-settable on the wire, but they're a squat/spam surface — an
+ * anonymous caller could otherwise claim the global `seed_pool` slot or
+ * mint publicly-`viewer` entities at will. The server now rejects either
+ * field unless the caller is the platform operator (`ctx.isOperator`);
+ * `djibb promote` is the only legitimate sender. The wire shape is
+ * unchanged, so ordinary callers (who send neither field) are unaffected.
  */
 
 const ChildGroupSchema = ListGroupSchema.extend({ version: z.number() });
@@ -119,8 +119,18 @@ function rulesFor(
  */
 export const server: ServerMutator<Args> = (
     args,
-    { store, accountId, nextVersion, timestamp_client }
+    { store, accountId, nextVersion, timestamp_client, isOperator }
 ) => {
+    // Privileged metadata is operator-only. Reject (not silently coerce)
+    // so a non-operator caller fails loudly instead of quietly minting an
+    // under-privileged entity it believes is slotted/public. No ordinary
+    // flow sends either field — only `djibb promote` does.
+    if ((args.slot != null || args.defaultRole != null) && !isOperator) {
+        throw new UnauthorizedError(
+            'initList `slot`/`defaultRole` require operator privileges'
+        );
+    }
+
     const ts = timestamp_client ?? new Date();
 
     // Same mutator initializes both Lists and Templates; the entity

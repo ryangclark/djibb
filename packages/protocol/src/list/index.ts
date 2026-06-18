@@ -40,6 +40,26 @@ export type Slot = z.TypeOf<typeof SlotEnum>;
 export const SEED_POOL_LIST_ID = 'l/LWmRT14-cOUtJ9-nsSwQe';
 
 /**
+ * The one platform **operator** account — a fixed, well-known singleton,
+ * the account-identity sibling of {@link SEED_POOL_LIST_ID}. It owns the
+ * platform's shared entities (the Seed Pool List, the Blank Templates)
+ * and is the *only* principal permitted to set privileged `initList`
+ * fields (`slot`, `defaultRole`). `djibb promote` authenticates as it.
+ *
+ * Unlike entity ids, account ids are unconstrained (`AccountSchema.id`
+ * is a bare `z.string()`) and are never Durable-Object-routed, so this
+ * can be a short, human-readable literal rather than a 21-char suffix.
+ * The short form is also collision-proof: `newId('account')` only ever
+ * mints 21-char suffixes, so a real user can never be issued `a/djibb`.
+ *
+ * Kept as a constant (not an env var) deliberately: the operator's
+ * *identity* is permanent and identical across environments — only its
+ * session token (the bearer secret carried by `promote`) is secret and
+ * rotatable. Seed this exact id via `packages/server-cf/bin/seed-operator.ts`.
+ */
+export const OPERATOR_ACCOUNT_ID = 'a/djibb';
+
+/**
  * Fields shared by every top-level entity (List, Template). The `type`
  * literal and `id` length differ per concrete entity and are added by
  * the extending schemas.

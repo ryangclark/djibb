@@ -399,10 +399,13 @@ async function cmdContribute(args: string[]): Promise<number> {
  *
  * DOs only come into being through the worker runtime, so this is an
  * HTTP client: it POSTs real `/push` mutations to a running worker
- * (`--base`, default local `wrangler dev`). It is unauthenticated — the
- * Seed Pool is `ownerless` (editable so promote can append to it) and
- * the Blanks are `viewer` (publicly readable, not editable). Locking
- * that down is deferred (see `initList`'s deferred-auth note).
+ * (`--base`, default local `wrangler dev`). It authenticates as the
+ * platform **operator** (`OPERATOR_ACCOUNT_ID`) via the session token in
+ * `DJIBB_OPERATOR_SESSION` — the only principal allowed to set the
+ * privileged `slot`/`defaultRole` fields. The Seed Pool is operator-owned
+ * with `default_role: 'viewer'` (publicly readable for the homepage, not
+ * anonymously editable) and the Blanks are likewise operator-owned
+ * `viewer` entities.
  *
  * Idempotent: every id is derived deterministically from the slug, and
  * the server primitives are INSERT-OR-IGNORE with child-ref dedupe, so
@@ -441,6 +444,16 @@ function detId(kind: keyof typeof ID_PREFIX, seed: string): string {
  * worker tree's extensionless relative imports.
  */
 const SEED_POOL_LIST_ID = detId('list', 'djibb:seed_pool');
+
+/**
+ * The platform operator account. Mirrors `OPERATOR_ACCOUNT_ID` in
+ * `packages/protocol/src/list/index.ts` (re-declared, not imported, for
+ * the same reason `SEED_POOL_LIST_ID` is re-derived here). `promote`
+ * stamps this as the mutation `accountId` and sends the operator's
+ * session cookie, so the DO resolves it to `owner` and the `initList`
+ * guard admits the privileged `slot`/`defaultRole` fields.
+ */
+const OPERATOR_ACCOUNT_ID = 'a/djibb';
 
 const nowIso = () => new Date().toISOString();
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -520,9 +533,12 @@ function buildBlankContent(slug: string, blankId: string, model: MarkdownList) {
 }
 
 /**
- * POST one mutation to a worker `/push`. A fresh `clientID` per call has
- * `lastMutationId: 0` server-side, so `id: 1` always validates; the
- * unauthed envelope (`accountId: null`) rides inside `args`.
+ * POST one mutation to a worker `/push`, authenticated as the operator. A
+ * fresh `clientID` per call has `lastMutationId: 0` server-side, so
+ * `id: 1` always validates. The operator's session token rides as the
+ * `djibb-session` cookie and its `accountId` is stamped into the envelope
+ * — the DO's cross-account check verifies the two agree, then resolves
+ * the operator to `owner` (admitting privileged `initList` fields).
  */
 async function pushMutation(
     base: string,
@@ -530,14 +546,19 @@ async function pushMutation(
     kind: 'list' | 'template',
     entityId: string,
     name: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    sessionToken: string
 ): Promise<void> {
     const url = `${base.replace(/\/$/, '')}/${kind}/push?id=${encodeURIComponent(entityId)}`;
     const res = await fetch(url, {
         method: 'POST',
         // The worker's CSRF gate (index.ts) rejects non-GET requests
         // whose `Origin` isn't in AUTHORIZED_DOMAINS with an empty 403.
-        headers: { 'Content-Type': 'application/json', Origin: origin },
+        headers: {
+            'Content-Type': 'application/json',
+            Origin: origin,
+            Cookie: `djibb-session=${sessionToken}`,
+        },
         body: JSON.stringify({
             profileID: 'djibb-cli',
             clientGroupID: randomUUID(),
@@ -548,7 +569,11 @@ async function pushMutation(
                     id: 1,
                     clientID: randomUUID(),
                     name,
-                    args: { ...args, accountId: null, timestamp_client: nowIso() },
+                    args: {
+                        ...args,
+                        accountId: OPERATOR_ACCOUNT_ID,
+                        timestamp_client: nowIso(),
+                    },
                     timestamp: Date.now(),
                 },
             ],
@@ -566,10 +591,12 @@ async function pushMutation(
 }
 
 /**
- * Does an entity already exist? A `viewer` Blank is immutable to the
- * unauthed promoter (re-running `initList` on it is correctly rejected),
- * so re-promote idempotency comes from skipping ones that already exist
- * rather than from re-running the mutator. GET isn't CSRF-gated.
+ * Does an entity already exist? Re-promote idempotency comes from
+ * skipping Blanks that already exist rather than re-running `initList`
+ * (the operator now *owns* its Blanks, so a re-init would no-op via
+ * INSERT-OR-IGNORE rather than 403 — but updating a promoted Blank's
+ * content still needs a dedicated privileged path, so skipping is the
+ * conservative choice). GET isn't CSRF-gated.
  */
 async function entityExists(
     base: string,
@@ -610,6 +637,19 @@ async function cmdPromote(args: string[]): Promise<number> {
             : 'https://djibb.com');
     const dryRun = args.includes('--dry-run');
     const show = args.includes('--show');
+
+    // Operator credentials: the session token is the only secret. Required
+    // for a real push (the privileged `slot`/`defaultRole` fields are
+    // operator-only server-side); a `--dry-run` plans without it. Seed one
+    // with `node bin/seed-operator.ts --execute --remote`.
+    const sessionToken = process.env.DJIBB_OPERATOR_SESSION;
+    if (!dryRun && !sessionToken) {
+        console.error(
+            c.red('promote needs an operator session token: ') +
+                'set DJIBB_OPERATOR_SESSION (see `bin/seed-operator.ts`).'
+        );
+        return 1;
+    }
 
     // Positionals, skipping `--base <value>` and boolean flags.
     const positional: string[] = [];
@@ -719,15 +759,21 @@ async function cmdPromote(args: string[]): Promise<number> {
         return 0;
     }
 
-    // 1. Ensure the Seed Pool exists (ownerless so we can append to it).
+    // Past the dry-run gate, the operator token is guaranteed present
+    // (checked at the top of cmdPromote).
+    const token = sessionToken!;
+
+    // 1. Ensure the Seed Pool exists. Operator-owned with default_role
+    //    'viewer': publicly readable for the homepage, but only the
+    //    operator (an EDIT_ROLE owner) can append to it.
     try {
         await pushMutation(base, origin, 'list', SEED_POOL_LIST_ID, 'initList', {
             listId: SEED_POOL_LIST_ID,
             workspaceId: null,
             name: 'Seed Pool',
             slot: 'seed_pool',
-            defaultRole: 'ownerless',
-        });
+            defaultRole: 'viewer',
+        }, token);
         console.log(`\n${PASS} seed pool ready`);
     } catch (err) {
         console.error(c.red(`seed pool init failed: ${(err as Error).message}`));
@@ -735,16 +781,15 @@ async function cmdPromote(args: string[]): Promise<number> {
         return 1;
     }
 
-    // 2. Mint each Blank Template (read-only viewer, full content inline).
-    //    Skip ones that already exist — a viewer Blank can't be re-inited
-    //    (that's the immutability we want); idempotency lives here.
+    // 2. Mint each Blank Template (operator-owned, public viewer, full
+    //    content inline). Skip ones that already exist — see entityExists.
     for (const p of plans) {
         try {
             if (await entityExists(base, 'template', p.blankId)) {
                 console.log(`${PASS} blank ${c.bold(p.slug)} ${c.dim('(exists, skipped)')}`);
                 continue;
             }
-            await pushMutation(base, origin, 'template', p.blankId, 'initList', p.blankArgs);
+            await pushMutation(base, origin, 'template', p.blankId, 'initList', p.blankArgs, token);
             console.log(`${PASS} blank ${c.bold(p.slug)}`);
         } catch (err) {
             console.error(c.red(`✗ blank ${p.slug} failed: ${(err as Error).message}`));
@@ -759,7 +804,7 @@ async function cmdPromote(args: string[]): Promise<number> {
             await pushWithRetry(() =>
                 pushMutation(base, origin, 'list', SEED_POOL_LIST_ID, 'createListItem', {
                     item: p.item,
-                })
+                }, token)
             );
             console.log(`${PASS} pooled ${c.bold(p.slug)}`);
         } catch (err) {

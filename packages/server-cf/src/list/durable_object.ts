@@ -10,6 +10,7 @@ import type { ReplicachePullRequest } from '../replicache';
 import {
     isEntityRow,
     isEntityRowType,
+    OPERATOR_ACCOUNT_ID,
     type List,
     type ListElement,
     type ListGroup,
@@ -1682,6 +1683,11 @@ export class DjibbList extends DurableObject {
                 store: createSqlStorageEntityStore(this.sql),
                 role: authorizedRole,
                 nextVersion,
+                // Privileged-write gate. Safe to trust here: the
+                // cross-account check above has already verified
+                // `envelope.accountId` belongs to the session, so only the
+                // operator's own session can match the constant.
+                isOperator: envelope.accountId === OPERATOR_ACCOUNT_ID,
             });
 
             if (result.ok) {
