@@ -191,6 +191,19 @@ function printFileResult(result: FileResult, show: boolean): void {
     }
 }
 
+/**
+ * Reject unrecognized `--flags`. Each command's positional/flag parsing
+ * silently ignores any `--token` it doesn't look for, so a typo like
+ * `--dryrun` (vs `--dry-run`) would no-op instead of erroring. Returns a
+ * message naming the offenders, or `null` if every `--flag` is known.
+ * Only double-dash tokens are checked; flag *values* (e.g. the URL after
+ * `--base`) don't start with `--`, and `-m` is handled explicitly.
+ */
+function unknownFlags(args: string[], known: readonly string[]): string | null {
+    const offenders = args.filter(a => a.startsWith('--') && !known.includes(a));
+    return offenders.length ? `unknown flag(s): ${offenders.join(', ')}` : null;
+}
+
 /** Kebab-case a title into a slug: lowercase, non-alnum → '-', collapsed. */
 function slugify(s: string): string {
     return s
@@ -205,6 +218,11 @@ async function cmdTestParse(args: string[]): Promise<number> {
         const i = args.indexOf(name);
         return i >= 0 ? args[i + 1] : undefined;
     };
+    const badFlag = unknownFlags(args, ['--show', '--message']);
+    if (badFlag) {
+        console.error(c.red(`test-parse: ${badFlag}`));
+        return 1;
+    }
     const show = args.includes('--show');
     const message = flag('-m') ?? flag('--message');
     // Positionals, skipping the `-m`/`--message` value.
@@ -419,10 +437,15 @@ class HttpError extends Error {
 }
 
 async function httpDetail(res: Response): Promise<string> {
+    // Read the body exactly once (a Response body is a single-use stream —
+    // a `res.json()`-then-`res.text()` fallback would throw on the consumed
+    // stream and lose the detail). Take it as text, then re-stringify if it
+    // happens to be JSON so the message is normalized.
+    const text = await res.text().catch(() => '');
     try {
-        return JSON.stringify(await res.json());
+        return JSON.stringify(JSON.parse(text));
     } catch {
-        return res.text().catch(() => '');
+        return text;
     }
 }
 
@@ -587,6 +610,13 @@ async function cmdContribute(args: string[]): Promise<number> {
         const i = args.indexOf(name);
         return i >= 0 ? args[i + 1] : undefined;
     };
+    const badFlag = unknownFlags(args, [
+        '--show', '--dry-run', '--path', '--message', '--slug', '--base', '--origin',
+    ]);
+    if (badFlag) {
+        console.error(c.red(`contribute: ${badFlag}`));
+        return 1;
+    }
     const show = args.includes('--show');
     const dryRun = args.includes('--dry-run');
     const path = flag('--path');
@@ -802,6 +832,13 @@ async function cmdPromote(args: string[]): Promise<number> {
         const i = args.indexOf(name);
         return i >= 0 ? args[i + 1] : undefined;
     };
+    const badFlag = unknownFlags(args, [
+        '--dry-run', '--show', '--all', '--base', '--origin',
+    ]);
+    if (badFlag) {
+        console.error(c.red(`promote: ${badFlag}`));
+        return 1;
+    }
     const { base, origin } = resolveBaseOrigin(flag);
     const dryRun = args.includes('--dry-run');
     const show = args.includes('--show');
@@ -934,6 +971,21 @@ async function cmdPromote(args: string[]): Promise<number> {
         );
         for (const u of unmatched) {
             console.error(c.yellow(`⚠ no contributed entry matches "${u}"`));
+        }
+        // A slug isn't unique — two contributions with the same title slug
+        // to the same value (only the Blank id is unique). Surface the
+        // ambiguity so promoting "both" is a choice, not a surprise; the
+        // operator can re-run with the specific blank-id(s) to narrow.
+        for (const s of selectors) {
+            const bySlug = candidates.filter(cnd => cnd.slug === s);
+            if (bySlug.length > 1) {
+                console.error(
+                    c.yellow(
+                        `⚠ slug "${s}" matches ${bySlug.length} entries — promoting all; ` +
+                            `pass a blank-id to pick one: ${bySlug.map(cnd => cnd.blankId).join(', ')}`
+                    )
+                );
+            }
         }
         if (chosen.length === 0) {
             console.error(c.red('nothing selected — pass a slug/blank-id that exists, or --all'));
