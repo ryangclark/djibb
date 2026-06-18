@@ -85,12 +85,23 @@ function buildSql(sessionId: string, rotate: boolean): string {
     if (rotate) {
         // Drop prior operator sessions (and their relationships) so old
         // tokens stop authenticating. The account row is preserved.
-        lines.push(
-            `DELETE FROM sessions WHERE id IN ` +
-                `(SELECT session_id FROM AccountSession WHERE account_id = '${OPERATOR_ACCOUNT_ID}');`
-        );
+        //
+        // FK order matters: `AccountSession.session_id REFERENCES
+        // sessions(id)` with no ON DELETE CASCADE, so the child
+        // (AccountSession) must be deleted before the parent (sessions).
+        // We can't use a temp table to remember the ids — D1's importer
+        // forbids `CREATE TEMP TABLE` (SQLITE_AUTH). Instead we delete the
+        // child link first, then sweep the *orphaned* sessions that carry
+        // the operator's distinctive far-future expiry (only operator
+        // sessions use unixepoch('2100-01-01'), so user sessions are never
+        // touched; the NOT IN guard is belt-and-suspenders).
         lines.push(
             `DELETE FROM AccountSession WHERE account_id = '${OPERATOR_ACCOUNT_ID}';`
+        );
+        lines.push(
+            `DELETE FROM sessions ` +
+                `WHERE time_expires = unixepoch('2100-01-01') ` +
+                `AND id NOT IN (SELECT session_id FROM AccountSession);`
         );
     }
 
