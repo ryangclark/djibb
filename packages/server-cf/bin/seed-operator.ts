@@ -174,7 +174,7 @@ function main(): number {
     console.log(c.dim('\n  cookie:   djibb-session=' + sessionId));
     console.log(
         c.dim('  promote:  ') +
-            `DJIBB_OPERATOR_SESSION=${sessionId} djibb promote --base https://djibb.com`
+            `DJIBB_OPERATOR_SESSION=${sessionId} djibb promote --base https://api.djibb.com`
     );
     if (rotate) {
         console.log(c.yellow('\n  --rotate: prior operator tokens were invalidated.'));
