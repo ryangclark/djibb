@@ -23,11 +23,6 @@ vite.config.ts.timestamp-*
 .claude/*
 !.claude/skills/
 
-# Contributed lists are a local holding pen, not repo content: proposals
-# that `djibb contribute` writes here until a prod "Contributed" List
-# houses them (see #9). Untracked so they don't accrete in git history.
-seed/contributed/
-
 # Generated TypeScript declaration files under the server-cf src (the
 # .ts sources are authoritative; keep the hand-written env.d.ts).
 packages/server-cf/src/**/*.d.ts

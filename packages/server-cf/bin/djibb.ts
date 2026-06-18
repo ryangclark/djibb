@@ -2,26 +2,33 @@
 /**
  * `djibb` — the project CLI. v0.1.
  *
- * One subcommand today: `test-parse`, which runs a Markdown file through the
- * ADR-0012 content encoder (`parseMarkdown` <-> `encodeMarkdown`) and checks
- * the two round-trip invariants the module guarantees. This is the
- * dogfooding surface for `seed/contributed/` — a contributed List *is* a test
- * of the system, and this command is how an agent runs that test.
+ * Three subcommands:
+ *
+ *   - `test-parse` runs a Markdown file through the ADR-0012 content
+ *     encoder (`parseMarkdown` <-> `encodeMarkdown`) and checks the two
+ *     round-trip invariants the module guarantees. The pure, offline
+ *     dogfooding surface — a contributed List *is* a test of the system.
+ *   - `contribute` pushes a List as a fresh Blank Template + a referencing
+ *     item on the live **Contributed** List (issue #9). Anonymous: it only
+ *     *appends* to the already-existing operator-owned Contributed List
+ *     (`default_role: 'submitter'`, ADR 0021), so it needs no token.
+ *   - `promote` (operator) bootstraps both platform Lists, reads the
+ *     Contributed List, and references chosen Blanks from the Seed Pool.
  *
  * Pure and dependency-free, like the module it exercises: it runs under plain
  * `node` via TypeScript type-stripping (Node >= 23.6), no build step.
  *
- *   ./djibb test-parse                 # every list in ./seed/contributed/ (searched upward)
- *   ./djibb test-parse wrong-window    # one seed, by slug
- *   ./djibb test-parse path/to/list.md # one file, by path
- *   ./djibb test-parse wrong-window --show   # also print the canonical form
+ *   ./djibb test-parse path/to/list.md # round-trip one file by path
+ *   ./djibb test-parse -m '# T\n- [ ] x'   # round-trip inline markdown
+ *   ./djibb contribute --path list.md --base <url>   # append to Contributed List
+ *   ./djibb promote --base <url>       # bootstrap + source the Seed Pool
  */
 
-import { readFile, readdir, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
-import { dirname, join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
 import { parseMarkdown, encodeMarkdown } from '@djibb/protocol/list/markdown';
 import type { MarkdownGroup, MarkdownList } from '@djibb/protocol/list/markdown';
@@ -31,26 +38,6 @@ function groupItemCount(g: MarkdownGroup): number {
     return g.children.reduce(
         (n, ch) => n + (ch.kind === 'item' ? 1 : groupItemCount(ch)),
         0
-    );
-}
-
-/**
- * The seed/contributed dir of the djibb project we're standing in: walk up
- * from the cwd until we find one. This is what lets a PATH-linked `djibb`
- * act on the *current* project, not the checkout it was installed from.
- */
-function findSeedDir(): string {
-    let dir = process.cwd();
-    for (;;) {
-        const candidate = join(dir, 'seed', 'contributed');
-        if (existsSync(candidate)) return candidate;
-        const parent = dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
-    }
-    throw new Error(
-        `no seed/contributed/ found from ${process.cwd()} — ` +
-            `run inside a djibb project, or pass a file path.`
     );
 }
 
@@ -96,7 +83,14 @@ async function testParseFile(path: string, label: string): Promise<FileResult> {
     } catch (err) {
         return { label, ok: false, canonical: '', notes: [c.red(`could not read ${path}: ${(err as Error).message}`)] };
     }
+    return testParseRaw(raw, label);
+}
 
+/**
+ * The pure round-trip on raw Markdown (no filesystem). Shared by
+ * `test-parse` (file or `-m`) and `contribute`'s dogfood feedback.
+ */
+function testParseRaw(raw: string, label: string): FileResult {
     const model = parseMarkdown(raw);
     const canonical = encodeMarkdown(model);
     const reModel = parseMarkdown(canonical);
@@ -186,31 +180,6 @@ function diff(before: string, after: string): string[] {
     return out.length ? out : [c.dim('    (whitespace only)')];
 }
 
-/** Resolve a CLI arg to one or more file paths. */
-async function resolveTargets(arg: string | undefined): Promise<Array<{ path: string; label: string }>> {
-    if (!arg) {
-        // Default: every list in the current project's seed/contributed/, minus README.
-        const seedDir = findSeedDir();
-        const entries = await readdir(seedDir);
-        return entries
-            .filter((f: string) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md')
-            .sort()
-            .map((f: string) => ({ path: join(seedDir, f), label: f }));
-    }
-
-    // An existing path (absolute or relative to cwd) wins.
-    const asPath = resolve(process.cwd(), arg);
-    if (existsSync(asPath)) return [{ path: asPath, label: arg }];
-
-    // Otherwise treat it as a seed slug, with or without the .md extension.
-    const seedDir = findSeedDir();
-    const slug = arg.endsWith('.md') ? arg : `${arg}.md`;
-    const seedPath = join(seedDir, slug);
-    if (existsSync(seedPath)) return [{ path: seedPath, label: slug }];
-
-    throw new Error(`no file at "${arg}", and no seed "${seedPath}"`);
-}
-
 /** Render one file's round-trip result — shared by test-parse and contribute. */
 function printFileResult(result: FileResult, show: boolean): void {
     const head = result.ok ? PASS : FAIL;
@@ -232,184 +201,53 @@ function slugify(s: string): string {
 }
 
 async function cmdTestParse(args: string[]): Promise<number> {
-    const show = args.includes('--show');
-    const positional = args.filter(a => !a.startsWith('--'));
-
-    let targets: Array<{ path: string; label: string }>;
-    try {
-        targets = await resolveTargets(positional[0]);
-    } catch (err) {
-        console.error(c.red((err as Error).message));
-        return 1;
-    }
-    if (targets.length === 0) {
-        console.error(c.yellow('nothing to test (no .md files found)'));
-        return 1;
-    }
-
-    let failed = 0;
-    for (const { path, label } of targets) {
-        const result = await testParseFile(path, label);
-        printFileResult(result, show);
-        if (!result.ok) failed++;
-    }
-
-    const total = targets.length;
-    console.log(`\n${failed === 0 ? PASS : FAIL} ${c.bold(`${total - failed}/${total} passed`)}`);
-    return failed === 0 ? 0 : 1;
-}
-
-// ---------------------------------------------------------------------------
-// contribute
-// ---------------------------------------------------------------------------
-
-/**
- * Add an example List to the current project's `seed/contributed/` holding
- * pen (the import side of the homepage Seed Pool), then immediately run it
- * through the same round-trip `test-parse` uses so a contributor sees it land.
- *
- * Source is either an existing file (`--path`) or inline Markdown (`-m`).
- * The slug is resolved flag → frontmatter → kebab-cased `# Title`. Input
- * that already carries frontmatter is written through verbatim (we trust the
- * contributor); input with none gets the holding-pen contract synthesized
- * (`djibb`, `slug`, `contributed_by`, `status: proposed`) so a pasted
- * checklist becomes a valid proposal in one step.
- */
-async function cmdContribute(args: string[]): Promise<number> {
     const flag = (name: string): string | undefined => {
         const i = args.indexOf(name);
         return i >= 0 ? args[i + 1] : undefined;
     };
     const show = args.includes('--show');
-    const force = args.includes('--force');
-    const path = flag('--path');
     const message = flag('-m') ?? flag('--message');
-    const slugFlag = flag('--slug');
-    const by = flag('--by') ?? flag('--contributed-by');
+    // Positionals, skipping the `-m`/`--message` value.
+    const positional: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i]!;
+        if (a === '-m' || a === '--message') {
+            i++;
+            continue;
+        }
+        if (a.startsWith('--')) continue;
+        positional.push(a);
+    }
+    const path = positional[0];
 
     if (!path && !message) {
-        console.error(c.red('contribute needs a source: --path <file.md> or -m "<list markdown>"'));
-        return 1;
-    }
-    if (path && message) {
-        console.error(c.red('pass only one of --path or -m, not both'));
-        return 1;
-    }
-
-    // 1. Load the raw Markdown.
-    let raw: string;
-    if (path) {
-        const abs = resolve(process.cwd(), path);
-        try {
-            raw = await readFile(abs, 'utf8');
-        } catch (err) {
-            console.error(c.red(`could not read ${abs}: ${(err as Error).message}`));
-            return 1;
-        }
-    } else {
-        raw = message as string;
-    }
-
-    // 2. Parse to validate and to learn the name / type / embedded slug.
-    let model: ReturnType<typeof parseMarkdown>;
-    try {
-        model = parseMarkdown(raw);
-    } catch (err) {
-        console.error(c.red(`could not parse the list: ${(err as Error).message}`));
-        return 1;
-    }
-
-    // 3. Resolve the slug: flag wins, then frontmatter, then the title.
-    const slug = slugFlag ?? model.slug ?? slugify(model.name);
-    if (!slug) {
         console.error(
-            c.red('no slug: pass --slug, add `slug:` frontmatter, or give the list a `# Title`')
+            c.red('test-parse needs a source: a file path or -m "<list markdown>"')
         );
         return 1;
     }
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
-        console.error(c.red(`slug "${slug}" is not kebab-case (a–z, 0–9, dashes)`));
+    if (path && message) {
+        console.error(c.red('pass only one of <path> or -m, not both'));
         return 1;
     }
 
-    // 4. Build file content. Existing frontmatter is trusted verbatim;
-    //    its absence means we synthesize the holding-pen contract.
-    const { keys } = splitFrontmatter(raw);
-    let content: string;
-    if (keys.length === 0) {
-        const fm = [
-            '---',
-            `djibb: ${model.type}`,
-            `slug: ${slug}`,
-            `contributed_by: ${by ?? 'unknown'}`,
-            'status: proposed',
-            '---',
-            '',
-            '',
-        ].join('\n');
-        content = fm + raw.replace(/^\n+/, '');
-    } else {
-        content = raw;
-        const missing = ['status', 'contributed_by'].filter(k => !keys.includes(k));
-        if (missing.length) {
-            console.log(c.yellow(`⚠ frontmatter missing recommended: ${missing.join(', ')}`));
-        }
-        if (model.slug && model.slug !== slug) {
-            console.log(c.yellow(`⚠ frontmatter slug "${model.slug}" ≠ filename "${slug}"`));
-        }
-    }
-
-    // 5. Write into the holding pen (never clobber without --force).
-    let seedDir: string;
-    try {
-        seedDir = findSeedDir();
-    } catch (err) {
-        console.error(c.red((err as Error).message));
-        return 1;
-    }
-    const dest = join(seedDir, `${slug}.md`);
-    if (existsSync(dest) && !force) {
-        console.error(c.red(`${slug}.md already exists — pass --force to overwrite`));
-        return 1;
-    }
-    try {
-        await writeFile(dest, content.endsWith('\n') ? content : content + '\n', 'utf8');
-    } catch (err) {
-        console.error(c.red(`could not write ${dest}: ${(err as Error).message}`));
-        return 1;
-    }
-    console.log(`${PASS} wrote ${c.bold(`seed/contributed/${slug}.md`)}`);
-
-    // 6. Dogfood it: same round-trip test-parse runs.
-    const result = await testParseFile(dest, `${slug}.md`);
+    const result = message
+        ? testParseRaw(message, '(inline)')
+        : await testParseFile(resolve(process.cwd(), path!), path!);
     printFileResult(result, show);
+    console.log(`\n${result.ok ? PASS : FAIL} ${c.bold(`${result.ok ? 1 : 0}/1 passed`)}`);
     return result.ok ? 0 : 1;
 }
 
 // ---------------------------------------------------------------------------
-// promote
+// shared HTTP / id infra (contribute + promote)
 // ---------------------------------------------------------------------------
 
 /**
- * Promote contributed seeds into the live homepage **Seed Pool**
- * (CONTEXT.md §Seed Pool). Each `seed/contributed/*.md` becomes a real
- * **Blank Template** Durable Object (read-only `viewer`), and a
- * referencing item is added to the global Seed Pool **List** so the
- * homepage can rotate through them.
- *
- * DOs only come into being through the worker runtime, so this is an
- * HTTP client: it POSTs real `/push` mutations to a running worker
- * (`--base`, default local `wrangler dev`). It authenticates as the
- * platform **operator** (`OPERATOR_ACCOUNT_ID`) via the session token in
- * `DJIBB_OPERATOR_SESSION` — the only principal allowed to set the
- * privileged `slot`/`defaultRole` fields. The Seed Pool is operator-owned
- * with `default_role: 'viewer'` (publicly readable for the homepage, not
- * anonymously editable) and the Blanks are likewise operator-owned
- * `viewer` entities.
- *
- * Idempotent: every id is derived deterministically from the slug, and
- * the server primitives are INSERT-OR-IGNORE with child-ref dedupe, so
- * re-running `promote` is a no-op for already-promoted seeds.
+ * `contribute` and `promote` both speak to a running worker over HTTP —
+ * DOs only come into being through the worker runtime. The id helpers,
+ * the well-known singletons, the push/pull/exists primitives, and the
+ * Blank-content builder below are shared by both commands.
  */
 
 /** url-safe 64-char alphabet for deterministic id suffixes. */
@@ -436,14 +274,51 @@ function detId(kind: keyof typeof ID_PREFIX, seed: string): string {
 }
 
 /**
+ * Random (non-deterministic) prefixed id — the CLI mirror of
+ * `newId('template')` (`packages/protocol/src/id`). Used by `contribute`
+ * to mint a Blank with an *unguessable* id: a contributed Blank's id
+ * mustn't be derivable from its slug (a slug-derived id would let anyone
+ * pre-compute and squat the entity). `& 63` over crypto-random bytes is
+ * uniform across the 64-char alphabet, matching `randomString`.
+ */
+function randomId(kind: keyof typeof ID_PREFIX): string {
+    const bytes = randomBytes(ID_SUFFIX_LEN);
+    let s = '';
+    for (const b of bytes) s += URLSAFE[b & 63]!;
+    return `${ID_PREFIX[kind]}/${s}`;
+}
+
+/**
  * The one global Seed Pool List — a well-known deterministic singleton.
- * Mirrors `SEED_POOL_LIST_ID` in `workers/src/list/index.ts` (the homepage
- * reads it from there); both resolve to the same literal because the seed
- * (`'djibb:seed_pool'`) and the derivation are frozen. Kept self-derived
- * here rather than imported because Node's type-stripping can't follow the
- * worker tree's extensionless relative imports.
+ * Mirrors `SEED_POOL_LIST_ID` in `packages/protocol/src/list/index.ts`
+ * (the homepage reads it from there); both resolve to the same literal
+ * because the seed (`'djibb:seed_pool'`) and the derivation are frozen.
+ * Kept self-derived here rather than imported because Node's
+ * type-stripping can't follow the worker tree's extensionless relative
+ * imports.
  */
 const SEED_POOL_LIST_ID = detId('list', 'djibb:seed_pool');
+
+/**
+ * The one global Contributed List — the append-only holding pen
+ * `contribute` writes into (issue #9, ADR 0021). Mirrors
+ * `CONTRIBUTED_LIST_ID` in `packages/protocol/src/list/index.ts`,
+ * re-derived here for the same reason as `SEED_POOL_LIST_ID`. The
+ * assertion below fails the CLI loudly if the two ever drift.
+ */
+const CONTRIBUTED_LIST_ID = detId('list', 'djibb:contributed');
+
+// Drift guard: these literals are the single source of truth in
+// `packages/protocol/src/list/index.ts`. Re-deriving them here and
+// asserting the values match means a change to the derivation or seed in
+// either place fails the CLI loudly instead of silently bootstrapping a
+// different List than the site reads.
+if (SEED_POOL_LIST_ID !== 'l/LWmRT14-cOUtJ9-nsSwQe') {
+    throw new Error(`SEED_POOL_LIST_ID drift: ${SEED_POOL_LIST_ID}`);
+}
+if (CONTRIBUTED_LIST_ID !== 'l/RG5n-jjnV9BmqO4WSr4Eu') {
+    throw new Error(`CONTRIBUTED_LIST_ID drift: ${CONTRIBUTED_LIST_ID}`);
+}
 
 /**
  * The platform operator account. Mirrors `OPERATOR_ACCOUNT_ID` in
@@ -451,7 +326,8 @@ const SEED_POOL_LIST_ID = detId('list', 'djibb:seed_pool');
  * the same reason `SEED_POOL_LIST_ID` is re-derived here). `promote`
  * stamps this as the mutation `accountId` and sends the operator's
  * session cookie, so the DO resolves it to `owner` and the `initList`
- * guard admits the privileged `slot`/`defaultRole` fields.
+ * guard admits the privileged `slot`/`defaultRole` fields. `contribute`
+ * never sends it — it pushes anonymously.
  */
 const OPERATOR_ACCOUNT_ID = 'a/djibb';
 
@@ -532,13 +408,38 @@ function buildBlankContent(slug: string, blankId: string, model: MarkdownList) {
     return { groups, items, childElementRefs };
 }
 
+/** An HTTP failure that carries the status code, so callers can branch on it. */
+class HttpError extends Error {
+    status: number;
+    constructor(status: number, detail: string) {
+        super(`HTTP ${status} ${detail}`.trim());
+        this.name = 'HttpError';
+        this.status = status;
+    }
+}
+
+async function httpDetail(res: Response): Promise<string> {
+    try {
+        return JSON.stringify(await res.json());
+    } catch {
+        return res.text().catch(() => '');
+    }
+}
+
 /**
- * POST one mutation to a worker `/push`, authenticated as the operator. A
- * fresh `clientID` per call has `lastMutationId: 0` server-side, so
- * `id: 1` always validates. The operator's session token rides as the
- * `djibb-session` cookie and its `accountId` is stamped into the envelope
- * — the DO's cross-account check verifies the two agree, then resolves
- * the operator to `owner` (admitting privileged `initList` fields).
+ * POST one mutation to a worker `/push`. A fresh `clientID` per call has
+ * `lastMutationId: 0` server-side, so `id: 1` always validates.
+ *
+ * Two actors:
+ *   - **operator** (`promote`): pass `sessionToken`. The token rides as
+ *     the `djibb-session` cookie and `OPERATOR_ACCOUNT_ID` is stamped
+ *     into the envelope — the DO's cross-account check verifies the two
+ *     agree, then resolves the operator to `owner` (admitting privileged
+ *     `initList` fields).
+ *   - **anonymous** (`contribute`): omit `sessionToken`. No cookie, a
+ *     `null` envelope `accountId` — the DO resolves the caller to the
+ *     list's `default_role` (`submitter` on the Contributed List, so
+ *     `createListItem` is admitted while every other mutator 403s).
  */
 async function pushMutation(
     base: string,
@@ -547,18 +448,19 @@ async function pushMutation(
     entityId: string,
     name: string,
     args: Record<string, unknown>,
-    sessionToken: string
+    opts: { accountId: string | null; sessionToken?: string }
 ): Promise<void> {
     const url = `${base.replace(/\/$/, '')}/${kind}/push?id=${encodeURIComponent(entityId)}`;
-    const res = await fetch(url, {
-        method: 'POST',
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
         // The worker's CSRF gate (index.ts) rejects non-GET requests
         // whose `Origin` isn't in AUTHORIZED_DOMAINS with an empty 403.
-        headers: {
-            'Content-Type': 'application/json',
-            Origin: origin,
-            Cookie: `djibb-session=${sessionToken}`,
-        },
+        Origin: origin,
+    };
+    if (opts.sessionToken) headers.Cookie = `djibb-session=${opts.sessionToken}`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers,
         body: JSON.stringify({
             profileID: 'djibb-cli',
             clientGroupID: randomUUID(),
@@ -571,7 +473,7 @@ async function pushMutation(
                     name,
                     args: {
                         ...args,
-                        accountId: OPERATOR_ACCOUNT_ID,
+                        accountId: opts.accountId,
                         timestamp_client: nowIso(),
                     },
                     timestamp: Date.now(),
@@ -579,33 +481,40 @@ async function pushMutation(
             ],
         }),
     });
-    if (!res.ok) {
-        let detail = '';
-        try {
-            detail = JSON.stringify(await res.json());
-        } catch {
-            detail = await res.text().catch(() => '');
-        }
-        throw new Error(`HTTP ${res.status} ${detail}`);
-    }
+    if (!res.ok) throw new HttpError(res.status, await httpDetail(res));
 }
 
+/** One element op from a `/pull` response patch. */
+type PullPut = { op: 'put'; key: string; value: Record<string, unknown> };
+
 /**
- * Does an entity already exist? Re-promote idempotency comes from
- * skipping Blanks that already exist rather than re-running `initList`
- * (the operator now *owns* its Blanks, so a re-init would no-op via
- * INSERT-OR-IGNORE rather than 403 — but updating a promoted Blank's
- * content still needs a dedicated privileged path, so skipping is the
- * conservative choice). GET isn't CSRF-gated.
+ * POST a fresh (`cookie: null`) `/pull` for `listId` and return its
+ * `put` ops — the surface the homepage uses to read the Seed Pool.
+ * Anonymous; reads are open platform-wide (the view-floor lands in #13).
+ * The CSRF `Origin` gate still applies (it's a POST).
  */
-async function entityExists(
+async function pullList(
     base: string,
-    kind: 'list' | 'template',
-    entityId: string
-): Promise<boolean> {
-    const url = `${base.replace(/\/$/, '')}/${kind}?id=${encodeURIComponent(entityId)}`;
-    const res = await fetch(url);
-    return res.ok;
+    origin: string,
+    listId: string
+): Promise<PullPut[]> {
+    const url = `${base.replace(/\/$/, '')}/list/pull?id=${encodeURIComponent(listId)}`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: origin },
+        body: JSON.stringify({
+            pullVersion: 1,
+            profileID: 'djibb-cli',
+            clientGroupID: randomUUID(),
+            cookie: null,
+            schemaVersion: '',
+        }),
+    });
+    if (!res.ok) throw new HttpError(res.status, await httpDetail(res));
+    const body = (await res.json()) as { patch?: Array<Record<string, unknown>> };
+    return (body.patch ?? []).filter(
+        (p): p is PullPut => p.op === 'put' && typeof p.value === 'object'
+    );
 }
 
 /** Retry a push a few times — the Seed Pool's D1 row lags its init push. */
@@ -622,36 +531,301 @@ async function pushWithRetry(fn: () => Promise<void>, attempts = 5): Promise<voi
     throw lastErr;
 }
 
-async function cmdPromote(args: string[]): Promise<number> {
-    const flag = (name: string): string | undefined => {
-        const i = args.indexOf(name);
-        return i >= 0 ? args[i + 1] : undefined;
-    };
-    const base = flag('--base') ?? 'http://localhost:8787';
-    // Must be an AUTHORIZED_DOMAINS entry (the worker's CSRF origin check).
-    // Default to the local pages dev origin; pass --origin for prod.
+/** Production worker URL — the API, not the Pages frontend (see docs/DEPLOY.md). */
+const PROD_BASE = 'https://api.djibb.com';
+
+/**
+ * Resolve `--base` (worker URL) and `--origin` (CSRF Origin header).
+ * Both commands default to the live site when `--base` is absent — a
+ * contributor shouldn't need to know a URL to add to it, and the operator
+ * normally promotes against prod too. Pass `--base http://localhost:8787`
+ * to target a local `wrangler dev`. The origin must be an
+ * `AUTHORIZED_DOMAINS` entry; it tracks the base — local pages dev origin
+ * for a local base, else prod.
+ */
+function resolveBaseOrigin(
+    flag: (n: string) => string | undefined,
+    defaultBase: string = PROD_BASE
+): {
+    base: string;
+    origin: string;
+} {
+    const base = flag('--base') ?? defaultBase;
     const origin =
         flag('--origin') ??
         (base.includes('localhost') || base.includes('127.0.0.1')
             ? 'http://localhost:5173'
             : 'https://djibb.com');
+    return { base, origin };
+}
+
+// ---------------------------------------------------------------------------
+// contribute
+// ---------------------------------------------------------------------------
+
+/**
+ * Contribute an example List to the live **Contributed** List (issue #9,
+ * ADR 0021). The List is "lists all the way down": a contribution is a
+ * fresh **Blank Template** Durable Object (ownerless, anonymously
+ * created) plus a referencing item appended to the operator-owned
+ * Contributed List.
+ *
+ * **No operator token.** The Contributed List is `default_role:
+ * 'submitter'` (append-only): an anonymous caller resolves to `submitter`
+ * and so may `createListItem` (the one mutator widened to `APPEND_ROLES`)
+ * but nothing else. So `contribute` only ever *appends* to an
+ * already-bootstrapped List — the operator runs `djibb promote` once to
+ * create it.
+ *
+ * Source is an existing file (`--path`) or inline Markdown (`-m`). The
+ * Blank gets a *random* (unguessable) id so it can't be slug-squatted;
+ * its element ids stay slug-derived. Same round-trip dogfood feedback as
+ * `test-parse` runs first, so a bad list fails before anything is pushed.
+ */
+async function cmdContribute(args: string[]): Promise<number> {
+    const flag = (name: string): string | undefined => {
+        const i = args.indexOf(name);
+        return i >= 0 ? args[i + 1] : undefined;
+    };
+    const show = args.includes('--show');
+    const dryRun = args.includes('--dry-run');
+    const path = flag('--path');
+    const message = flag('-m') ?? flag('--message');
+    const slugFlag = flag('--slug');
+    // Contribute targets the live site by default — no URL to memorize.
+    const { base, origin } = resolveBaseOrigin(flag, PROD_BASE);
+
+    if (!path && !message) {
+        console.error(
+            c.red('contribute needs a source: --path <file.md> or -m "<list markdown>"')
+        );
+        return 1;
+    }
+    if (path && message) {
+        console.error(c.red('pass only one of --path or -m, not both'));
+        return 1;
+    }
+
+    // 1. Load the raw Markdown.
+    let raw: string;
+    if (path) {
+        const abs = resolve(process.cwd(), path);
+        try {
+            raw = await readFile(abs, 'utf8');
+        } catch (err) {
+            console.error(c.red(`could not read ${abs}: ${(err as Error).message}`));
+            return 1;
+        }
+    } else {
+        raw = message as string;
+    }
+
+    // 2. Parse to validate and to learn the name / type / embedded slug.
+    let model: MarkdownList;
+    try {
+        model = parseMarkdown(raw);
+    } catch (err) {
+        console.error(c.red(`could not parse the list: ${(err as Error).message}`));
+        return 1;
+    }
+
+    // 3. Resolve the slug (drives deterministic *element* ids, not the
+    //    Blank id): flag wins, then frontmatter, then the title.
+    const slug = slugFlag ?? model.slug ?? slugify(model.name);
+    if (!slug) {
+        console.error(
+            c.red('no slug: pass --slug, add `slug:` frontmatter, or give the list a `# Title`')
+        );
+        return 1;
+    }
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
+        console.error(c.red(`slug "${slug}" is not kebab-case (a–z, 0–9, dashes)`));
+        return 1;
+    }
+
+    // 4. Dogfood it first: the same round-trip `test-parse` runs, so a
+    //    malformed list fails locally before anything reaches the server.
+    const result = testParseRaw(raw, slug);
+    printFileResult(result, show);
+    if (!result.ok) {
+        console.error(c.red('\nround-trip failed — not contributing'));
+        return 1;
+    }
+
+    // 5. Plan: a random-id Blank + a referencing item on the Contributed List.
+    const blankId = randomId('template');
+    const { groups, items, childElementRefs } = buildBlankContent(slug, blankId, model);
+    const blankArgs: Record<string, unknown> = {
+        listId: blankId,
+        workspaceId: null,
+        name: model.name,
+        ...(model.description ? { description: model.description } : {}),
+        childElementRefs,
+        groups,
+        items,
+        // Anonymous ⇒ ownerless Blank. No `slot`/`defaultRole`: those are
+        // operator-only, and an anon caller sending them would 403.
+    };
+    const item: Record<string, unknown> = {
+        id: randomId('item'),
+        name: model.name,
+        parent_element_ref: CONTRIBUTED_LIST_ID,
+        references_entity_id: blankId,
+        value: BOOLEAN_UNCHECKED,
+        type: 'item',
+        version: 0,
+        time_created: nowIso(),
+        time_updated: nowIso(),
+        time_deleted: null,
+    };
+
+    console.log(
+        `\n${c.bold('contribute')} ${c.dim('→')} ${c.bold(base)}  ` +
+            `contributed list ${c.dim(CONTRIBUTED_LIST_ID)}`
+    );
+    const g = model.children.filter(ch => ch.kind === 'group').length;
+    const it =
+        model.children.filter(ch => ch.kind === 'item').length +
+        model.children.reduce((n, ch) => n + (ch.kind === 'group' ? groupItemCount(ch) : 0), 0);
+    console.log(`  ${c.bold(slug)} ${c.dim('→ ' + blankId)} · ${g} group(s) · ${it} item(s)`);
+    if (show) {
+        console.log(c.dim('    blank args: ') + JSON.stringify(blankArgs));
+        console.log(c.dim('    pool item:  ') + JSON.stringify(item));
+    }
+
+    if (dryRun) {
+        console.log(`\n${c.yellow('dry run')} — nothing pushed`);
+        return 0;
+    }
+
+    // 6. Push the Blank (anon ⇒ ownerless), then append a reference to the
+    //    Contributed List (anon ⇒ submitter ⇒ createListItem allowed).
+    try {
+        await pushMutation(base, origin, 'template', blankId, 'initList', blankArgs, {
+            accountId: null,
+        });
+        console.log(`${PASS} blank ${c.bold(slug)} ${c.dim(blankId)}`);
+    } catch (err) {
+        console.error(c.red(`✗ blank init failed: ${(err as Error).message}`));
+        console.error(c.dim(`  (is the worker running at ${base}?)`));
+        return 1;
+    }
+
+    try {
+        await pushWithRetry(() =>
+            pushMutation(base, origin, 'list', CONTRIBUTED_LIST_ID, 'createListItem', {
+                item,
+            }, { accountId: null })
+        );
+        console.log(`${PASS} contributed ${c.bold(slug)}`);
+    } catch (err) {
+        if (err instanceof HttpError && err.status === 404) {
+            console.error(
+                c.red('✗ the Contributed List does not exist yet.') +
+                    ' Ask the operator to bootstrap it with `djibb promote`.'
+            );
+            return 1;
+        }
+        console.error(c.red(`✗ contribute failed: ${(err as Error).message}`));
+        return 1;
+    }
+
+    console.log(`\n${PASS} ${c.bold('contributed — browse it on the Contributed List')}`);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// promote
+// ---------------------------------------------------------------------------
+
+/**
+ * The macOS login-keychain coordinates the operator session token lives
+ * under when it isn't in the environment. Seed it once with:
+ *
+ *   security add-generic-password -U -a djibb-operator -s DJIBB_OPERATOR_SESSION -w
+ *
+ * (`-w` prompts for the secret; `-U` updates in place if it already exists).
+ * The macOS **Passwords** app can't be read from the CLI — its entries live
+ * in the iCloud Keychain, which the legacy `security` tool can't reach — so
+ * the operator secret rides in the file-based login keychain instead.
+ */
+const KEYCHAIN_ACCOUNT = 'djibb-operator';
+const KEYCHAIN_SERVICE = 'DJIBB_OPERATOR_SESSION';
+
+/**
+ * Resolve the operator session token. `DJIBB_OPERATOR_SESSION` in the
+ * environment wins (CI, a one-off override); failing that, on macOS, fall
+ * back to the login keychain via `security find-generic-password`. Returns
+ * `undefined` if neither yields a value (the caller reports the miss). The
+ * keychain read is best-effort: a missing item, a denied prompt, or a
+ * non-macOS host all degrade quietly to `undefined`.
+ */
+function operatorSessionToken(): string | undefined {
+    const fromEnv = process.env.DJIBB_OPERATOR_SESSION?.trim();
+    if (fromEnv) return fromEnv;
+    if (process.platform !== 'darwin') return undefined;
+    try {
+        const out = execFileSync(
+            'security',
+            ['find-generic-password', '-a', KEYCHAIN_ACCOUNT, '-s', KEYCHAIN_SERVICE, '-w'],
+            { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+        );
+        return out.trim() || undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Promote contributed Blanks into the live homepage **Seed Pool**
+ * (CONTEXT.md §Seed Pool). Bootstraps both platform Lists (idempotent),
+ * reads the **Contributed** List over `/pull`, and for each chosen
+ * contribution adds a referencing item to the global Seed Pool **List**
+ * so the homepage can rotate through them. Each contribution is already a
+ * Blank Template, so promoting = pointing the Seed Pool at that same
+ * Blank.
+ *
+ * DOs only come into being through the worker runtime, so this is an HTTP
+ * client. It authenticates as the platform **operator**
+ * (`OPERATOR_ACCOUNT_ID`) via a session token — the only principal allowed
+ * to set the privileged `slot`/`defaultRole` fields on the platform Lists.
+ * The token comes from `DJIBB_OPERATOR_SESSION` or, failing that, the macOS
+ * login keychain (see `operatorSessionToken`). A `--dry-run` plans without
+ * the token.
+ *
+ * Idempotent: the Seed Pool item id is derived deterministically from the
+ * Blank id and the server primitives are INSERT-OR-IGNORE with child-ref
+ * dedupe, so re-running is a no-op for already-pooled contributions.
+ */
+async function cmdPromote(args: string[]): Promise<number> {
+    const flag = (name: string): string | undefined => {
+        const i = args.indexOf(name);
+        return i >= 0 ? args[i + 1] : undefined;
+    };
+    const { base, origin } = resolveBaseOrigin(flag);
     const dryRun = args.includes('--dry-run');
     const show = args.includes('--show');
+    const promoteAll = args.includes('--all');
 
     // Operator credentials: the session token is the only secret. Required
     // for a real push (the privileged `slot`/`defaultRole` fields are
-    // operator-only server-side); a `--dry-run` plans without it. Seed one
-    // with `node bin/seed-operator.ts --execute --remote`.
-    const sessionToken = process.env.DJIBB_OPERATOR_SESSION;
+    // operator-only server-side); a `--dry-run` plans without it. Resolved
+    // from `DJIBB_OPERATOR_SESSION` or, failing that, the macOS login
+    // keychain (`security find-generic-password -a djibb-operator -s
+    // DJIBB_OPERATOR_SESSION`). Seed the token itself with
+    // `node bin/seed-operator.ts --execute --remote`.
+    const sessionToken = operatorSessionToken();
     if (!dryRun && !sessionToken) {
         console.error(
             c.red('promote needs an operator session token: ') +
-                'set DJIBB_OPERATOR_SESSION (see `bin/seed-operator.ts`).'
+                'set DJIBB_OPERATOR_SESSION, or store it in the login keychain with\n' +
+                c.dim(`  security add-generic-password -U -a ${KEYCHAIN_ACCOUNT} -s ${KEYCHAIN_SERVICE} -w`) +
+                '\n  (seed the token with `bin/seed-operator.ts`).'
         );
         return 1;
     }
 
-    // Positionals, skipping `--base <value>` and boolean flags.
+    // Positionals (slug / blank-id selectors), skipping `--flag <value>`.
     const positional: string[] = [];
     for (let i = 0; i < args.length; i++) {
         const a = args[i]!;
@@ -662,96 +836,143 @@ async function cmdPromote(args: string[]): Promise<number> {
         if (a.startsWith('--')) continue;
         positional.push(a);
     }
-
-    let targets: Array<{ path: string; label: string }>;
-    try {
-        targets = await resolveTargets(positional[0]);
-    } catch (err) {
-        console.error(c.red((err as Error).message));
-        return 1;
-    }
-    if (targets.length === 0) {
-        console.error(c.yellow('nothing to promote (no .md files found)'));
-        return 1;
-    }
-
-    // Parse + plan every seed before pushing anything, so a bad seed
-    // fails the whole run before it half-promotes.
-    type Plan = {
-        slug: string;
-        blankId: string;
-        model: MarkdownList;
-        blankArgs: Record<string, unknown>;
-        item: Record<string, unknown>;
-    };
-    const plans: Plan[] = [];
-    for (const { path, label } of targets) {
-        let raw: string;
-        try {
-            raw = await readFile(path, 'utf8');
-        } catch (err) {
-            console.error(c.red(`could not read ${path}: ${(err as Error).message}`));
-            return 1;
-        }
-        let model: MarkdownList;
-        try {
-            model = parseMarkdown(raw);
-        } catch (err) {
-            console.error(c.red(`could not parse ${label}: ${(err as Error).message}`));
-            return 1;
-        }
-        const slug = model.slug ?? (slugify(model.name) || label.replace(/\.md$/, ''));
-        if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
-            console.error(c.red(`${label}: slug "${slug}" is not kebab-case`));
-            return 1;
-        }
-        const blankId = detId('template', slug);
-        const { groups, items, childElementRefs } = buildBlankContent(slug, blankId, model);
-        plans.push({
-            slug,
-            blankId,
-            model,
-            blankArgs: {
-                listId: blankId,
-                workspaceId: null,
-                name: model.name,
-                ...(model.description ? { description: model.description } : {}),
-                childElementRefs,
-                groups,
-                items,
-                defaultRole: 'viewer',
-            },
-            item: {
-                id: detId('item', `seed_pool#${slug}`),
-                name: model.name,
-                parent_element_ref: SEED_POOL_LIST_ID,
-                references_entity_id: blankId,
-                value: BOOLEAN_UNCHECKED,
-                type: 'item',
-                version: 0,
-                time_created: nowIso(),
-                time_updated: nowIso(),
-                time_deleted: null,
-            },
-        });
-    }
+    const selectors = new Set(positional);
 
     console.log(
         `${c.bold('promote')} ${c.dim('→')} ${c.bold(base)}  ` +
-            `seed pool ${c.dim(SEED_POOL_LIST_ID)}`
+            `seed pool ${c.dim(SEED_POOL_LIST_ID)}  contributed ${c.dim(CONTRIBUTED_LIST_ID)}`
     );
-    for (const p of plans) {
-        const g = p.model.children.filter(ch => ch.kind === 'group').length;
-        const it =
-            p.model.children.filter(ch => ch.kind === 'item').length +
-            p.model.children.reduce((n, ch) => n + (ch.kind === 'group' ? groupItemCount(ch) : 0), 0);
-        console.log(
-            `  ${c.bold(p.slug)} ${c.dim('→ ' + p.blankId)} · ${g} group(s) · ${it} item(s)`
-        );
-        if (show) {
-            console.log(c.dim('    blank args: ') + JSON.stringify(p.blankArgs));
-            console.log(c.dim('    pool item:  ') + JSON.stringify(p.item));
+
+    // 1. Bootstrap home: ensure BOTH platform Lists exist (idempotent).
+    //    No separate command — `promote` is the operator's one entry point.
+    //      · Seed Pool   — operator-owned, default_role 'viewer' (publicly
+    //        readable for the homepage, only the operator can append).
+    //      · Contributed — operator-owned, default_role 'submitter' (ADR
+    //        0021): anyone may append (anon `djibb contribute`), nobody but
+    //        the operator may mutate existing entries (append-only).
+    if (!dryRun) {
+        const token = sessionToken!;
+        try {
+            await pushMutation(base, origin, 'list', SEED_POOL_LIST_ID, 'initList', {
+                listId: SEED_POOL_LIST_ID,
+                workspaceId: null,
+                name: 'Seed Pool',
+                slot: 'seed_pool',
+                defaultRole: 'viewer',
+            }, { accountId: OPERATOR_ACCOUNT_ID, sessionToken: token });
+            console.log(`\n${PASS} seed pool ready`);
+        } catch (err) {
+            console.error(c.red(`seed pool init failed: ${(err as Error).message}`));
+            console.error(c.dim(`  (is the worker running at ${base}?)`));
+            return 1;
         }
+        try {
+            await pushMutation(base, origin, 'list', CONTRIBUTED_LIST_ID, 'initList', {
+                listId: CONTRIBUTED_LIST_ID,
+                workspaceId: null,
+                name: 'Contributed',
+                slot: 'contributed',
+                defaultRole: 'submitter',
+            }, { accountId: OPERATOR_ACCOUNT_ID, sessionToken: token });
+            console.log(`${PASS} contributed list ready`);
+        } catch (err) {
+            console.error(c.red(`contributed list init failed: ${(err as Error).message}`));
+            return 1;
+        }
+    } else {
+        console.log(c.dim('\n(dry run: would bootstrap seed pool + contributed list)'));
+    }
+
+    // 2. Read the Contributed List and enumerate its referenced Blanks.
+    let contributed: PullPut[];
+    try {
+        contributed = await pullList(base, origin, CONTRIBUTED_LIST_ID);
+    } catch (err) {
+        console.error(c.red(`could not read the Contributed List: ${(err as Error).message}`));
+        return 1;
+    }
+
+    type Candidate = { blankId: string; name: string; slug: string };
+    const candidates: Candidate[] = [];
+    const seen = new Set<string>();
+    for (const op of contributed) {
+        const v = op.value;
+        if (v.type !== 'item') continue;
+        const blankId = v.references_entity_id;
+        if (typeof blankId !== 'string' || !blankId.startsWith(`${ID_PREFIX.template}/`)) {
+            continue;
+        }
+        if (seen.has(blankId)) continue;
+        seen.add(blankId);
+        const name = typeof v.name === 'string' ? v.name : blankId;
+        candidates.push({ blankId, name, slug: slugify(name) });
+    }
+
+    if (candidates.length === 0) {
+        console.log(c.yellow('\nthe Contributed List has no entries to promote yet'));
+        return 0;
+    }
+
+    // 3. Select: positional args match a candidate's slug or blank id
+    //    (with or without the `t/` prefix); no args + `--all` ⇒ everything.
+    let chosen: Candidate[];
+    if (selectors.size > 0) {
+        chosen = candidates.filter(
+            cnd =>
+                selectors.has(cnd.slug) ||
+                selectors.has(cnd.blankId) ||
+                selectors.has(cnd.blankId.slice(ID_PREFIX.template.length + 1))
+        );
+        const unmatched = [...selectors].filter(
+            s =>
+                !candidates.some(
+                    cnd =>
+                        cnd.slug === s ||
+                        cnd.blankId === s ||
+                        cnd.blankId.slice(ID_PREFIX.template.length + 1) === s
+                )
+        );
+        for (const u of unmatched) {
+            console.error(c.yellow(`⚠ no contributed entry matches "${u}"`));
+        }
+        if (chosen.length === 0) {
+            console.error(c.red('nothing selected — pass a slug/blank-id that exists, or --all'));
+            return 1;
+        }
+    } else if (promoteAll) {
+        chosen = candidates;
+    } else {
+        console.log(`\n${c.bold('contributed entries')} (${candidates.length}):`);
+        for (const cnd of candidates) {
+            console.log(`  ${c.bold(cnd.slug)} ${c.dim('→ ' + cnd.blankId)} · ${cnd.name}`);
+        }
+        console.error(
+            c.yellow('\nselect one or more by slug/blank-id, or pass --all to promote every entry')
+        );
+        return 1;
+    }
+
+    // Plan a Seed Pool item per chosen Blank. The item id is derived
+    // deterministically from the Blank id, so re-promoting is idempotent.
+    const plans = chosen.map(cnd => ({
+        ...cnd,
+        item: {
+            id: detId('item', `seed_pool#${cnd.blankId}`),
+            name: cnd.name,
+            parent_element_ref: SEED_POOL_LIST_ID,
+            references_entity_id: cnd.blankId,
+            value: BOOLEAN_UNCHECKED,
+            type: 'item',
+            version: 0,
+            time_created: nowIso(),
+            time_updated: nowIso(),
+            time_deleted: null,
+        } as Record<string, unknown>,
+    }));
+
+    for (const p of plans) {
+        console.log(`  ${c.bold(p.slug)} ${c.dim('→ ' + p.blankId)}`);
+        if (show) console.log(c.dim('    pool item:  ') + JSON.stringify(p.item));
     }
 
     if (dryRun) {
@@ -759,52 +980,21 @@ async function cmdPromote(args: string[]): Promise<number> {
         return 0;
     }
 
-    // Past the dry-run gate, the operator token is guaranteed present
-    // (checked at the top of cmdPromote).
+    // NOTE: a contributed Blank is anonymous ⇒ ownerless, so it stays
+    // world-editable until the claim flow lands. Re-homing pooled Blanks
+    // to operator-owned `viewer` (immutability) is the optional sub-step
+    // deferred with the read view-floor work (issue #13); for now promote
+    // just adds the Seed Pool reference.
     const token = sessionToken!;
 
-    // 1. Ensure the Seed Pool exists. Operator-owned with default_role
-    //    'viewer': publicly readable for the homepage, but only the
-    //    operator (an EDIT_ROLE owner) can append to it.
-    try {
-        await pushMutation(base, origin, 'list', SEED_POOL_LIST_ID, 'initList', {
-            listId: SEED_POOL_LIST_ID,
-            workspaceId: null,
-            name: 'Seed Pool',
-            slot: 'seed_pool',
-            defaultRole: 'viewer',
-        }, token);
-        console.log(`\n${PASS} seed pool ready`);
-    } catch (err) {
-        console.error(c.red(`seed pool init failed: ${(err as Error).message}`));
-        console.error(c.dim(`  (is the worker running at ${base}?)`));
-        return 1;
-    }
-
-    // 2. Mint each Blank Template (operator-owned, public viewer, full
-    //    content inline). Skip ones that already exist — see entityExists.
-    for (const p of plans) {
-        try {
-            if (await entityExists(base, 'template', p.blankId)) {
-                console.log(`${PASS} blank ${c.bold(p.slug)} ${c.dim('(exists, skipped)')}`);
-                continue;
-            }
-            await pushMutation(base, origin, 'template', p.blankId, 'initList', p.blankArgs, token);
-            console.log(`${PASS} blank ${c.bold(p.slug)}`);
-        } catch (err) {
-            console.error(c.red(`✗ blank ${p.slug} failed: ${(err as Error).message}`));
-            return 1;
-        }
-    }
-
-    // 3. Add a referencing item to the Seed Pool (retry: D1 row lags init).
+    // 4. Add a referencing item to the Seed Pool (retry: D1 row lags init).
     let failed = 0;
     for (const p of plans) {
         try {
             await pushWithRetry(() =>
                 pushMutation(base, origin, 'list', SEED_POOL_LIST_ID, 'createListItem', {
                     item: p.item,
-                }, token)
+                }, { accountId: OPERATOR_ACCOUNT_ID, sessionToken: token })
             );
             console.log(`${PASS} pooled ${c.bold(p.slug)}`);
         } catch (err) {
@@ -827,27 +1017,31 @@ const COMMANDS: Record<string, { run: (args: string[]) => Promise<number>; help:
     contribute: {
         run: cmdContribute,
         help:
-            'Add an example List to seed/contributed/ and round-trip it.\n' +
-            '    djibb contribute --path <file.md>            contribute an existing file\n' +
+            'Push a List to the live Contributed List (no operator token).\n' +
+            '    djibb contribute --path <file.md>            contribute a file (to the live site)\n' +
             "    djibb contribute -m '# Title\\n- [ ] item'     contribute inline markdown\n" +
-            '    flags: --slug <s>  --by <name>  --force  --show',
+            '    flags: --slug <s>  --dry-run  --show\n' +
+            '           --base <url> (default https://api.djibb.com; use http://localhost:8787 for local dev)\n' +
+            '           --origin <url> (CSRF origin; tracks --base)',
     },
     promote: {
         run: cmdPromote,
         help:
-            'Promote seed(s) into the live Seed Pool via a running worker.\n' +
-            '    djibb promote                    promote every seed in ./seed/contributed/\n' +
-            '    djibb promote <slug>             promote one seed\n' +
-            '    flags: --base <url> (default http://localhost:8787)\n' +
-            '           --origin <url> (CSRF origin; default http://localhost:5173)  --dry-run  --show',
+            'Bootstrap the platform Lists + reference Blanks from the Seed Pool.\n' +
+            '    djibb promote                    bootstrap + list contributed entries\n' +
+            '    djibb promote <slug|blank-id>    promote one contributed entry\n' +
+            '    djibb promote --all              promote every contributed entry\n' +
+            '    flags: --dry-run  --show\n' +
+            '           --base <url> (default https://api.djibb.com; use http://localhost:8787 for local dev)\n' +
+            '           --origin <url> (CSRF origin; tracks --base)',
     },
     'test-parse': {
         run: cmdTestParse,
         help:
             'Round-trip a Markdown list through the ADR-0012 encoder.\n' +
-            '    djibb test-parse                 every list in ./seed/contributed/ (searched up from cwd)\n' +
-            '    djibb test-parse <slug>          one seed by slug (e.g. wrong-window)\n' +
-            '    djibb test-parse <path/to.md>    one file by path',
+            '    djibb test-parse <path/to.md>    one file by path\n' +
+            "    djibb test-parse -m '# T\\n- [ ] x'   inline markdown\n" +
+            '    flags: --show (also print the canonical form)',
     },
 };
 

@@ -25,6 +25,22 @@ export const EDIT_ROLES: readonly AuthorizationRole[] = [
 ] as const;
 
 /**
+ * Roles permitted to *append* to a list — `EDIT_ROLES` plus
+ * `submitter` (ADR 0021). `submitter` can add items (`createListItem`)
+ * but is intentionally excluded from `EDIT_ROLES`, so every
+ * structural/destructive mutator (rename, delete, reorder, set-fields,
+ * auth-rules) stays closed to it. Append-only by construction: the only
+ * mutator that widens its gate to `APPEND_ROLES` is `createListItem`.
+ * Used by the operator-owned Contributed List (`default_role:
+ * 'submitter'`) so anonymous `djibb contribute` can append without a
+ * token while no passing stranger can vandalize existing contributions.
+ */
+export const APPEND_ROLES: readonly AuthorizationRole[] = [
+    ...EDIT_ROLES,
+    AuthorizationRoleEnum.enum.submitter,
+] as const;
+
+/**
  * Roles permitted to change who can access the list. Tighter than
  * `EDIT_ROLES` — an editor or checker can mutate list state, but only
  * an admin or owner can re-grant access. `ownerless` is intentionally

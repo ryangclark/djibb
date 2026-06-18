@@ -176,6 +176,16 @@ function main(): number {
         c.dim('  promote:  ') +
             `DJIBB_OPERATOR_SESSION=${sessionId} djibb promote --base https://djibb.com`
     );
+    // Recommended persistent storage on macOS: stash it in the login
+    // keychain once and `promote` reads it automatically (env unset). The
+    // Passwords app can't be used — its iCloud-keychain entries aren't
+    // readable by the `security` CLI. See `operatorSessionToken` in djibb.ts.
+    console.log(c.dim('\n  store (macOS, then `djibb promote` finds it with no env):'));
+    console.log(
+        c.dim('    ') +
+            'security add-generic-password -U -a djibb-operator -s DJIBB_OPERATOR_SESSION -w'
+    );
+    console.log(c.dim('    (no value after -w → it prompts; paste the token above. Keeps it out of shell history.)'));
     if (rotate) {
         console.log(c.yellow('\n  --rotate: prior operator tokens were invalidated.'));
     }

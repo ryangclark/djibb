@@ -11,6 +11,17 @@ export const AuthorizationRoleEnum = z.enum([
     'owner',
     'ownerless',
     'restricted',
+    // ADR 0021: write-without-read / append-only — the dual of
+    // `viewer` (which reads but can't write). A `submitter` can append
+    // to a list (`createListItem` via `APPEND_ROLES`) but is excluded
+    // from every structural/destructive mutator (`EDIT_ROLES`). It is a
+    // `DefaultRoleEnum` value (anon callers on a contributed-style list
+    // resolve to it) but deliberately NOT an `AccountRoleEnum`/
+    // `InvitableRoleEnum` value — you don't *grant* submitter, it's the
+    // public floor of an append-only list. The matching read-denial
+    // (view-floor) lands in issue #13; here `submitter` is write-gated
+    // only and reads stay open platform-wide (status quo).
+    'submitter',
     'viewer',
     // ADR 0011 §Step 10a.3 / ADR 0008: identity for mutations
     // originated by another DO inside the cluster (cascade-archive,
@@ -73,6 +84,10 @@ export const DefaultRoleEnum = z.enum([
     AuthorizationRoleEnum.enum.editor,
     AuthorizationRoleEnum.enum.ownerless,
     AuthorizationRoleEnum.enum.restricted,
+    // ADR 0021: append-only floor — a list whose `default_role` is
+    // `submitter` lets any caller append (createListItem) but nothing
+    // else. The Contributed List uses this.
+    AuthorizationRoleEnum.enum.submitter,
     AuthorizationRoleEnum.enum.viewer,
 ]);
 

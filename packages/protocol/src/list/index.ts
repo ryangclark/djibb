@@ -17,11 +17,16 @@ import { DatelikeToDateSchema } from '../schema';
  *  - `personal_workspace` — Workspace entity, exactly one per account.
  *  - `inbox`              — List entity, exactly one per account.
  *  - `seed_pool`          — List entity, exactly one globally.
+ *  - `contributed`        — List entity, exactly one globally; the
+ *                           append-only holding pen `djibb contribute`
+ *                           writes into (ADR 0021, `default_role:
+ *                           'submitter'`).
  */
 export const SlotEnum = z.enum([
     'personal_workspace',
     'inbox',
     'seed_pool',
+    'contributed',
 ]);
 
 export type Slot = z.TypeOf<typeof SlotEnum>;
@@ -38,6 +43,25 @@ export type Slot = z.TypeOf<typeof SlotEnum>;
  * the CLI asserts its own derivation matches this constant.
  */
 export const SEED_POOL_LIST_ID = 'l/LWmRT14-cOUtJ9-nsSwQe';
+
+/**
+ * The one global **Contributed** List — the append-only holding pen
+ * `djibb contribute` writes into (issue #9, ADR 0021). Operator-owned,
+ * `slot: 'contributed'`, `default_role: 'submitter'`: any anonymous
+ * caller can append a reference to a freshly-minted Blank
+ * (`createListItem` via `APPEND_ROLES`) but cannot mutate existing
+ * entries (every other mutator gates on `EDIT_ROLES`). `djibb promote`
+ * reads it to source Seed Pool candidates.
+ *
+ * Derived once, offline, from the stable seed `'djibb:contributed'` via
+ * the same sha256→url-safe scheme as {@link SEED_POOL_LIST_ID} (see
+ * `packages/server-cf/bin/djibb.ts` `detId`); identical in every
+ * environment, hardcoded here as the single source of truth shared by
+ * the CLI and the site. Kept a literal (not recomputed) so the Worker
+ * bundle stays free of node:crypto; the CLI asserts its own derivation
+ * matches this constant.
+ */
+export const CONTRIBUTED_LIST_ID = 'l/RG5n-jjnV9BmqO4WSr4Eu';
 
 /**
  * The one platform **operator** account — a fixed, well-known singleton,

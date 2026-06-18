@@ -4,7 +4,7 @@ import { BadMutationError } from '@djibb/protocol/errors';
 import { ListElementUnion, ListItemSchema } from '@djibb/protocol/list';
 import { IdTypes } from '@djibb/protocol/id';
 import { ListSchema, TemplateSchema } from '@djibb/protocol/list';
-import { EDIT_ROLES, toStoredValue } from './_shared';
+import { APPEND_ROLES, toStoredValue } from './_shared';
 import type { ClientMutator, Inverse, ServerMutator } from './_shared';
 
 export const argsSchema = z.object({
@@ -14,7 +14,10 @@ export const argsSchema = z.object({
 export type Args = z.infer<typeof argsSchema>;
 
 export const name = 'createListItem' as const;
-export const requiredRole = EDIT_ROLES;
+// Append is the one mutation widened to `submitter` (ADR 0021): an
+// append-only list (`default_role: 'submitter'`) admits new items while
+// every other mutator stays gated on `EDIT_ROLES`.
+export const requiredRole = APPEND_ROLES;
 
 export const server: ServerMutator<Args> = ({ item }, { store, nextVersion }) => {
     store.insertListItem({ ...item, version: nextVersion });
