@@ -39,6 +39,21 @@ A reusable, remixable List shape that new Lists can be created from. Distinct en
 
 We chose "Template" over "Pattern" because it's the word users will reach for unprompted (cf. Notion/Figma/GitHub templates), even though "Pattern" is more evocative of remixability.
 
+### Authorization roles
+Every principal resolves to exactly one role per entity — `AuthorizationRules.default_role` for the public, raised by an explicit grant or Workspace membership. Roles are **capability bundles across two independent axes, read and write** — not a single power ladder:
+
+| Role | Read content | Write |
+|---|---|---|
+| `owner` / `admin` | yes | full (admin = everything but destroy/transfer) |
+| `editor` | yes | full structural edits |
+| `checker` | yes | check off items only (e.g. mark "purchased") |
+| `submitter` | **no** | append new items only (blind submission) |
+| `viewer` | yes | none |
+| `restricted` | no | none |
+| `ownerless` | yes | full (URL-collaborative; the Minted-List default) |
+
+`viewer` (read-only) and `submitter` (write-only / blind append) are duals. Reads are gated at a **view floor**: `restricted` and `submitter` cannot read content; everyone above can. This is how a holding-pen / suggestion-box / Secret-Santa drop stays private *from its own contributors* without leaning on an unguessable id. `checker` and `submitter` are the fine-grained "weird client" roles; the set grows a new bundle only when a genuinely orthogonal capability appears — it is a small lattice, not a tier ladder, and the alternative of a separate per-mutator capability layer stays deferred (ADR 0011 Decision C). (`system` is internal-only: cluster-driven cascade mutations, never a session role.)
+
 Create-List flow: `initList` mutation, then `initFromTemplate` to copy the Template's groups/items into the new List.
 
 **Default state via Template item values.** A Template's items can carry any `value` — including `value === target_value`. When a List is forked from a Template, item values are copied as-is. This means a Template author can pre-check "preheat oven to 375°F" and the forked List starts with it already done. The schema is permissive; the UI may show Template item state differently from List item state.
@@ -115,7 +130,7 @@ Conventions and how-to guides for working in this codebase live in `docs/` — r
 
 - **Multi-Template composition** ("car camping" + "Lewis" + "Moab April" merged into one List): v2. v1 is single-source instantiation; users build composed Templates by forking instead.
 - **Cross-list item identity** (Secret Santa "mark purchased here, bubble up everywhere"): custom layer on top of djibb, built using DO-to-DO calls + existing websockets. Not core djibb.
-- **Per-viewer field visibility** (Secret Santa "Purchased" column hidden from owner): frontend-only.
+- **Per-field visibility within a single entity** (hiding one column of an item from a reader who can see the rest): still frontend-only. But the canonical Secret Santa case — "Purchased" hidden from the recipient — is now backend-enforceable by **decomposition**: model purchase-state as its own entity the recipient holds `restricted` on, and the read view-floor (see *Authorization roles*) enforces it. Only hiding a field of an entity the reader can *otherwise* read stays cosmetic/deferred.
 - **Pattern parameters / computed quantities** ("2 nights → 4 underwear"): v2.
 - **Template propagation to existing Lists** (Template edits flowing into Lists already created from it): not in v1. Templates are pure-copy at instantiation; the "self-improving" loop is just *the user editing the Template, and the next instantiation benefiting*. The `template_id` pointer leaves the door open for soft propagation later.
 - **"Consumables" / next-time-only Template state** (e.g. "we ran out of fuel — top up on the next trip but don't permanently increase the quantity"): a real, lived tension. Related to Templates but doesn't fit at the same time as them. Possibly a future "consumables" section, possibly a Secret-Santa-style cross-list bubble-up. Not solved.

@@ -172,6 +172,15 @@ and Templates do not change — they continue to gate on
 already in the enum; this ADR commits to it as the canonical
 non-principal owner-tier slot.
 
+> **Amended 2026-06-18 (ADR 0021).** Scope of "not widened" was the
+> workspace→entity role mapping above. The enum *does* widen when a
+> genuinely **orthogonal write-capability** (a strict subset of `editor`)
+> appears: `submitter` (write-without-read / append-only) was added, and
+> `checker` (latent here as "checkbox-only access") is to be enforced for
+> the Secret Santa client. The role set is thus a small **lattice of
+> capability bundles across read/write axes**, not a linear tier ladder.
+> One mechanism still (Decision C holds) — see below.
+
 ## Pros and cons against alternatives
 
 ### What "extract `DjibbEntity` base class, subclass per type" would have won
@@ -237,6 +246,17 @@ when it surfaces, the unique-`owner` constraint can be relaxed
 layer on top) without losing data — the per-mutator-capability
 shape is not foreclosed, just deferred until a concrete need
 justifies it.
+
+> **Reaffirmed 2026-06-18 (ADR 0021).** Re-litigated against the
+> "weird client" ambition (Secret Santa: append-only, check-off-only,
+> hide-purchases-from-recipient). Decision C still holds — capabilities
+> stay deferred — for a reason only implied here: **entity-decomposition
+> turns composition-of-permissions into composition-of-entities.** A
+> principal needing "append AND check but not edit" is two entities (one
+> `submit`-only, one `check`-only), each with one role, which the
+> substrate does natively. Secret Santa needs zero new protocol code.
+> The capability layer is revisited only when a permission shape cannot
+> be modeled as "more entities, each with one role."
 
 ### What keeping `WorkspaceRoleEnum` and translating at the boundary would have won
 
