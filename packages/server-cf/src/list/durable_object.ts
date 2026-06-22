@@ -27,6 +27,7 @@ import {
 import { OWNER_ROLES } from '@djibb/protocol/list/mutators/_shared';
 
 import type { AuthorizationRole } from '@djibb/protocol/auth/rules';
+import { canRead } from '../auth/resolver';
 import {
     encodeWSMessage,
     WS_QUERY_CLIENT_ID,
@@ -451,21 +452,26 @@ export class DjibbList extends DurableObject {
         listId: string;
         pullRequest: ReplicachePullRequest;
     }): PullResponseOKV1 {
-        // Allow restricted-role pulls. ADR 0009 invitees arrive at
-        // `/l/<id>?from_invite=1` with `restricted` role (until they
-        // click Accept and the server promotes them). Blocking pull
-        // here means their Replicache client retry-storms 403s while
-        // the InviteBanner is on screen, hogging network events and
-        // confusing the page lifecycle. Reads are cheap; per-mutator
-        // `requiredRole` gates remain the authoritative write gate.
-        // The role-gated keyspaces (`pending_invites/*`, etc.) below
-        // still filter what restricted users see.
+        // View-floor reads (ADR 0021 §Decision 1, issue #13). Content
+        // is emitted only to roles at or above the floor (`canRead`:
+        // owner | admin | editor | checker | viewer | ownerless |
+        // system). `restricted` and `submitter` sit BELOW it and get an
+        // empty content patch — NOT a 403. Empty-not-403 keeps a below-
+        // floor subscriber's Replicache client from retry-storming
+        // (preserves the ADR 0009 no-storm property): the pull succeeds,
+        // the cookie advances, the patch just carries no content keys.
         //
-        // @TODO: tighten read access if/when ADR 0009 grows a
-        //   "preview the invite without granting full read" tier —
-        //   for now invitees can only get here via a tokenless URL
-        //   built into their invitation email, so any entity they
-        //   reach this code path with is one they were invited to.
+        // This also makes reads revocable: the cookie's prior role
+        // (`previousRole`) versus the request's current `authorizedRole`
+        // drives the same promotion / demotion-eviction transitions the
+        // `pending_invites/*` keyspaces use — a demoted reader gets `del`
+        // ops for the content they could previously see (below).
+        //
+        // ADR 0009 invitees still reach here with `restricted` (until
+        // they Accept): now they correctly see no content, while the
+        // InviteBanner renders from the invitation record, not entity
+        // content. The role-gated keyspaces (`pending_invites/*`) below
+        // are filtered by their own `visibleTo` predicate.
 
         // Cookie shape is `{v, r}` (entity version + the role this
         // client last pulled as). `null` is the canonical fresh-pull
@@ -571,44 +577,88 @@ export class DjibbList extends DurableObject {
             resolvedEntityVersion = entity.version;
         }
 
-        if (requestVersion === 0) {
-            // Initialize a fresh client by adding a "clear" action as our
-            // first patch. That will clear the Replicache client, so we
-            // start from scratch. (Not sure this is entirely necessary...)
-            pullResponse.patch.push({
-                op: 'clear',
-            });
-        }
+        // ---- View-floor content gate (ADR 0021 §Decision 1 / issue
+        // #13) ---- Content keys (`l/`, `i/`, `g/` …) are emitted only
+        // to roles at or above the read floor. `restricted` /
+        // `submitter` fall through to an empty content patch. The three
+        // role transitions mirror `appendKeyspacePatches` (used below
+        // for `pending_invites/*`), applied here to content's several
+        // key prefixes.
+        const canReadNow = canRead(authorizedRole);
+        const couldReadBefore =
+            previousRole != null && canRead(previousRole);
 
-        for (const element of listElements) {
-            const key = element.id;
+        if (canReadNow) {
+            // Promotion (was below-floor, now can read): the client
+            // cached no content, so a diff since `requestVersion` would
+            // miss everything already at/below that version — full-sync
+            // from 0 instead. A genuine fresh pull (v0) is the same
+            // shape. Otherwise it's a steady-state diff over the rows
+            // already fetched at `requestVersion`.
+            const promotion = !couldReadBefore && requestVersion > 0;
+            const contentFromScratch = requestVersion === 0 || promotion;
+            const contentElements = contentFromScratch
+                ? getChangedElements(this.sql, 0)
+                : listElements;
 
-            if (element.time_deleted) {
-                // Don't add a "del" operation to the list if we're
-                // building a "from scratch" patch, because you only
-                // need to delete things if you already have them.
-                if (requestVersion === 0) continue;
-
+            if (requestVersion === 0) {
+                // Initialize a fresh client by adding a "clear" action as
+                // our first patch, so we start from scratch. NOT emitted
+                // on promotion (requestVersion > 0): a `clear` would also
+                // wipe non-content keyspaces (`pending_invites/*`) the
+                // client legitimately still holds.
                 pullResponse.patch.push({
-                    key,
-                    op: 'del',
+                    op: 'clear',
                 });
-            } else {
+            }
+
+            for (const element of contentElements) {
+                const key = element.id;
+
+                if (element.time_deleted) {
+                    // Don't add a "del" when building a from-scratch /
+                    // promotion patch — the client holds nothing to
+                    // delete yet.
+                    if (contentFromScratch) continue;
+
+                    pullResponse.patch.push({
+                        key,
+                        op: 'del',
+                    });
+                } else {
+                    pullResponse.patch.push({
+                        key,
+                        op: 'put',
+                        // The entity row is JSON at rest, but `meta`'s
+                        // `Record<string, unknown>` values aren't provably
+                        // `ReadonlyJSONValue` to the compiler.
+                        value: {
+                            ...element,
+                            time_created: element.time_created.toISOString(),
+                            time_deleted: null,
+                            time_updated: element.time_updated.toISOString(),
+                        } as ReadonlyJSONValue,
+                    });
+                }
+            }
+        } else if (couldReadBefore) {
+            // Demotion: the client could read at its last pull but is now
+            // below the floor (revoke / demote to restricted|submitter).
+            // Evict every content key it may have cached — this is what
+            // finally makes reads revocable (ADR 0021 §Decision 3). A
+            // `del` for a key the client never held is a harmless no-op,
+            // so we evict every id (live or tombstoned) defensively.
+            for (const element of getChangedElements(this.sql, 0)) {
                 pullResponse.patch.push({
-                    key,
-                    op: 'put',
-                    // The entity row is JSON at rest, but `meta`'s
-                    // `Record<string, unknown>` values aren't provably
-                    // `ReadonlyJSONValue` to the compiler.
-                    value: {
-                        ...element,
-                        time_created: element.time_created.toISOString(),
-                        time_deleted: null,
-                        time_updated: element.time_updated.toISOString(),
-                    } as ReadonlyJSONValue,
+                    key: element.id,
+                    op: 'del',
                 });
             }
         }
+        // else (below-floor now and before): empty content patch — no
+        // `clear`, no puts. The `pending_invites/*` keyspaces below still
+        // apply and the cookie still advances, so the client neither
+        // retry-storms nor sees content.
 
         // ADR 0009 Slice 2: append role-gated keyspaces (e.g.
         // `pending_invites/*`). The orchestration handles promotion

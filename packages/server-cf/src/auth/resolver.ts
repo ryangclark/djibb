@@ -38,12 +38,25 @@ export function resolveRole(
     return rules.default_role;
 }
 
+/**
+ * The read view-floor (ADR 0021 §Decision 1, issue #13). A role at or
+ * above the floor sees entity content in `handlePull`; `restricted` and
+ * `submitter` sit *below* it and receive an empty content patch (not a
+ * 403). `ownerless` is **above** the floor — anonymous-created Blanks
+ * (`default_role: 'ownerless'`, e.g. the contributed Lists) must stay
+ * publicly readable, so this set matches the ADR's `VIEW_ROLES`
+ * (owner | admin | editor | checker | viewer | ownerless), NOT the
+ * narrower `AccountRoleEnum`. `system` is a cluster-internal cascade
+ * identity that also reads (it mutates content, so it must see it).
+ */
 const READABLE_ROLES: ReadonlySet<AuthorizationRole> = new Set([
     'owner',
     'admin',
     'editor',
     'checker',
     'viewer',
+    'ownerless',
+    'system',
 ]);
 
 const EDITABLE_ROLES: ReadonlySet<AuthorizationRole> = new Set([

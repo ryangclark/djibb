@@ -24,7 +24,7 @@ import { ReplicachePullRequestSchema } from '../replicache';
 import { z } from 'zod';
 import { IdTypes } from '@djibb/protocol/id';
 import { GetMembership } from '../workspace/service';
-import { resolveRole } from '../auth/resolver';
+import { canRead, resolveRole } from '../auth/resolver';
 import { GetEntity } from './entity';
 import { asLocalList } from './durable_object';
 import { initListArgsSchema, mintFromBlankArgsSchema } from '@djibb/protocol/list/mutators/client';
@@ -190,6 +190,13 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
     app.get('', async c => {
         const entity = c.get('entity');
         if (!entity) throw new NotFoundError();
+
+        // View-floor (ADR 0021 / issue #13): this route returns the
+        // entity row (name, rules, description) — content below the read
+        // floor. A below-floor role (`restricted` / `submitter`) gets a
+        // 404 rather than leaking existence/metadata, consistent with the
+        // empty content patch `handlePull` returns over `/pull`.
+        if (!canRead(c.get('authorized_role'))) throw new NotFoundError();
 
         const listId = c.get('list').name ?? c.get('entity_id');
         if (!listId) throw new UnexpectedError('invalid listId');

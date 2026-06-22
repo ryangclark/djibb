@@ -129,12 +129,23 @@ describe('resolveRole', () => {
 });
 
 describe('canRead', () => {
-    it.each(['owner', 'admin', 'editor', 'checker', 'viewer'] as const)(
-        '%s can read',
-        role => expect(canRead(role)).toBe(true),
-    );
+    // ADR 0021 §Decision 1 view-floor (VIEW_ROLES). `ownerless` is
+    // ABOVE the floor: anonymous-created Blanks (e.g. the Contributed
+    // Lists) carry `default_role: 'ownerless'` and must stay publicly
+    // readable. `system` reads too (it's a cluster-internal cascade
+    // identity that mutates content). Only `restricted`/`submitter`
+    // sit below the floor.
+    it.each([
+        'owner',
+        'admin',
+        'editor',
+        'checker',
+        'viewer',
+        'ownerless',
+        'system',
+    ] as const)('%s can read', role => expect(canRead(role)).toBe(true));
 
-    it.each(['restricted', 'ownerless'] as const)('%s cannot read', role =>
+    it.each(['restricted', 'submitter'] as const)('%s cannot read', role =>
         expect(canRead(role)).toBe(false),
     );
 });
