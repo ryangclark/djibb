@@ -174,7 +174,7 @@ function main(): number {
     console.log(c.dim('\n  cookie:   djibb-session=' + sessionId));
     console.log(
         c.dim('  promote:  ') +
-            `DJIBB_OPERATOR_SESSION=${sessionId} djibb promote --base https://djibb.com`
+            `DJIBB_OPERATOR_SESSION=${sessionId} djibb promote --base https://api.djibb.com`
     );
     // Recommended persistent storage on macOS: stash it in the login
     // keychain once and `promote` reads it automatically (env unset). The
