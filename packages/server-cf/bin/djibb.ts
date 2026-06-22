@@ -450,6 +450,28 @@ async function httpDetail(res: Response): Promise<string> {
 }
 
 /**
+ * Build the headers every `djibb` worker request shares. `Origin` clears
+ * the worker's CSRF gate (index.ts rejects non-GET requests whose `Origin`
+ * isn't in AUTHORIZED_DOMAINS). A `sessionToken` is the caller's
+ * *credential*, ridden as the `djibb-session` cookie — it says who the
+ * caller is; the server's auth layer (`auth/resolver.ts` + the DO) decides
+ * what that identity may do. Omit it to call anonymously. This is the one
+ * place a request attaches the operator cookie, so new `djibb <verb>`
+ * commands authenticate consistently.
+ */
+function djibbRequestHeaders(
+    origin: string,
+    sessionToken?: string
+): Record<string, string> {
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Origin: origin,
+    };
+    if (sessionToken) headers.Cookie = `djibb-session=${sessionToken}`;
+    return headers;
+}
+
+/**
  * POST one mutation to a worker `/push`. A fresh `clientID` per call has
  * `lastMutationId: 0` server-side, so `id: 1` always validates.
  *
@@ -474,16 +496,9 @@ async function pushMutation(
     opts: { accountId: string | null; sessionToken?: string }
 ): Promise<void> {
     const url = `${base.replace(/\/$/, '')}/${kind}/push?id=${encodeURIComponent(entityId)}`;
-    const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        // The worker's CSRF gate (index.ts) rejects non-GET requests
-        // whose `Origin` isn't in AUTHORIZED_DOMAINS with an empty 403.
-        Origin: origin,
-    };
-    if (opts.sessionToken) headers.Cookie = `djibb-session=${opts.sessionToken}`;
     const res = await fetch(url, {
         method: 'POST',
-        headers,
+        headers: djibbRequestHeaders(origin, opts.sessionToken),
         body: JSON.stringify({
             profileID: 'djibb-cli',
             clientGroupID: randomUUID(),
@@ -512,19 +527,23 @@ type PullPut = { op: 'put'; key: string; value: Record<string, unknown> };
 
 /**
  * POST a fresh (`cookie: null`) `/pull` for `listId` and return its
- * `put` ops — the surface the homepage uses to read the Seed Pool.
- * Anonymous; reads are open platform-wide (the view-floor lands in #13).
- * The CSRF `Origin` gate still applies (it's a POST).
+ * `put` ops. Pass `sessionToken` to read as the operator: since the
+ * view-floor landed (#13), below-floor roles (the Contributed List is
+ * `default_role: 'submitter'`) get an empty patch, so an anonymous pull
+ * sees nothing. The operator owns the platform Lists, so its cookie
+ * resolves above the floor and reads the full tree. The Replicache
+ * `cookie: null` in the body is the pull baseline (unrelated to auth).
  */
 async function pullList(
     base: string,
     origin: string,
-    listId: string
+    listId: string,
+    sessionToken?: string
 ): Promise<PullPut[]> {
     const url = `${base.replace(/\/$/, '')}/list/pull?id=${encodeURIComponent(listId)}`;
     const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Origin: origin },
+        headers: djibbRequestHeaders(origin, sessionToken),
         body: JSON.stringify({
             pullVersion: 1,
             profileID: 'djibb-cli',
@@ -923,7 +942,7 @@ async function cmdPromote(args: string[]): Promise<number> {
     // 2. Read the Contributed List and enumerate its referenced Blanks.
     let contributed: PullPut[];
     try {
-        contributed = await pullList(base, origin, CONTRIBUTED_LIST_ID);
+        contributed = await pullList(base, origin, CONTRIBUTED_LIST_ID, sessionToken);
     } catch (err) {
         console.error(c.red(`could not read the Contributed List: ${(err as Error).message}`));
         return 1;
