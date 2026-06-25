@@ -5,6 +5,7 @@ import type { PushRequestV1 } from 'replicache';
 import type { HonoEnv } from '..';
 
 import { HandleSession } from '../auth/middleware';
+import { credentialPermitsEntity } from '../auth/credential';
 import {
     type AuthorizationRole,
     AuthorizationRoleEnum,
@@ -154,6 +155,22 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
     });
 
     app.use('*', HandleSession);
+
+    // Bound-credential enforcement (ADR 0022 §Negative, GH #20). The
+    // request→Account seam carries `bound_entity_id` forward without
+    // enforcing it (the entity isn't in scope there); this is where the
+    // target entity IS known, so it's the one place the binding can be
+    // applied. A bound token used on any entity but its own is rejected,
+    // before role resolution and uniformly across every route (GET, /audit,
+    // /pull, /push). Unbound and cookie/anonymous requests pass through.
+    app.use('*', async (c, next) => {
+        if (!credentialPermitsEntity(c.get('credential'), c.get('entity_id'))) {
+            throw new UnauthorizedError(
+                'credential is bound to a different entity',
+            );
+        }
+        await next();
+    });
 
     app.use(async (c, next) => {
         // Read entity metadata from D1 (authoritative per ADR 0001).

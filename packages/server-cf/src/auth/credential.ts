@@ -258,6 +258,31 @@ export async function VerifyBearerCredential(
     };
 }
 
+/**
+ * Binding enforcement (ADR 0022 §Negative consequences, GH #20). A
+ * credential bound to an entity (`bound_entity_id` set) may act ONLY on
+ * that entity; on any other it is denied. Unbound credentials (`NULL`) and
+ * absent ones (cookie sessions / anonymous) are unaffected — usable
+ * wherever the Account has access.
+ *
+ * Prefix-agnostic equality, so one check covers a bound List, Template,
+ * Workspace, or Account: the id prefix (`l/`, `t/`, `w/`, `a/`) is part of
+ * the compared value (ADR 0022 §4).
+ *
+ * Pure predicate by design: the binding *cannot* be enforced at the
+ * request→Account seam (the target entity isn't in scope there), so the
+ * carrier threads forward and this rule is applied at the per-entity authz
+ * check, where the entity is finally known. Returns `true` to permit,
+ * `false` to deny.
+ */
+export function credentialPermitsEntity(
+    credential: ResolvedCredential | null,
+    entityId: string,
+): boolean {
+    if (!credential || credential.bound_entity_id == null) return true;
+    return credential.bound_entity_id === entityId;
+}
+
 /** Records `time_last_used` for an authenticated credential. */
 function touchLastUsed(d1: D1Database, credentialId: string, now: number) {
     return d1

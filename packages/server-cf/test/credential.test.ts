@@ -28,7 +28,9 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
     CreateCredential,
     VerifyBearerCredential,
+    credentialPermitsEntity,
     hashSecret,
+    type ResolvedCredential,
 } from '../src/auth/credential';
 import { newId } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
@@ -228,6 +230,45 @@ describe('CreateCredential — hash discipline', () => {
 });
 
 // ─── time_last_used: best-effort + throttled ─────────────────────────────────
+
+// ─── bound_entity_id enforcement (GH #20) ────────────────────────────────────
+
+describe('credentialPermitsEntity', () => {
+    const cred = (boundEntityId: string | null): ResolvedCredential => ({
+        account: { id: 'a/owner' } as any,
+        credential_id: 'c/somehandlexxxxxxxxxx',
+        bound_entity_id: boundEntityId,
+    });
+
+    it('permits an unbound (NULL) credential on any entity', () => {
+        expect(credentialPermitsEntity(cred(null), 'l/anything-here-aaaaa')).toBe(
+            true,
+        );
+        expect(credentialPermitsEntity(cred(null), 'w/other-entity-bbbbb')).toBe(
+            true,
+        );
+    });
+
+    it('permits a bound credential on exactly its bound entity', () => {
+        const listId = 'l/bound-target-ccccccc';
+        expect(credentialPermitsEntity(cred(listId), listId)).toBe(true);
+    });
+
+    it('denies a bound credential on any other entity', () => {
+        expect(
+            credentialPermitsEntity(cred('l/bound-target-ccccccc'), 'l/other-ddddd'),
+        ).toBe(false);
+        // Prefix-agnostic: the id prefix is part of the compared value, so a
+        // same-suffix different-kind id is still a different entity.
+        expect(
+            credentialPermitsEntity(cred('l/sameSuffixxxxxxxxxxx'), 't/sameSuffixxxxxxxxxxx'),
+        ).toBe(false);
+    });
+
+    it('permits when there is no credential (cookie session / anonymous)', () => {
+        expect(credentialPermitsEntity(null, 'l/anything-here-aaaaa')).toBe(true);
+    });
+});
 
 describe('VerifyBearerCredential — time_last_used', () => {
     it('schedules a throttled touch via waitUntil, but not on every request', async () => {
