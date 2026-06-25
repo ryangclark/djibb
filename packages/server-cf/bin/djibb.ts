@@ -1091,8 +1091,9 @@ const COMMANDS: Record<string, { run: (args: string[]) => Promise<number>; help:
         run: cmdContribute,
         help:
             'Push a List to the live Contributed List (no operator token).\n' +
-            '    djibb contribute --path <file.md>            contribute a file (to the live site)\n' +
-            "    djibb contribute -m '# Title\\n- [ ] item'     contribute inline markdown\n" +
+            '    djibb contribute --path <file.md>            contribute a file (best for multi-line)\n' +
+            "    djibb contribute -m $'# Title\\n- [ ] item'    contribute inline markdown\n" +
+            "      tip: use $'…' so \\n is a real newline; plain '…' keeps it literal and collapses the list\n" +
             '    flags: --slug <s>  --dry-run  --show\n' +
             '           --base <url> (default https://api.djibb.com; use http://localhost:8787 for local dev)\n' +
             '           --origin <url> (CSRF origin; tracks --base)',
@@ -1113,7 +1114,7 @@ const COMMANDS: Record<string, { run: (args: string[]) => Promise<number>; help:
         help:
             'Round-trip a Markdown list through the ADR-0012 encoder.\n' +
             '    djibb test-parse <path/to.md>    one file by path\n' +
-            "    djibb test-parse -m '# T\\n- [ ] x'   inline markdown\n" +
+            "    djibb test-parse -m $'# T\\n- [ ] x'   inline markdown ($'…' so \\n is a real newline)\n" +
             '    flags: --show (also print the canonical form)',
     },
 };
