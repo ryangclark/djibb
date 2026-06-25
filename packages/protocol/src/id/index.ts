@@ -37,6 +37,7 @@ export function randomString(length: number): string {
 
 export const IdTypes = {
     account: 'a',
+    credential: 'c',
     group: 'g',
     invitation: 'inv',
     item: 'i',

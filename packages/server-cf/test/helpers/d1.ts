@@ -15,6 +15,7 @@ import migration0011 from '../../migrations/0011_entity_memberships.sql?raw';
 import migration0012 from '../../migrations/0012_entity_slug.sql?raw';
 import migration0013 from '../../migrations/0013_drop_legacy_workspace_tables.sql?raw';
 import migration0014 from '../../migrations/0014_entity_cascade_source.sql?raw';
+import migration0015 from '../../migrations/0015_issued_credentials.sql?raw';
 
 const ALL_MIGRATIONS = [
     migration0001,
@@ -31,6 +32,7 @@ const ALL_MIGRATIONS = [
     migration0012,
     migration0013,
     migration0014,
+    migration0015,
 ];
 
 function splitStatements(sql: string): string[] {
@@ -124,6 +126,7 @@ export async function resetWorkspaceData(): Promise<void> {
         env.DJIBB_AUTH.prepare('DELETE FROM sessions'),
         env.DJIBB_AUTH.prepare('DELETE FROM AccountList'),
         env.DJIBB_AUTH.prepare('DELETE FROM magic_link_tokens'),
+        env.DJIBB_AUTH.prepare('DELETE FROM issued_credentials'),
         env.DJIBB_AUTH.prepare('DELETE FROM entity_invitations_index'),
         env.DJIBB_AUTH.prepare('DELETE FROM accounts'),
     ]);
