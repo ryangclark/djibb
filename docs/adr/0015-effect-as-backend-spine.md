@@ -2,6 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** 2026-06-14
+- **Layer:** server-cf
 
 ## Context
 

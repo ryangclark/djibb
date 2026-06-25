@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-06-14
+- **Layer:** meta
 - **Accepted:** 2026-06-16 — applied at the ADR-0014 split: Apache-2.0 on
   `packages/*` (protocol, client, server-cloudflare), PolyForm Shield 1.0.0
   on `apps/djibb-com`; root NOTICE enumerates the matrix; a

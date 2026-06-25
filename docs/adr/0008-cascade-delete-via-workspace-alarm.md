@@ -2,6 +2,7 @@
 
 - **Status:** Accepted; implemented (shipped with the Workspace-as-`DjibbList` work in ADR 0011 §Step 10 — cascade dispatcher, Trash UI, and "Start Fresh"; see `workers/src/list/mutators/cascadeArchiveList.ts`, `cascadeRestoreList.ts`, `startFresh.ts`)
 - **Date:** 2026-05-16
+- **Layer:** server-cf
 
 ## Context
 

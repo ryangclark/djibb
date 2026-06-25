@@ -2,6 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** 2026-06-15
+- **Layer:** client/agent
 
 ## Context
 

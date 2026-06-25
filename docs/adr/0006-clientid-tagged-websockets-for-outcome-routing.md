@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-05-10
+- **Layer:** protocol
 
 ## Context
 

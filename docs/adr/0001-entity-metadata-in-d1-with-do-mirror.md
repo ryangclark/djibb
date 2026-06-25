@@ -2,6 +2,7 @@
 
 - **Status:** Superseded by ADR 0003 (2026-04-29)
 - **Date:** 2026-04-26
+- **Layer:** server-cf
 
 ## Context
 

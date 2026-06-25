@@ -6,6 +6,7 @@
   workspace view (`pages/src/routes/w/[slug]/+page.svelte`) is an explicit
   TODO placeholder. The guest-side Minted List flow is the built half.
 - **Date:** 2026-04-28
+- **Layer:** client/djibb.com
 
 ## Context
 

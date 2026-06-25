@@ -2,6 +2,7 @@
 
 - **Status:** Deferred (considered; not adopted — see Decision)
 - **Date:** 2026-06-10 (deferred 2026-06-12)
+- **Layer:** server-cf
 
 ## Context
 

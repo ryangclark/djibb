@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-05-09
+- **Layer:** client/djibb.com
 
 ## Context
 

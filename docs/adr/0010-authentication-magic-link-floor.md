@@ -2,6 +2,7 @@
 
 - **Status:** Accepted; magic-link floor and OAuth implemented (`workers/src/auth/magic.ts`, `workers/src/auth/oauth.ts`); passkey 2FA remains the opt-in/forthcoming tier per §Decision
 - **Date:** 2026-05-17
+- **Layer:** protocol, server-cf
 
 ## Context
 

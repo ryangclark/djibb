@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (design + spike landed)
 - **Date:** 2026-06-08
+- **Layer:** protocol
 
 ## Context
 

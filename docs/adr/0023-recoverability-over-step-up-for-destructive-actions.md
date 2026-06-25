@@ -5,6 +5,7 @@
   step-up/sensitive-action re-auth that ADR 0010 reserved but did not build.
   Relates to ADR 0021 (orthogonal to its no-capabilities stance).
 - **Date:** 2026-06-22
+- **Layer:** protocol
 
 ## Context
 

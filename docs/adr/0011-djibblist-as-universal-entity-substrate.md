@@ -4,6 +4,7 @@
   complete — see §Implementation order; Phase 5 polish ongoing per
   `docs/workspaces.md`, move-list shipped)
 - **Date:** 2026-05-25
+- **Layer:** protocol
 
 ## Context
 

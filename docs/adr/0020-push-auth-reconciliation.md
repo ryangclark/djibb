@@ -4,6 +4,7 @@
   `packages/server-cf/src/list/durable_object.ts` `handleMutation`, and
   `packages/server-cf/test/pushAuthReconciliation.test.ts`)
 - **Date:** 2026-06-17
+- **Layer:** protocol
 
 ## Context
 

@@ -5,6 +5,7 @@
   `AuthorizationRoleEnum` "not widened" note and Decision C's capability-layer
   deferral).
 - **Date:** 2026-06-18
+- **Layer:** protocol
 
 ## Context
 

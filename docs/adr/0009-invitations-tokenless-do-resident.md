@@ -4,6 +4,7 @@
   §Status update 2026-06-12; "shared with me" surface + Share Links remain
   deferred)
 - **Date:** 2026-05-17
+- **Layer:** protocol, server-cf
 
 ## Context
 

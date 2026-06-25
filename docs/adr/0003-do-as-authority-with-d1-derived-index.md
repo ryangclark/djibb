@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (supersedes ADR 0001)
 - **Date:** 2026-04-29
+- **Layer:** server-cf
 
 ## Context
 

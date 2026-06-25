@@ -2,6 +2,7 @@
 
 - **Status:** Stub (interested, not designed, not implemented)
 - **Date:** 2026-06-17
+- **Layer:** protocol
 
 ## Context
 

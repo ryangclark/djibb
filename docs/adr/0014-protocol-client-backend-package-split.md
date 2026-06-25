@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-06-14
+- **Layer:** meta
 - **Accepted:** 2026-06-16 — implemented: `@djibb/protocol`, `@djibb/client`,
   and `@djibb/server-cloudflare` (`packages/server-cf`) extracted; the
   frontend relocated to `apps/djibb-com`; the `EntityStore` port landed as

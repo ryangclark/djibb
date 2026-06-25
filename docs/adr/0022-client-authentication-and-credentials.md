@@ -6,6 +6,7 @@
   CLI authentication path (`DJIBB_OPERATOR_SESSION` replayed as the
   `djibb-session` cookie) in `packages/server-cf/bin/djibb.ts`.
 - **Date:** 2026-06-22
+- **Layer:** protocol, client/cli
 
 ## Context
 

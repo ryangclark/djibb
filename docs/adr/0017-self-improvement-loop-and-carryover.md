@@ -2,6 +2,7 @@
 
 - **Status:** Proposed (stub — core shape committed; §Open questions unresolved)
 - **Date:** 2026-06-15
+- **Layer:** protocol, client/agent
 
 ## Context
 
