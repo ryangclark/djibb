@@ -114,6 +114,7 @@ export function createSqlStorageEntityStore(storage: SqlStorage): EntityStore {
         reorderChildElement: bind(sql.reorderChildElement),
         setElementAsDeleted: bind(sql.setElementAsDeleted),
         setMutation: bind(sql.setMutation),
+        ensureMutationsCredentialColumn: bind(sql.ensureMutationsCredentialColumn),
         getMutationLog: bind(sql.getMutationLog),
         setListItemValue: bind(sql.setListItemValue),
         setReplicacheClientGroup: bind(sql.setReplicacheClientGroup),

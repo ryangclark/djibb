@@ -177,3 +177,61 @@ describe('getMutationLog — audit-log read path', () => {
         expect(clamped.data!.length).toBe(1);
     });
 });
+
+// Credential attribution (ADR 0022 §5, GH #22): the acting credential_id
+// is server-resolved at the request→Account seam and threaded through
+// handlePush onto the mutation outcome record, so a mutation-log view can
+// render *what* acted, not just which Account. Interactive sessions (no
+// token) must record cleanly as null.
+describe('mutation-log credential attribution', () => {
+    beforeAll(async () => {
+        await ensureD1Schema();
+    });
+    beforeEach(async () => {
+        await resetWorkspaceData();
+    });
+
+    it('records the acting credential_id on a bearer-authed push', async () => {
+        const owner = 'account/owner-cred-aaaaa';
+        const credentialId = 'c/operatorLaptopCLIaaaa';
+        const { workspaceId, stub } = await mintWorkspace('cred01', owner);
+
+        await stub.handlePush({
+            authorizedAccounts: [{ id: owner } as any],
+            authorizedRole: 'owner',
+            listId: workspaceId,
+            pushRequest: makePush({
+                clientGroupID: 'cg_cred01',
+                clientID: 'c_cred01',
+                name: 'renameWorkspace',
+                mutationId: 2,
+                accountId: owner,
+                body: { workspaceId, name: 'Via CLI' },
+            }),
+            actingCredentialId: credentialId,
+        });
+
+        const { data: entries, error } = await stub.getMutationLog({ limit: 50 });
+        expect(error).toBeNull();
+        const log = entries!;
+
+        // Newest is the credentialed rename; it carries the acting id.
+        expect(log[0]!.name).toBe('renameWorkspace');
+        expect(log[0]!.credential_id).toBe(credentialId);
+        // The Account is still captured independently.
+        expect(log[0]!.account_id).toBe(owner);
+    });
+
+    it('records null credential_id for an interactive (no-token) push', async () => {
+        const owner = 'account/owner-cred-bbbbb';
+        // mintWorkspace pushes without actingCredentialId — a session push.
+        const { stub } = await mintWorkspace('cred02', owner);
+
+        const { data: entries, error } = await stub.getMutationLog({ limit: 50 });
+        expect(error).toBeNull();
+        const log = entries!;
+
+        expect(log[0]!.name).toBe('createWorkspace');
+        expect(log[0]!.credential_id).toBeNull();
+    });
+});

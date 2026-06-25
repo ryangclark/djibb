@@ -436,6 +436,9 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
             authorizedRole: c.get('authorized_role'),
             listId,
             pushRequest,
+            // Acting credential (ADR 0022 §5) — server-resolved at the
+            // request→Account seam; null for cookie sessions / anonymous.
+            actingCredentialId: c.get('credential')?.credential_id ?? null,
         });
         if (error) {
             return new Response(
