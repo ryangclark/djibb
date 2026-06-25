@@ -62,6 +62,16 @@ per-row "kind" beyond the three-type badge (the substrate is the type).
 
 ## Hand-off to the powering slices
 
+> **Update (GH #23, resolved):** the "credentials D1 projection" reduced to a
+> **union read**, not an ADR 0003 emit. Credentials and sessions are both
+> *natively* authoritative in D1 (`issued_credentials` is written directly by
+> `CreateCredential`; sessions live in `sessions`/`AccountSession`) — neither
+> originates in a Durable Object, so there is nothing to project. ADR 0003
+> governs DO-owned *entity* data only; it isn't contradicted, it just doesn't
+> reach auth-substrate tables. So #23 shipped as `src/auth/connected.ts`
+> (`ListConnectedClients` + `partitionConnectedClients`) with no new table, no
+> emit, no reconciler. See the `## Substrate note` below.
+
 - **#4 (credentials D1 projection)** must project at least:
   `credential_id, label, account_id, bound_entity_id, time_created,
   time_last_used, time_expires, time_revoked`. That is exactly the
@@ -91,3 +101,28 @@ per-row "kind" beyond the three-type badge (the substrate is the type).
    workspace. A token bound to a single list, or an unbound account-wide token,
    blurs "connected to this entity" vs. "connected to my account". #5 should
    decide whether the surface is per-entity, per-account, or both with a filter.
+   The #23 read leaves this to the caller: it takes `accountIds` (Account-keyed,
+   because both substrates are) plus an optional `entityId` that narrows tokens
+   to unbound + bound-to-it. The entity surface resolves member Accounts via
+   `entity_memberships` and passes them in.
+
+## Substrate note (why #23 is a read, not a projection)
+
+The connected-clients union touches two principal substrates that are **both
+natively authoritative in D1**:
+
+- `sessions` ⋈ `AccountSession` — interactive sign-ins.
+- `issued_credentials` — bearer tokens, written directly to D1 by
+  `CreateCredential` (GH #16).
+
+`entity_memberships` / `entity_invitations_index` are ADR 0003 *projections*
+because their sources (`authorization_rules`, `pending_invites`) live inside
+Durable Objects, and a DO can't be queried cross-entity — the D1 index is how
+DO-owned data becomes cross-cuttingly readable. Credentials and sessions have
+no DO origin, so there is nothing to emit or reconcile: D1 *is* the source of
+truth. ADR 0003 isn't weakened by this — it governs DO-owned **entity** data;
+auth-substrate tables (`accounts`, `sessions`, `magic_link_tokens`,
+`issued_credentials`) have always been written to D1 directly and sit beside
+that model. The third row type, **bot member-Accounts**, stays out of this read
+— a bot operates its own Account and appears via the membership roster, which
+*is* an ADR 0003 projection. #24 composes the two.
