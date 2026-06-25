@@ -863,15 +863,17 @@ async function cmdPromote(args: string[]): Promise<number> {
     const show = args.includes('--show');
     const promoteAll = args.includes('--all');
 
-    // Operator credentials: the session token is the only secret. Required
-    // for a real push (the privileged `slot`/`defaultRole` fields are
-    // operator-only server-side); a `--dry-run` plans without it. Resolved
-    // from `DJIBB_OPERATOR_SESSION` or, failing that, the macOS login
-    // keychain (`security find-generic-password -a djibb-operator -s
+    // Operator credentials: the session token is the only secret. Always
+    // required — a real push needs it for the privileged `slot`/`defaultRole`
+    // fields (operator-only server-side), and even `--dry-run` needs it to
+    // read the Contributed List, which sits below the view-floor (#13) and
+    // returns an empty patch to anonymous pulls. Resolved from
+    // `DJIBB_OPERATOR_SESSION` or, failing that, the macOS login keychain
+    // (`security find-generic-password -a djibb-operator -s
     // DJIBB_OPERATOR_SESSION`). Seed the token itself with
     // `node bin/seed-operator.ts --execute --remote`.
     const sessionToken = operatorSessionToken();
-    if (!dryRun && !sessionToken) {
+    if (!sessionToken) {
         console.error(
             c.red('promote needs an operator session token: ') +
                 'set DJIBB_OPERATOR_SESSION, or store it in the login keychain with\n' +
