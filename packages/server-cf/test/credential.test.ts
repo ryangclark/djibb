@@ -27,6 +27,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
     CreateCredential,
+    RevokeEntityBoundCredential,
     VerifyBearerCredential,
     credentialPermitsEntity,
     hashSecret,
@@ -267,6 +268,83 @@ describe('credentialPermitsEntity', () => {
 
     it('permits when there is no credential (cookie session / anonymous)', () => {
         expect(credentialPermitsEntity(null, 'l/anything-here-aaaaa')).toBe(true);
+    });
+});
+
+// ─── Entity-bound revoke (GH #24) ────────────────────────────────────────────
+
+describe('RevokeEntityBoundCredential', () => {
+    const ENTITY = 'l/manager-target-aaaaa';
+
+    async function readRevoked(credentialId: string) {
+        const row = await readCredentialRow(credentialId);
+        return row!.time_revoked;
+    }
+
+    it('revokes a token bound to the given entity', async () => {
+        const accountId = await insertAccount();
+        const { credentialId } = await CreateCredential(env.DJIBB_AUTH, {
+            accountId,
+            boundEntityId: ENTITY,
+        });
+
+        const ok = await RevokeEntityBoundCredential(env.DJIBB_AUTH, {
+            credentialId,
+            entityId: ENTITY,
+            now: 1_700_000_000,
+        });
+        expect(ok).toBe(true);
+        expect(await readRevoked(credentialId)).toBe(1_700_000_000);
+    });
+
+    it('refuses an unbound (account-wide) token — the owner-only case', async () => {
+        const accountId = await insertAccount();
+        const { credentialId } = await CreateCredential(env.DJIBB_AUTH, {
+            accountId,
+        });
+
+        const ok = await RevokeEntityBoundCredential(env.DJIBB_AUTH, {
+            credentialId,
+            entityId: ENTITY,
+        });
+        expect(ok).toBe(false);
+        expect(await readRevoked(credentialId)).toBeNull();
+    });
+
+    it('refuses a token bound to a different entity', async () => {
+        const accountId = await insertAccount();
+        const { credentialId } = await CreateCredential(env.DJIBB_AUTH, {
+            accountId,
+            boundEntityId: 'l/some-other-entity-bb',
+        });
+
+        const ok = await RevokeEntityBoundCredential(env.DJIBB_AUTH, {
+            credentialId,
+            entityId: ENTITY,
+        });
+        expect(ok).toBe(false);
+        expect(await readRevoked(credentialId)).toBeNull();
+    });
+
+    it('is idempotent — a second revoke matches nothing', async () => {
+        const accountId = await insertAccount();
+        const { credentialId } = await CreateCredential(env.DJIBB_AUTH, {
+            accountId,
+            boundEntityId: ENTITY,
+        });
+
+        expect(
+            await RevokeEntityBoundCredential(env.DJIBB_AUTH, {
+                credentialId,
+                entityId: ENTITY,
+            }),
+        ).toBe(true);
+        expect(
+            await RevokeEntityBoundCredential(env.DJIBB_AUTH, {
+                credentialId,
+                entityId: ENTITY,
+            }),
+        ).toBe(false);
     });
 });
 

@@ -283,6 +283,46 @@ export function credentialPermitsEntity(
     return credential.bound_entity_id === entityId;
 }
 
+/**
+ * Revoke a credential **only if it is bound to `entityId`** (GH #24). This
+ * is the structural guarantee behind the connected-clients manager-revoke
+ * rule: a workspace manager may sever a client's access to *this entity*,
+ * never to an Account. An entity-bound token's entire power is this one
+ * entity, so revoking it is entity-scoped by construction; the
+ * `bound_entity_id = ?` predicate in the UPDATE makes it impossible for this
+ * path to touch an account-wide session or unbound token, or a token bound
+ * elsewhere — those simply don't match and `rowsWritten` is 0.
+ *
+ * Idempotent: a second revoke (already `time_revoked`) matches nothing and
+ * returns false. Returns true iff a live, this-entity-bound credential was
+ * revoked.
+ */
+export async function RevokeEntityBoundCredential(
+    d1: D1Database,
+    args: { credentialId: string; entityId: string; now?: number },
+): Promise<boolean> {
+    const now = args.now ?? Math.floor(Date.now() / 1000);
+    try {
+        const cursor = await d1
+            .prepare(
+                `UPDATE issued_credentials
+                 SET time_revoked = ?
+                 WHERE credential_id = ?
+                   AND bound_entity_id = ?
+                   AND time_revoked IS NULL;`,
+            )
+            .bind(now, args.credentialId, args.entityId)
+            .run();
+        return (cursor.meta.changes ?? 0) > 0;
+    } catch (error: any) {
+        console.error(
+            '`RevokeEntityBoundCredential()` update error:',
+            error?.message || error,
+        );
+        throw new UnexpectedError();
+    }
+}
+
 /** Records `time_last_used` for an authenticated credential. */
 function touchLastUsed(d1: D1Database, credentialId: string, now: number) {
     return d1

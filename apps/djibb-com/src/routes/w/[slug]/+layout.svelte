@@ -215,6 +215,7 @@
 				<a href={`/w/${slug}/members`}>Members</a>
 				<a href={`/w/${slug}/settings`}>Settings</a>
 				{#if current.membership?.role === 'owner' || current.membership?.role === 'admin'}
+					<a href={`/w/${slug}/connected`}>Connected clients</a>
 					<a href={`/w/${slug}/audit`}>Audit log</a>
 				{/if}
 			</nav>

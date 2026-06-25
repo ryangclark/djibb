@@ -21,6 +21,8 @@
 
 	/** @type {import('$lib/api/audit.js').AuditEntry[]} */
 	let entries = $state([]);
+	/** @type {Record<string, string|null>} */
+	let credentialLabels = $state({});
 	/** @type {number | null} */
 	let nextBefore = $state(null);
 	let loading = $state(false);
@@ -61,6 +63,17 @@
 		return new Date(ts * 1000).toLocaleString();
 	}
 
+	/**
+	 * Attribution label for a token-authored entry (ADR 0022 §5, #24):
+	 * "via <label>", falling back to the bare credential id when the token
+	 * was minted without one. Returns null for interactive (session) entries.
+	 * @param {import('$lib/api/audit.js').AuditEntry} e
+	 */
+	function via(e) {
+		if (!e.credential_id) return null;
+		return credentialLabels[e.credential_id] ?? e.credential_id;
+	}
+
 	/** @param {string | null} accountId */
 	function actor(accountId) {
 		if (!accountId) return 'System';
@@ -85,6 +98,9 @@
 				before: older ? nextBefore : null
 			});
 			entries = older ? [...entries, ...page.entries] : page.entries;
+			credentialLabels = older
+				? { ...credentialLabels, ...page.credentialLabels }
+				: page.credentialLabels;
 			nextBefore = page.nextBefore;
 			loaded = true;
 		} catch (e) {
@@ -124,6 +140,9 @@
 					<span class="text-sm">
 						<strong>{actor(entry.account_id)}</strong>
 						{label(entry)}
+						{#if via(entry)}
+							<span class="text-stone-500">· via {via(entry)}</span>
+						{/if}
 						{#if entry.status !== 'succeeded'}
 							<span class="text-xs text-amber-700">({entry.status})</span>
 						{/if}

@@ -180,6 +180,69 @@ export async function ListConnectedClients(
     return out;
 }
 
+/** Display fields for the Account a connected client "acts as". */
+export type AccountDisplay = {
+    account_id: string;
+    display_name: string;
+    email: string | null;
+};
+
+/**
+ * Resolve display fields for a set of Accounts so the surface can render
+ * "acts as <name>" instead of a raw id (#19 open question 2, the Account
+ * half). Returns a map keyed by `account_id`; missing accounts are simply
+ * absent (the caller falls back to the id).
+ */
+export async function ResolveAccountDisplays(
+    d1: D1Database,
+    accountIds: readonly string[],
+): Promise<Map<string, AccountDisplay>> {
+    const ids = [...new Set(accountIds)];
+    const out = new Map<string, AccountDisplay>();
+    if (ids.length === 0) return out;
+
+    const rows = await d1
+        .prepare(
+            `SELECT id AS account_id, display_name, email
+             FROM accounts
+             WHERE id IN (${placeholders(ids.length)});`,
+        )
+        .bind(...ids)
+        .all<AccountDisplay>();
+
+    for (const r of rows.results ?? []) out.set(r.account_id, r);
+    return out;
+}
+
+/**
+ * Resolve `credential_id → label` for mutation-log attribution (§5, #24):
+ * the audit view renders "via <label>" for entries authored under a token.
+ * Labels are returned for any matching credential regardless of
+ * revoked/expired state — history entries still attribute to the (now-dead)
+ * client that wrote them. A `null` label (token minted without one) maps to
+ * `null`; the renderer falls back to the bare `credential_id`.
+ */
+export async function ResolveCredentialLabels(
+    d1: D1Database,
+    credentialIds: readonly string[],
+): Promise<Map<string, string | null>> {
+    const ids = [...new Set(credentialIds)];
+    const out = new Map<string, string | null>();
+    if (ids.length === 0) return out;
+
+    const rows = await d1
+        .prepare(
+            `SELECT credential_id, label
+             FROM issued_credentials
+             WHERE credential_id IN (${placeholders(ids.length)});`,
+        )
+        .bind(...ids)
+        .all<{ credential_id: string; label: string | null }>();
+
+    for (const r of rows.results ?? []) out.set(r.credential_id, r.label);
+    return out;
+}
+
 /**
  * Split a connected-clients list into the active roster and the
  * revoked/expired history, per the #19 two-section layout. A thin

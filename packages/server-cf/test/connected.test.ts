@@ -21,6 +21,8 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
     ListConnectedClients,
+    ResolveAccountDisplays,
+    ResolveCredentialLabels,
     partitionConnectedClients,
 } from '../src/auth/connected';
 import { CreateCredential } from '../src/auth/credential';
@@ -187,6 +189,52 @@ describe('ListConnectedClients — state', () => {
         expect(active).toHaveLength(2); // one session + one token
         expect(history).toHaveLength(3); // expired session, expired + revoked token
         expect(history.every(c => c.state !== 'active')).toBe(true);
+    });
+});
+
+// ─── Display + label resolution (GH #24) ─────────────────────────────────────
+
+describe('ResolveAccountDisplays', () => {
+    it('maps account ids to display fields; absent ids are omitted', async () => {
+        const a1 = await insertAccount();
+        const a2 = await insertAccount();
+        const missing = newId('account');
+
+        const map = await ResolveAccountDisplays(env.DJIBB_AUTH, [a1, a2, missing]);
+        expect(map.get(a1)?.display_name).toBe('Test User');
+        expect(map.get(a2)?.account_id).toBe(a2);
+        expect(map.has(missing)).toBe(false);
+    });
+
+    it('returns an empty map for an empty input', async () => {
+        const map = await ResolveAccountDisplays(env.DJIBB_AUTH, []);
+        expect(map.size).toBe(0);
+    });
+});
+
+describe('ResolveCredentialLabels', () => {
+    it('maps credential ids to labels, including revoked ones', async () => {
+        const accountId = await insertAccount();
+        const labeled = await CreateCredential(env.DJIBB_AUTH, {
+            accountId,
+            label: "Ryan's laptop CLI",
+        });
+        const unlabeled = await CreateCredential(env.DJIBB_AUTH, { accountId });
+
+        // Revoke the labeled one — its attribution must still resolve so a
+        // history mutation-log entry can render "via <label>".
+        await env.DJIBB_AUTH.prepare(
+            'UPDATE issued_credentials SET time_revoked = ? WHERE credential_id = ?',
+        )
+            .bind(1_700_000_000, labeled.credentialId)
+            .run();
+
+        const map = await ResolveCredentialLabels(env.DJIBB_AUTH, [
+            labeled.credentialId,
+            unlabeled.credentialId,
+        ]);
+        expect(map.get(labeled.credentialId)).toBe("Ryan's laptop CLI");
+        expect(map.get(unlabeled.credentialId)).toBeNull();
     });
 });
 

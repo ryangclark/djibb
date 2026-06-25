@@ -87,6 +87,26 @@ per-row "kind" beyond the three-type badge (the substrate is the type).
   three buttons to real revoke/remove mutators. The field/column set and button
   labels above are the contract.
 
+> **Update (GH #24, resolved):** built at `w/[slug]/connected` (manager-gated),
+> powered by the `/connected` + `/connected/revoke` endpoints over the #23 union
+> read. Scope decision locked with the user: it's a **manager view** (sees every
+> member's clients) but revoke is **entity-scoped, never account-scoped** — a
+> manager severs access to *this workspace*, not to someone's account. So:
+> entity-bound tokens get a real `Revoke` (`RevokeEntityBoundCredential`, whose
+> `bound_entity_id = ?` predicate structurally bars touching account-wide or
+> other-entity artifacts); members/bots get "Remove from workspace" (existing
+> `removeMember`); account-wide sessions + unbound tokens are shown but marked
+> *owner-only*. Mutation-log attribution ("via &lt;label&gt;") landed on the
+> audit page via a `credentialLabels` map on the `/audit` response.
+>
+> Two #19 open questions resolved here: **name resolution** — Accounts now render
+> display names via `ResolveAccountDisplays` (bound-entity names still id-only).
+> **Scope** — manager-view + entity-scoped revoke, as above. Still deferred:
+> there is **no bot flag** in the substrate, so bot member-Accounts are
+> indistinguishable from humans and render as ordinary member rows (a member with
+> only a token, no session, is the de-facto "bot"); add a marker if/when one is
+> needed.
+
 ## Open questions surfaced (decide during #4/#5, not blockers)
 
 1. **Session labels.** Sessions have no stored label today; "Chrome · macOS" in
