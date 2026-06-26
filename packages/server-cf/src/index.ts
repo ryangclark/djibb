@@ -1,14 +1,13 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { verifyRequestOrigin, type User } from 'lucia';
+import { verifyRequestOrigin } from 'lucia';
 
 import { CatalogApp } from './catalog/fetch';
 import { list_app, template_app, workspace_app } from './list/fetch';
 import { WorkspaceInviteApp } from './workspace/inviteResolver';
 import type { AuthorizationRole } from '@djibb/protocol/auth/rules';
 import type { EntityRow } from './list/entity';
-import type { Session } from './auth/session';
-import type { ResolvedCredential } from './auth/credential';
+import type { RequestPrincipal } from './auth/principal';
 import { Auth_App } from './auth/fetch';
 import { DjibbError } from '@djibb/protocol/errors';
 import { DjibbList } from './list/durable_object';
@@ -36,22 +35,18 @@ export type Bindings = {
 
 export type Variables = {
     authorized_role: AuthorizationRole;
-    /**
-     * The acting bearer credential when a request authenticates via
-     * `Authorization: Bearer` instead of the session cookie (ADR 0022).
-     * `null` for cookie-session and anonymous requests. Carries
-     * `bound_entity_id` *forward* to the per-entity authz check — that
-     * binding is NOT enforced at the request→Account seam (the target
-     * entity isn't in scope there; ADR 0022 §Negative consequences).
-     */
-    credential: ResolvedCredential | null;
     entity: EntityRow | null;
     entity_id: string;
     id: DurableObjectId;
-    // lucia: Register['Lucia'];
-    session: Session | null;
+    /**
+     * Who this request resolves to (ADR 0022 §2): the single
+     * request→Account seam's output. One discriminated union
+     * (`anonymous | session | credential`) replaces the former
+     * `session` + `credential` pair and the synthesized fake session.
+     * Every client funnels through `resolvePrincipal` into this value.
+     */
+    principal: RequestPrincipal;
     list: DurableObjectStub<DjibbList>;
-    user: User | null;
 };
 
 export interface HonoEnv {

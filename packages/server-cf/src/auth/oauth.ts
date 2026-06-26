@@ -26,11 +26,11 @@ export async function handleGetMockSession(c: Context<HonoEnv>) {
         throw new NotFoundError();
     }
 
-    let session = c.get('session');
-    if (session) {
+    const existing = c.get('principal');
+    if (existing.kind === 'session') {
         // Could add the mock account to the session, but
         // for now we'll leave it like this.
-        return c.json(session);
+        return c.json({ accounts: existing.accounts });
     }
 
     // Create a new account, to which we'll add the session.
@@ -57,6 +57,7 @@ export async function handleGetMockSession(c: Context<HonoEnv>) {
     }
 
     // Create a new session.
+    let session;
     try {
         // Create the session, adding the account immediately.
         session = await CreateSession(c.env.DJIBB_AUTH, {
@@ -69,7 +70,7 @@ export async function handleGetMockSession(c: Context<HonoEnv>) {
 
     setCookie(c, CookieNames.Session, session.id, BaseSessionCookieAttributes);
 
-    return c.json(session);
+    return c.json({ accounts: session.accounts });
 }
 
 /**
@@ -265,12 +266,17 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
         }
     }
 
-    let session = c.get('session');
+    // Merge into the current cookie session if there is one (multi-Account
+    // per session). A bearer principal has no session to merge into.
+    const principal = c.get('principal');
+    const fromSessionId =
+        principal.kind === 'session' ? principal.sessionId : undefined;
 
     // @TODO: Need to rate limit this stuff.
     // Perhaps by using CF's new service, with key of something like
     // `${getCurrentRoute()}::${getRequestIPAddress()}` or something.
 
+    let session;
     try {
         // Create the session, replacing any existing ID.
         session = await CreateSession(
@@ -279,7 +285,7 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
                 accounts: [account],
                 ip_country: c.req.header('CF-IPCountry') || '',
             },
-            session?.id
+            fromSessionId
         );
     } catch (error) {
         throw new UnexpectedError();

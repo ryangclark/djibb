@@ -21,6 +21,7 @@
  * composes this read with the membership roster; keeping them separate
  * matches their separate substrates.
  */
+import { credentialState, tokenBindsToEntity } from './credential';
 
 /** The two principal kinds this read unions. Bots come from the roster. */
 export type ConnectedClientKind = 'session' | 'token';
@@ -149,12 +150,13 @@ export async function ListConnectedClients(
     }
 
     for (const c of credentials.results ?? []) {
-        // Entity narrowing: a token bound elsewhere can't act here, so it
-        // isn't "connected" to this entity. Unbound tokens are account-wide.
+        // Entity narrowing via the *same* binding leaf the authz gate
+        // enforces (`tokenBindsToEntity`): a token that can't act here
+        // isn't "connected" here, by construction — visibility and
+        // enforcement can't drift. Unbound tokens are account-wide.
         if (
             args.entityId != null &&
-            c.bound_entity_id != null &&
-            c.bound_entity_id !== args.entityId
+            !tokenBindsToEntity(c.bound_entity_id, args.entityId)
         ) {
             continue;
         }
@@ -168,12 +170,9 @@ export async function ListConnectedClients(
             time_created: c.time_created,
             time_last_used: c.time_last_used,
             time_expires: c.time_expires,
-            state:
-                c.time_revoked != null
-                    ? 'revoked'
-                    : c.time_expires != null && c.time_expires <= now
-                      ? 'expired'
-                      : 'active',
+            // Same liveness leaf VerifyBearerCredential admits on, so the
+            // badge and the auth decision are one judgment.
+            state: credentialState(c, now),
         });
     }
 
