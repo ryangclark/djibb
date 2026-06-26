@@ -32,9 +32,14 @@ You may:
 
   ```sh
   npm run djibb -- contribute --path <draft.md>
-  # or inline:
-  npm run djibb -- contribute -m '# Title\n- [ ] item'
+  # or inline (note the $'…' quoting so \n becomes a real newline):
+  npm run djibb -- contribute -m $'# Title\n- [ ] item'
   ```
+
+  Prefer `--path` for anything multi-line — it's a real file, so the
+  newlines are unambiguous. For inline `-m`, use ANSI-C quoting (`$'…'`
+  in bash/zsh): plain single quotes (`'…\n…'`) keep `\n` as a literal
+  backslash-n, which collapses your whole list onto the title line.
 
   No worker URL needed — `--base` defaults to the production API
   (`https://api.djibb.com`). For local testing against `wrangler dev`, pass

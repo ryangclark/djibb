@@ -452,22 +452,23 @@ async function httpDetail(res: Response): Promise<string> {
 /**
  * Build the headers every `djibb` worker request shares. `Origin` clears
  * the worker's CSRF gate (index.ts rejects non-GET requests whose `Origin`
- * isn't in AUTHORIZED_DOMAINS). A `sessionToken` is the caller's
- * *credential*, ridden as the `djibb-session` cookie — it says who the
- * caller is; the server's auth layer (`auth/resolver.ts` + the DO) decides
- * what that identity may do. Omit it to call anonymously. This is the one
- * place a request attaches the operator cookie, so new `djibb <verb>`
- * commands authenticate consistently.
+ * isn't in AUTHORIZED_DOMAINS). A `bearerToken` is the caller's
+ * *credential* — an `issued_credentials` API key (ADR 0022), sent as
+ * `Authorization: Bearer`. It says who the caller is; the server's auth
+ * layer (the bearer seam in `auth/middleware.ts` → `auth/resolver.ts` +
+ * the DO) decides what that identity may do. Omit it to call anonymously.
+ * This is the one place a request attaches the operator credential, so new
+ * `djibb <verb>` commands authenticate consistently.
  */
 function djibbRequestHeaders(
     origin: string,
-    sessionToken?: string
+    bearerToken?: string
 ): Record<string, string> {
     const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         Origin: origin,
     };
-    if (sessionToken) headers.Cookie = `djibb-session=${sessionToken}`;
+    if (bearerToken) headers.Authorization = `Bearer ${bearerToken}`;
     return headers;
 }
 
@@ -476,12 +477,12 @@ function djibbRequestHeaders(
  * `lastMutationId: 0` server-side, so `id: 1` always validates.
  *
  * Two actors:
- *   - **operator** (`promote`): pass `sessionToken`. The token rides as
- *     the `djibb-session` cookie and `OPERATOR_ACCOUNT_ID` is stamped
- *     into the envelope — the DO's cross-account check verifies the two
- *     agree, then resolves the operator to `owner` (admitting privileged
- *     `initList` fields).
- *   - **anonymous** (`contribute`): omit `sessionToken`. No cookie, a
+ *   - **operator** (`promote`): pass `bearerToken`. The token authenticates
+ *     as the operator Account via `Authorization: Bearer` and
+ *     `OPERATOR_ACCOUNT_ID` is stamped into the envelope — the DO's
+ *     cross-account check verifies the two agree, then resolves the
+ *     operator to `owner` (admitting privileged `initList` fields).
+ *   - **anonymous** (`contribute`): omit `bearerToken`. No credential, a
  *     `null` envelope `accountId` — the DO resolves the caller to the
  *     list's `default_role` (`submitter` on the Contributed List, so
  *     `createListItem` is admitted while every other mutator 403s).
@@ -493,12 +494,12 @@ async function pushMutation(
     entityId: string,
     name: string,
     args: Record<string, unknown>,
-    opts: { accountId: string | null; sessionToken?: string }
+    opts: { accountId: string | null; bearerToken?: string }
 ): Promise<void> {
     const url = `${base.replace(/\/$/, '')}/${kind}/push?id=${encodeURIComponent(entityId)}`;
     const res = await fetch(url, {
         method: 'POST',
-        headers: djibbRequestHeaders(origin, opts.sessionToken),
+        headers: djibbRequestHeaders(origin, opts.bearerToken),
         body: JSON.stringify({
             profileID: 'djibb-cli',
             clientGroupID: randomUUID(),
@@ -527,10 +528,10 @@ type PullPut = { op: 'put'; key: string; value: Record<string, unknown> };
 
 /**
  * POST a fresh (`cookie: null`) `/pull` for `listId` and return its
- * `put` ops. Pass `sessionToken` to read as the operator: since the
+ * `put` ops. Pass `bearerToken` to read as the operator: since the
  * view-floor landed (#13), below-floor roles (the Contributed List is
  * `default_role: 'submitter'`) get an empty patch, so an anonymous pull
- * sees nothing. The operator owns the platform Lists, so its cookie
+ * sees nothing. The operator owns the platform Lists, so its credential
  * resolves above the floor and reads the full tree. The Replicache
  * `cookie: null` in the body is the pull baseline (unrelated to auth).
  */
@@ -538,12 +539,12 @@ async function pullList(
     base: string,
     origin: string,
     listId: string,
-    sessionToken?: string
+    bearerToken?: string
 ): Promise<PullPut[]> {
     const url = `${base.replace(/\/$/, '')}/list/pull?id=${encodeURIComponent(listId)}`;
     const res = await fetch(url, {
         method: 'POST',
-        headers: djibbRequestHeaders(origin, sessionToken),
+        headers: djibbRequestHeaders(origin, bearerToken),
         body: JSON.stringify({
             pullVersion: 1,
             profileID: 'djibb-cli',
@@ -788,10 +789,10 @@ async function cmdContribute(args: string[]): Promise<number> {
 // ---------------------------------------------------------------------------
 
 /**
- * The macOS login-keychain coordinates the operator session token lives
- * under when it isn't in the environment. Seed it once with:
+ * The macOS login-keychain coordinates the operator CLI token lives under
+ * when it isn't in the environment. Seed it once with:
  *
- *   security add-generic-password -U -a djibb-operator -s DJIBB_OPERATOR_SESSION -w
+ *   security add-generic-password -U -a djibb-operator -s DJIBB_CLI_TOKEN -w
  *
  * (`-w` prompts for the secret; `-U` updates in place if it already exists).
  * The macOS **Passwords** app can't be read from the CLI — its entries live
@@ -799,18 +800,19 @@ async function cmdContribute(args: string[]): Promise<number> {
  * the operator secret rides in the file-based login keychain instead.
  */
 const KEYCHAIN_ACCOUNT = 'djibb-operator';
-const KEYCHAIN_SERVICE = 'DJIBB_OPERATOR_SESSION';
+const KEYCHAIN_SERVICE = 'DJIBB_CLI_TOKEN';
 
 /**
- * Resolve the operator session token. `DJIBB_OPERATOR_SESSION` in the
- * environment wins (CI, a one-off override); failing that, on macOS, fall
- * back to the login keychain via `security find-generic-password`. Returns
- * `undefined` if neither yields a value (the caller reports the miss). The
- * keychain read is best-effort: a missing item, a denied prompt, or a
- * non-macOS host all degrade quietly to `undefined`.
+ * Resolve the operator's issued-credential bearer token (ADR 0022).
+ * `DJIBB_CLI_TOKEN` in the environment wins (CI, a one-off override);
+ * failing that, on macOS, fall back to the login keychain via
+ * `security find-generic-password`. Returns `undefined` if neither yields
+ * a value (the caller reports the miss). The keychain read is best-effort:
+ * a missing item, a denied prompt, or a non-macOS host all degrade quietly
+ * to `undefined`. Mint/rotate the token with `bin/seed-operator.ts`.
  */
-function operatorSessionToken(): string | undefined {
-    const fromEnv = process.env.DJIBB_OPERATOR_SESSION?.trim();
+function operatorToken(): string | undefined {
+    const fromEnv = process.env.DJIBB_CLI_TOKEN?.trim();
     if (fromEnv) return fromEnv;
     if (process.platform !== 'darwin') return undefined;
     try {
@@ -836,11 +838,11 @@ function operatorSessionToken(): string | undefined {
  *
  * DOs only come into being through the worker runtime, so this is an HTTP
  * client. It authenticates as the platform **operator**
- * (`OPERATOR_ACCOUNT_ID`) via a session token — the only principal allowed
- * to set the privileged `slot`/`defaultRole` fields on the platform Lists.
- * The token comes from `DJIBB_OPERATOR_SESSION` or, failing that, the macOS
- * login keychain (see `operatorSessionToken`). A `--dry-run` plans without
- * the token.
+ * (`OPERATOR_ACCOUNT_ID`) via an issued-credential bearer token (ADR
+ * 0022) — the only principal allowed to set the privileged
+ * `slot`/`defaultRole` fields on the platform Lists. The token comes from
+ * `DJIBB_CLI_TOKEN` or, failing that, the macOS login keychain (see
+ * `operatorToken`). A `--dry-run` plans without the token.
  *
  * Idempotent: the Seed Pool item id is derived deterministically from the
  * Blank id and the server primitives are INSERT-OR-IGNORE with child-ref
@@ -863,22 +865,22 @@ async function cmdPromote(args: string[]): Promise<number> {
     const show = args.includes('--show');
     const promoteAll = args.includes('--all');
 
-    // Operator credentials: the session token is the only secret. Always
+    // Operator credentials: the bearer token is the only secret. Always
     // required — a real push needs it for the privileged `slot`/`defaultRole`
     // fields (operator-only server-side), and even `--dry-run` needs it to
     // read the Contributed List, which sits below the view-floor (#13) and
     // returns an empty patch to anonymous pulls. Resolved from
-    // `DJIBB_OPERATOR_SESSION` or, failing that, the macOS login keychain
+    // `DJIBB_CLI_TOKEN` or, failing that, the macOS login keychain
     // (`security find-generic-password -a djibb-operator -s
-    // DJIBB_OPERATOR_SESSION`). Seed the token itself with
+    // DJIBB_CLI_TOKEN`). Mint the token with
     // `node bin/seed-operator.ts --execute --remote`.
-    const sessionToken = operatorSessionToken();
-    if (!sessionToken) {
+    const operatorBearer = operatorToken();
+    if (!operatorBearer) {
         console.error(
-            c.red('promote needs an operator session token: ') +
-                'set DJIBB_OPERATOR_SESSION, or store it in the login keychain with\n' +
+            c.red('promote needs an operator token: ') +
+                'set DJIBB_CLI_TOKEN, or store it in the login keychain with\n' +
                 c.dim(`  security add-generic-password -U -a ${KEYCHAIN_ACCOUNT} -s ${KEYCHAIN_SERVICE} -w`) +
-                '\n  (seed the token with `bin/seed-operator.ts`).'
+                '\n  (mint the token with `bin/seed-operator.ts`).'
         );
         return 1;
     }
@@ -909,7 +911,7 @@ async function cmdPromote(args: string[]): Promise<number> {
     //        0021): anyone may append (anon `djibb contribute`), nobody but
     //        the operator may mutate existing entries (append-only).
     if (!dryRun) {
-        const token = sessionToken!;
+        const token = operatorBearer;
         try {
             await pushMutation(base, origin, 'list', SEED_POOL_LIST_ID, 'initList', {
                 listId: SEED_POOL_LIST_ID,
@@ -917,7 +919,7 @@ async function cmdPromote(args: string[]): Promise<number> {
                 name: 'Seed Pool',
                 slot: 'seed_pool',
                 defaultRole: 'viewer',
-            }, { accountId: OPERATOR_ACCOUNT_ID, sessionToken: token });
+            }, { accountId: OPERATOR_ACCOUNT_ID, bearerToken: token });
             console.log(`\n${PASS} seed pool ready`);
         } catch (err) {
             console.error(c.red(`seed pool init failed: ${(err as Error).message}`));
@@ -931,7 +933,7 @@ async function cmdPromote(args: string[]): Promise<number> {
                 name: 'Contributed',
                 slot: 'contributed',
                 defaultRole: 'submitter',
-            }, { accountId: OPERATOR_ACCOUNT_ID, sessionToken: token });
+            }, { accountId: OPERATOR_ACCOUNT_ID, bearerToken: token });
             console.log(`${PASS} contributed list ready`);
         } catch (err) {
             console.error(c.red(`contributed list init failed: ${(err as Error).message}`));
@@ -944,7 +946,7 @@ async function cmdPromote(args: string[]): Promise<number> {
     // 2. Read the Contributed List and enumerate its referenced Blanks.
     let contributed: PullPut[];
     try {
-        contributed = await pullList(base, origin, CONTRIBUTED_LIST_ID, sessionToken);
+        contributed = await pullList(base, origin, CONTRIBUTED_LIST_ID, operatorBearer);
     } catch (err) {
         console.error(c.red(`could not read the Contributed List: ${(err as Error).message}`));
         return 1;
@@ -1058,7 +1060,7 @@ async function cmdPromote(args: string[]): Promise<number> {
     // to operator-owned `viewer` (immutability) is the optional sub-step
     // deferred with the read view-floor work (issue #13); for now promote
     // just adds the Seed Pool reference.
-    const token = sessionToken!;
+    const token = operatorBearer;
 
     // 4. Add a referencing item to the Seed Pool (retry: D1 row lags init).
     let failed = 0;
@@ -1067,7 +1069,7 @@ async function cmdPromote(args: string[]): Promise<number> {
             await pushWithRetry(() =>
                 pushMutation(base, origin, 'list', SEED_POOL_LIST_ID, 'createListItem', {
                     item: p.item,
-                }, { accountId: OPERATOR_ACCOUNT_ID, sessionToken: token })
+                }, { accountId: OPERATOR_ACCOUNT_ID, bearerToken: token })
             );
             console.log(`${PASS} pooled ${c.bold(p.slug)}`);
         } catch (err) {
@@ -1091,8 +1093,9 @@ const COMMANDS: Record<string, { run: (args: string[]) => Promise<number>; help:
         run: cmdContribute,
         help:
             'Push a List to the live Contributed List (no operator token).\n' +
-            '    djibb contribute --path <file.md>            contribute a file (to the live site)\n' +
-            "    djibb contribute -m '# Title\\n- [ ] item'     contribute inline markdown\n" +
+            '    djibb contribute --path <file.md>            contribute a file (best for multi-line)\n' +
+            "    djibb contribute -m $'# Title\\n- [ ] item'    contribute inline markdown\n" +
+            "      tip: use $'…' so \\n is a real newline; plain '…' keeps it literal and collapses the list\n" +
             '    flags: --slug <s>  --dry-run  --show\n' +
             '           --base <url> (default https://api.djibb.com; use http://localhost:8787 for local dev)\n' +
             '           --origin <url> (CSRF origin; tracks --base)',
@@ -1113,7 +1116,7 @@ const COMMANDS: Record<string, { run: (args: string[]) => Promise<number>; help:
         help:
             'Round-trip a Markdown list through the ADR-0012 encoder.\n' +
             '    djibb test-parse <path/to.md>    one file by path\n' +
-            "    djibb test-parse -m '# T\\n- [ ] x'   inline markdown\n" +
+            "    djibb test-parse -m $'# T\\n- [ ] x'   inline markdown ($'…' so \\n is a real newline)\n" +
             '    flags: --show (also print the canonical form)',
     },
 };

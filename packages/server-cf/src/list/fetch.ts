@@ -6,6 +6,16 @@ import type { HonoEnv } from '..';
 
 import { HandleSession } from '../auth/middleware';
 import {
+    credentialPermitsEntity,
+    RevokeEntityBoundCredential,
+} from '../auth/credential';
+import {
+    ListConnectedClients,
+    ResolveAccountDisplays,
+    ResolveCredentialLabels,
+    partitionConnectedClients,
+} from '../auth/connected';
+import {
     type AuthorizationRole,
     AuthorizationRoleEnum,
     type AuthorizationRules,
@@ -155,6 +165,22 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
 
     app.use('*', HandleSession);
 
+    // Bound-credential enforcement (ADR 0022 §Negative, GH #20). The
+    // request→Account seam carries `bound_entity_id` forward without
+    // enforcing it (the entity isn't in scope there); this is where the
+    // target entity IS known, so it's the one place the binding can be
+    // applied. A bound token used on any entity but its own is rejected,
+    // before role resolution and uniformly across every route (GET, /audit,
+    // /pull, /push). Unbound and cookie/anonymous requests pass through.
+    app.use('*', async (c, next) => {
+        if (!credentialPermitsEntity(c.get('credential'), c.get('entity_id'))) {
+            throw new UnauthorizedError(
+                'credential is bound to a different entity',
+            );
+        }
+        await next();
+    });
+
     app.use(async (c, next) => {
         // Read entity metadata from D1 (authoritative per ADR 0001).
         // Missing → pre-init: defer auth to /push, which will reconcile
@@ -274,7 +300,113 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
                 ? entries[entries.length - 1]!.seq
                 : null;
 
-        return c.json({ entries, nextBefore });
+        // Attribution (§5, #24): resolve the acting credential_id of each
+        // entry to its label so the client can render "via <label>". One
+        // batched lookup over the page's distinct credential ids.
+        const credentialIds = entries
+            .map(e => e.credential_id)
+            .filter((id): id is string => id != null);
+        const labelMap = await ResolveCredentialLabels(
+            c.env.DJIBB_AUTH,
+            credentialIds,
+        );
+        const credentialLabels = Object.fromEntries(labelMap);
+
+        return c.json({ entries, nextBefore, credentialLabels });
+    });
+
+    /**
+     * The connected-clients access surface (ADR 0022 §6, GH #24). Manager-
+     * gated, like /audit. Returns the unioned view of everything connected
+     * to this entity — every member Account (from the authorization roster)
+     * with its interactive sessions and issued tokens (#23's union read) —
+     * plus the Account display fields so the surface renders names not ids.
+     *
+     * Scope is the entity's authorized Accounts; `entityId` narrows tokens
+     * to unbound + bound-here. The client groups by account and splits the
+     * active roster from history by `state`. We pre-split here too so the
+     * shape mirrors the prototype's two sections.
+     */
+    app.get('/connected', async c => {
+        const entity = c.get('entity');
+        if (!entity) throw new NotFoundError();
+
+        if (!OWNER_ROLES.includes(c.get('authorized_role'))) {
+            throw new UnauthorizedError(
+                'connected clients are restricted to owners and admins',
+            );
+        }
+
+        const memberAccountIds = Object.keys(
+            entity.authorization_rules.authorized_accounts,
+        );
+        const entityId = c.get('entity_id');
+
+        const [clients, displays] = await Promise.all([
+            ListConnectedClients(c.env.DJIBB_AUTH, {
+                accountIds: memberAccountIds,
+                entityId,
+            }),
+            ResolveAccountDisplays(c.env.DJIBB_AUTH, memberAccountIds),
+        ]);
+
+        const { active, history } = partitionConnectedClients(clients);
+        const accounts = memberAccountIds.map(id => ({
+            account_id: id,
+            role:
+                entity.authorization_rules.authorized_accounts[id]?.role ??
+                'viewer',
+            display_name: displays.get(id)?.display_name ?? null,
+            email: displays.get(id)?.email ?? null,
+        }));
+
+        return c.json({ accounts, active, history });
+    });
+
+    /**
+     * Manager-revoke for the connected-clients surface (#24). Revokes a
+     * single token **only if it is bound to this entity** — the structural
+     * guarantee that a workspace manager severs access to *this entity*,
+     * never to an Account (the locked-in scope rule). Account-wide sessions
+     * and unbound tokens never match `RevokeEntityBoundCredential`'s
+     * `bound_entity_id = ?` predicate, so this path cannot reach them; the
+     * owner manages those via self-service (a separate surface). Removing a
+     * member or bot's entity access is the existing `removeMember` mutator,
+     * not this route.
+     */
+    app.post('/connected/revoke', async c => {
+        const entity = c.get('entity');
+        if (!entity) throw new NotFoundError();
+
+        if (!OWNER_ROLES.includes(c.get('authorized_role'))) {
+            throw new UnauthorizedError(
+                'revoking connected clients is restricted to owners and admins',
+            );
+        }
+
+        const body = await c.req.json().catch(() => {
+            throw new ParseError();
+        });
+        const credentialId = body?.credentialId;
+        if (typeof credentialId !== 'string' || !credentialId) {
+            throw new ValidationError('credentialId is required');
+        }
+
+        const revoked = await RevokeEntityBoundCredential(c.env.DJIBB_AUTH, {
+            credentialId,
+            entityId: c.get('entity_id'),
+        });
+        if (!revoked) {
+            // No live token bound to this entity matched. Either it isn't
+            // bound here (an account-wide / other-entity token a manager may
+            // not touch), already revoked, or unknown — all indistinguishable
+            // to a manager and all "nothing to do here."
+            throw new UnauthorizedError(
+                'no revocable entity-bound token matched',
+            );
+        }
+
+        return c.json({ revoked: true });
     });
 
     app.post('/pull', async c => {
@@ -436,6 +568,9 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
             authorizedRole: c.get('authorized_role'),
             listId,
             pushRequest,
+            // Acting credential (ADR 0022 §5) — server-resolved at the
+            // request→Account seam; null for cookie sessions / anonymous.
+            actingCredentialId: c.get('credential')?.credential_id ?? null,
         });
         if (error) {
             return new Response(

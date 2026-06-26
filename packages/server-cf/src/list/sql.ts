@@ -472,6 +472,7 @@ export function InitializeTables(
             "id" INTEGER NOT NULL,                  -- Per-client mutation ID (Replicache assigns these monotonically per client)
             "client_id" TEXT NOT NULL,              -- ID of the Replicache client that authored the mutation
             "account_id" TEXT DEFAULT NULL,         -- Account ID from the mutation envelope, if any
+            "credential_id" TEXT DEFAULT NULL,      -- Acting issued-credential id (ADR 0022 §5); NULL for interactive sessions
             "args" TEXT DEFAULT NULL,               -- Stringified BODY args (envelope fields are NOT stored here; they have their own columns)
             "name" TEXT NOT NULL,                   -- Mutation name
             "status" TEXT NOT NULL,                 -- Status of the mutation
@@ -1776,11 +1777,39 @@ export function setElementAsDeleted(
  * — they are first-class. `args` carries only the per-mutator BODY (no
  * envelope re-stuffing), stringified for the audit trail.
  */
+/**
+ * Idempotently ensure the `mutations.credential_id` column exists (ADR
+ * 0022 §5). Fresh DOs get it from the `CREATE TABLE` above, but DOs
+ * initialized before this column landed won't — and the DO has no
+ * migration framework. `ALTER TABLE ... ADD COLUMN` is the one safe
+ * online schema change in SQLite; re-running it throws "duplicate column
+ * name", which we swallow. Call once per DO load (the caller guards with
+ * an in-memory flag so this is at most one cheap exec per instance).
+ */
+export function ensureMutationsCredentialColumn(sql: SqlStorage) {
+    try {
+        sql.exec('ALTER TABLE mutations ADD COLUMN credential_id TEXT DEFAULT NULL;');
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // Already present — the expected steady state. Anything else is real.
+        if (!/duplicate column name/i.test(message)) {
+            console.log('`ensureMutationsCredentialColumn()` error:', message);
+            throw new UnexpectedError();
+        }
+    }
+}
+
 export function setMutation(
     sql: SqlStorage,
     envelope: MutationEnvelope,
     bodyArgs: unknown,
-    status: MutationStatus
+    status: MutationStatus,
+    /**
+     * The acting issued-credential id (ADR 0022 §5), server-resolved at
+     * the request→Account seam and threaded down request-scoped. NULL for
+     * interactive sessions and anonymous requests (no token).
+     */
+    actingCredentialId: string | null = null
 ) {
     if (!status) {
         throw new ValidationError('missing/invalid mutation status');
@@ -1796,15 +1825,17 @@ export function setMutation(
                 id,
                 client_id,
                 account_id,
+                credential_id,
                 args,
                 name,
                 status,
                 timestamp_client,
                 timestamp_server
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);`,
             envelope.id,
             envelope.clientID,
             envelope.accountId,
+            actingCredentialId,
             JSON.stringify(bodyArgs ?? {}),
             envelope.name,
             status,
@@ -1833,6 +1864,8 @@ export type MutationLogEntry = {
     id: number;
     client_id: string;
     account_id: string | null;
+    /** Acting issued-credential id (ADR 0022 §5); null for interactive sessions. */
+    credential_id: string | null;
     name: string;
     status: string;
     /**
@@ -1863,7 +1896,7 @@ export function getMutationLog(
             ? null
             : Math.trunc(opts.before);
 
-    const columns = `rowid AS seq, id, client_id, account_id, name, status, args,
+    const columns = `rowid AS seq, id, client_id, account_id, credential_id, name, status, args,
             timestamp_client,
             CAST(strftime('%s', timestamp_server) AS INTEGER) AS timestamp_server`;
 
@@ -1893,6 +1926,8 @@ export function getMutationLog(
             id: Number(row.id),
             client_id: String(row.client_id),
             account_id: row.account_id == null ? null : String(row.account_id),
+            credential_id:
+                row.credential_id == null ? null : String(row.credential_id),
             name: String(row.name),
             status: String(row.status),
             args: typeof row.args === 'string' ? row.args : null,

@@ -13,6 +13,10 @@ const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
  * @property {number} id Per-client mutation id.
  * @property {string} client_id
  * @property {string|null} account_id The acting account.
+ * @property {string|null} credential_id The acting credential, when the
+ *   mutation was authored under a bearer token (ADR 0022 §5, #22). Null for
+ *   interactive (cookie-session) mutations. Resolve to a label via the
+ *   page's `credentialLabels` map for "via <label>" attribution.
  * @property {string} name Mutation name (e.g. "inviteByIdentity").
  * @property {string} status "succeeded" | "error" | "skipped" | "unknown".
  * @property {string|null} args Raw stringified mutation body — `JSON.parse`
@@ -26,6 +30,9 @@ const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
  * @property {AuditEntry[]} entries Newest-first.
  * @property {number|null} nextBefore Pass as `before` to load older
  *   entries, or null when the end of the log is reached.
+ * @property {Record<string, string|null>} credentialLabels Map of
+ *   `credential_id → label` for the entries on this page (#24). A null
+ *   label means the token had none; render the bare id then.
  */
 
 /**

@@ -21,6 +21,7 @@ import {
 import { forkContentSignature, mintArgsSignature } from '@djibb/protocol/list/fork';
 import {
     executeServerMutation,
+    type MutationEnvelope,
     type MutationStatus,
     parseMutationEnvelope,
 } from '@djibb/protocol/list/mutators';
@@ -46,6 +47,7 @@ import {
     UnexpectedError,
 } from '@djibb/protocol/errors';
 import {
+    ensureMutationsCredentialColumn,
     getChangedElements,
     getElementById,
     getEntityId,
@@ -278,6 +280,13 @@ export function asLocalList(stub: unknown): DjibbList {
 export class DjibbList extends DurableObject {
     id: DurableObjectId;
     sql: SqlStorage;
+
+    /**
+     * One-shot guard for {@link ensureMutationsCredentialColumn} — the
+     * additive `mutations.credential_id` migration for DOs predating it
+     * (ADR 0022 §5). Runs at most once per DO instance load.
+     */
+    private mutationsCredentialColumnEnsured = false;
 
     constructor(ctx: DurableObjectState, env: Bindings) {
         super(ctx, env);
@@ -982,11 +991,39 @@ export class DjibbList extends DurableObject {
      * Handles a Push request from Replicache by evaluating each of
      * the request's mutations.
      */
+    /**
+     * Best-effort mutation-log write with the acting credential id (ADR
+     * 0022 §5). Ensures the `credential_id` column exists once per DO
+     * instance (the additive migration for DOs that predate it) before
+     * delegating to {@link setMutation}. Safe to call only once the
+     * `mutations` table exists — i.e. from inside the push loop, after the
+     * first mutation has lazily initialized the schema.
+     */
+    private logMutationOutcome(
+        envelope: MutationEnvelope,
+        bodyArgs: unknown,
+        status: MutationStatus,
+        actingCredentialId: string | null
+    ) {
+        if (!this.mutationsCredentialColumnEnsured) {
+            ensureMutationsCredentialColumn(this.sql);
+            this.mutationsCredentialColumnEnsured = true;
+        }
+        setMutation(this.sql, envelope, bodyArgs, status, actingCredentialId);
+    }
+
     public handlePush(args: {
         authorizedAccounts: Readonly<Account[]>;
         authorizedRole: AuthorizationRole;
         listId: string;
         pushRequest: PushRequestV1;
+        /**
+         * The acting issued-credential id (ADR 0022 §5), resolved at the
+         * request→Account seam. Request-scoped (same for every mutation in
+         * the push) and server-authoritative — clients can't send it.
+         * NULL for interactive sessions / anonymous requests.
+         */
+        actingCredentialId?: string | null;
     }) {
         return tryCatchAsync(this._handlePush(args));
     }
@@ -996,11 +1033,13 @@ export class DjibbList extends DurableObject {
         authorizedRole,
         listId,
         pushRequest,
+        actingCredentialId = null,
     }: {
         authorizedAccounts: Readonly<Account[]>;
         authorizedRole: AuthorizationRole;
         listId: string;
         pushRequest: PushRequestV1;
+        actingCredentialId?: string | null;
     }) {
         // TODO: auth check?
         // console.log('args:', arguments);
@@ -1260,7 +1299,12 @@ export class DjibbList extends DurableObject {
                     if (envelopeResult.ok) {
                         const { envelope, rawBody } = envelopeResult.mutation;
                         try {
-                            setMutation(this.sql, envelope, rawBody, 'skipped');
+                            this.logMutationOutcome(
+                                envelope,
+                                rawBody,
+                                'skipped',
+                                actingCredentialId
+                            );
                         } catch (error) {
                             console.log(
                                 '`_handlePush()` preflight skip setMutation log error:',
@@ -1288,7 +1332,8 @@ export class DjibbList extends DurableObject {
                 authorizedRole,
                 expectedMutationId,
                 mutation,
-                nextVersion
+                nextVersion,
+                actingCredentialId
             );
 
             if (didMutate) {
@@ -1682,7 +1727,8 @@ export class DjibbList extends DurableObject {
         authorizedRole: AuthorizationRole,
         expectedMutationId: number,
         mutation: MutationV1,
-        nextVersion: number
+        nextVersion: number,
+        actingCredentialId: string | null = null
     ): { ackedMutationId: number | null; didMutate: boolean } {
         // Check the Mutation's ID matches the Expected ID.
         if (expectedMutationId !== mutation.id) {
@@ -1826,7 +1872,12 @@ export class DjibbList extends DurableObject {
         // serialized into `args`.
         if (mutationStatus === 'succeeded' || mutationStatus === 'skipped') {
             try {
-                setMutation(this.sql, envelope, rawBody, mutationStatus);
+                this.logMutationOutcome(
+                    envelope,
+                    rawBody,
+                    mutationStatus,
+                    actingCredentialId
+                );
             } catch (error) {
                 console.log(
                     '`handleMutation()` setMutation log error:',
