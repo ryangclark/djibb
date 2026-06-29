@@ -21,6 +21,7 @@ import {
 import { forkContentSignature, mintArgsSignature } from '@djibb/protocol/list/fork';
 import {
     executeServerMutation,
+    isTerminal,
     type MutationEnvelope,
     type MutationStatus,
     parseMutationEnvelope,
@@ -1770,6 +1771,35 @@ export class DjibbList extends DurableObject {
             !authorizedAccounts.some(a => a.id === envelope.accountId)
         ) {
             throw new UnauthorizedError(`${envelope.id} not authorized`);
+        }
+
+        // Terminal-mutator client gate (ADR 0023 §4 / issue #17). A
+        // terminal mutator (`isTerminal` — currently `transferOwnership`)
+        // is irreversible and non-consensual; until step-up auth ships it
+        // must not be reachable by a non-interactive client. The acting
+        // credential id distinguishes them: it is set only when the actor
+        // is an issued bearer credential (CLI, future email-LLM/agent),
+        // and `null` for interactive sessions and anonymous requests. So
+        // a bearer-credential caller is refused here while a human in the
+        // web app is unaffected. Permanent denial: emit `auth` and
+        // skip-and-ack (ADR 0020) rather than throw, so a retrying client
+        // can't wedge its push.
+        if (actingCredentialId !== null && isTerminal(envelope.name)) {
+            this.emitMutationOutcome(envelope.clientID, envelope.id, 'auth');
+            try {
+                this.logMutationOutcome(
+                    envelope,
+                    rawBody,
+                    'skipped',
+                    actingCredentialId
+                );
+            } catch (error) {
+                console.log(
+                    '`handleMutation()` terminal-guard skip setMutation log error:',
+                    error?.toString()
+                );
+            }
+            return { ackedMutationId: mutation.id, didMutate: false };
         }
 
         let mutationStatus: MutationStatus = 'unknown';

@@ -36,11 +36,21 @@ import type {
  * members is what keeps it from being an unwanted-ownership /
  * notification-spam vector — see the server mutator's guard.
  *
- * Not undoable. Returning `null` from `inverse` keeps the action out
- * of the undo history entirely. Reversal happens out-of-band: the new
- * owner can transfer back. Adding it to `FRICTION_TIER_MUTATORS` would
- * be the natural next move once the undo runtime supports friction
- * confirms without a paired inverse.
+ * Terminal-class (ADR 0023 §4 / issue #17). This mutator is genuinely
+ * irreversible: it is listed in `TERMINAL_MUTATORS`, which is the
+ * auditable, one-place record of ops that sit *outside* the
+ * inverse-required undo path (ADR 0005). It still exports
+ * `inverse: () => null` to satisfy the module contract — the null is
+ * the documented "intentionally not undoable" signal, no longer a
+ * quiet opt-out — and reversal happens out-of-band (the new owner
+ * transfers back).
+ *
+ * Because it is terminal *and* non-consensual, dispatch additionally
+ * refuses it from a non-interactive client (one acting through an
+ * issued bearer credential) until step-up auth ships — see the
+ * terminal guard in the DO's `handleMutation`. Adding it to
+ * `FRICTION_TIER_MUTATORS` is the natural next move once the undo
+ * runtime supports friction confirms without a paired inverse.
  */
 export const argsSchema = z.object({
     listId: ListSchema.shape.id,

@@ -215,6 +215,40 @@ export function isFrictionTier(name: string): boolean {
 }
 
 /**
+ * Mutators that are genuinely *irreversible* — they sit **outside** the
+ * inverse-required undo path (ADR 0005) rather than declaring a real
+ * inverse. ADR 0023 §4 / issue #17: this turns "destructive =
+ * recoverable" from a review convention into a structural property. An
+ * ordinary mutator still cannot ship without an `inverse` (the
+ * `MutatorModule` contract makes a missing `inverse` a compile error);
+ * a genuinely-terminal op must be *explicitly* listed here, making the
+ * opt-out auditable in one place instead of hiding behind a quiet
+ * `inverse: () => null`.
+ *
+ * Membership has a second consequence enforced at dispatch (ADR 0023
+ * §4): a terminal mutator is not reachable by a non-interactive client
+ * (one acting through an issued bearer credential) until step-up auth
+ * ships. `transferOwnership` is terminal *and* non-consensual, so an
+ * unattended token must not be able to fire it with no human in the
+ * loop and no undo. The DO's `handleMutation` rejects a terminal
+ * mutator whenever an acting credential id is present.
+ *
+ * Names are wire names; every entry must be a valid key of `Mutations`
+ * (asserted by `terminalMarker.test.ts`). Other genuinely-terminal
+ * operations — hard-purge and cascade hard-delete (ADR 0008) — are
+ * *not* registry mutators (they run on the Workspace DO alarm), so they
+ * are terminal-by-construction at that layer and intentionally absent
+ * from this registry-scoped set.
+ */
+export const TERMINAL_MUTATORS: readonly string[] = [
+    'transferOwnership',
+] as const;
+
+export function isTerminal(name: string): boolean {
+    return TERMINAL_MUTATORS.includes(name);
+}
+
+/**
  * Mutators whose rapid same-target repeats should coalesce into a
  * single undo entry. ADR 0005 §"Reorder coalescing": dragging an
  * item from row 0 → row 2 → row 5 inside the 500ms window is one
