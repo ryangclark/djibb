@@ -6,9 +6,10 @@ import type { HonoEnv } from '..';
 
 import { HandleSession } from '../auth/middleware';
 import {
-    credentialPermitsEntity,
+    tokenBindsToEntity,
     RevokeEntityBoundCredential,
 } from '../auth/credential';
+import { actingCredentialId, principalAccounts } from '../auth/principal';
 import {
     ListConnectedClients,
     ResolveAccountDisplays,
@@ -55,8 +56,7 @@ async function resolveSessionRole(
     rules: AuthorizationRules,
     workspaceId: string | null,
 ): Promise<AuthorizationRole> {
-    const session = c.get('session');
-    const sessionAccounts = session?.accounts ?? [];
+    const sessionAccounts = principalAccounts(c.get('principal'));
 
     const activeAccountHeader = c.req.header(ACTIVE_ACCOUNT_HEADER) || null;
     const activeAccountId = activeAccountHeader
@@ -173,7 +173,11 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
     // before role resolution and uniformly across every route (GET, /audit,
     // /pull, /push). Unbound and cookie/anonymous requests pass through.
     app.use('*', async (c, next) => {
-        if (!credentialPermitsEntity(c.get('credential'), c.get('entity_id'))) {
+        const principal = c.get('principal');
+        if (
+            principal.kind === 'credential' &&
+            !tokenBindsToEntity(principal.boundEntityId, c.get('entity_id'))
+        ) {
             throw new UnauthorizedError(
                 'credential is bound to a different entity',
             );
@@ -498,7 +502,7 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
                 );
             }
 
-            const sessionAccounts = c.get('session')?.accounts ?? [];
+            const sessionAccounts = principalAccounts(c.get('principal'));
             if (initArgs.accountId) {
                 const ownsAccount = sessionAccounts.some(
                     a => a.id === initArgs.accountId,
@@ -564,13 +568,13 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
         if (!listId) throw new UnexpectedError('invalid listId');
 
         const { error } = await c.get('list').handlePush({
-            authorizedAccounts: c.get('session')?.accounts || [],
+            authorizedAccounts: principalAccounts(c.get('principal')),
             authorizedRole: c.get('authorized_role'),
             listId,
             pushRequest,
             // Acting credential (ADR 0022 §5) — server-resolved at the
             // request→Account seam; null for cookie sessions / anonymous.
-            actingCredentialId: c.get('credential')?.credential_id ?? null,
+            actingCredentialId: actingCredentialId(c.get('principal')),
         });
         if (error) {
             return new Response(

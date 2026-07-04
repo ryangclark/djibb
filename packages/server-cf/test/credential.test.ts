@@ -29,8 +29,9 @@ import {
     CreateCredential,
     RevokeEntityBoundCredential,
     VerifyBearerCredential,
-    credentialPermitsEntity,
+    credentialState,
     hashSecret,
+    tokenBindsToEntity,
     type ResolvedCredential,
 } from '../src/auth/credential';
 import { newId } from '@djibb/protocol/id';
@@ -232,44 +233,8 @@ describe('CreateCredential — hash discipline', () => {
 
 // ─── time_last_used: best-effort + throttled ─────────────────────────────────
 
-// ─── bound_entity_id enforcement (GH #20) ────────────────────────────────────
-
-describe('credentialPermitsEntity', () => {
-    const cred = (boundEntityId: string | null): ResolvedCredential => ({
-        account: { id: 'a/owner' } as any,
-        credential_id: 'c/somehandlexxxxxxxxxx',
-        bound_entity_id: boundEntityId,
-    });
-
-    it('permits an unbound (NULL) credential on any entity', () => {
-        expect(credentialPermitsEntity(cred(null), 'l/anything-here-aaaaa')).toBe(
-            true,
-        );
-        expect(credentialPermitsEntity(cred(null), 'w/other-entity-bbbbb')).toBe(
-            true,
-        );
-    });
-
-    it('permits a bound credential on exactly its bound entity', () => {
-        const listId = 'l/bound-target-ccccccc';
-        expect(credentialPermitsEntity(cred(listId), listId)).toBe(true);
-    });
-
-    it('denies a bound credential on any other entity', () => {
-        expect(
-            credentialPermitsEntity(cred('l/bound-target-ccccccc'), 'l/other-ddddd'),
-        ).toBe(false);
-        // Prefix-agnostic: the id prefix is part of the compared value, so a
-        // same-suffix different-kind id is still a different entity.
-        expect(
-            credentialPermitsEntity(cred('l/sameSuffixxxxxxxxxxx'), 't/sameSuffixxxxxxxxxxx'),
-        ).toBe(false);
-    });
-
-    it('permits when there is no credential (cookie session / anonymous)', () => {
-        expect(credentialPermitsEntity(null, 'l/anything-here-aaaaa')).toBe(true);
-    });
-});
+// ─── bound_entity_id enforcement: see the `tokenBindsToEntity` block ─────────
+// (the binding rule retired `credentialPermitsEntity` for the shared leaf).
 
 // ─── Entity-bound revoke (GH #24) ────────────────────────────────────────────
 
@@ -390,5 +355,58 @@ describe('VerifyBearerCredential — time_last_used', () => {
         const resolved = await VerifyBearerCredential(env.DJIBB_AUTH, token);
         expect(resolved).not.toBeNull();
         expect((await readCredentialRow(credentialId))!.time_last_used).toBeNull();
+    });
+});
+
+// ─── tokenBindsToEntity (the shared binding leaf, candidate 2) ───────────────
+
+describe('tokenBindsToEntity', () => {
+    it('permits an unbound (NULL) token on any entity', () => {
+        expect(tokenBindsToEntity(null, 'l/anything')).toBe(true);
+    });
+
+    it('permits a bound token on exactly its bound entity', () => {
+        expect(tokenBindsToEntity('l/abc', 'l/abc')).toBe(true);
+    });
+
+    it('denies a bound token on any other entity', () => {
+        expect(tokenBindsToEntity('l/abc', 'l/xyz')).toBe(false);
+    });
+
+    it('is prefix-agnostic — one rule across List/Template/Workspace/Account', () => {
+        expect(tokenBindsToEntity('w/ws', 'w/ws')).toBe(true);
+        expect(tokenBindsToEntity('a/acc', 'l/acc')).toBe(false);
+    });
+});
+
+// ─── credentialState (the shared liveness leaf, folded candidate 3) ──────────
+
+describe('credentialState', () => {
+    const now = 1_000_000;
+
+    it('is active when neither revoked nor expired', () => {
+        expect(credentialState({ time_revoked: null, time_expires: null }, now))
+            .toBe('active');
+        expect(
+            credentialState({ time_revoked: null, time_expires: now + 1 }, now),
+        ).toBe('active');
+    });
+
+    it('is expired when past its window and not revoked', () => {
+        expect(
+            credentialState({ time_revoked: null, time_expires: now }, now),
+        ).toBe('expired');
+        expect(
+            credentialState({ time_revoked: null, time_expires: now - 1 }, now),
+        ).toBe('expired');
+    });
+
+    it('is revoked when revoked, even if also expired (revoked beats expired)', () => {
+        expect(
+            credentialState({ time_revoked: now - 5, time_expires: now - 1 }, now),
+        ).toBe('revoked');
+        expect(
+            credentialState({ time_revoked: now - 5, time_expires: null }, now),
+        ).toBe('revoked');
     });
 });

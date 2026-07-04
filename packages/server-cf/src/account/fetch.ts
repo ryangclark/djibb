@@ -23,11 +23,12 @@ AccountApp.use('*', HandleSession);
  * prefix — IDs are self-describing).
  */
 AccountApp.get('/:suffix/workspaces', async c => {
-    const session = c.get('session');
-    if (!session) throw new UnauthenticatedError();
+    const principal = c.get('principal');
+    if (principal.kind === 'anonymous')
+        throw new UnauthenticatedError();
 
     const accountId = `${IdTypes.account}/${c.req.param('suffix')}`;
-    if (!session.accounts.some(a => a.id === accountId)) {
+    if (!principal.accounts.some(a => a.id === accountId)) {
         throw new UnauthorizedError(
             'Account is not part of the current session.'
         );
@@ -44,11 +45,12 @@ AccountApp.get('/:suffix/workspaces', async c => {
  * Per ADR 0008 / ADR 0011 §Step 10b-ui.
  */
 AccountApp.get('/:suffix/trash', async c => {
-    const session = c.get('session');
-    if (!session) throw new UnauthenticatedError();
+    const principal = c.get('principal');
+    if (principal.kind === 'anonymous')
+        throw new UnauthenticatedError();
 
     const accountId = `${IdTypes.account}/${c.req.param('suffix')}`;
-    if (!session.accounts.some(a => a.id === accountId)) {
+    if (!principal.accounts.some(a => a.id === accountId)) {
         throw new UnauthorizedError(
             'Account is not part of the current session.'
         );
@@ -69,11 +71,12 @@ AccountApp.get('/:suffix/trash', async c => {
  * URL convention as `/workspaces` and `/trash`.
  */
 AccountApp.get('/:suffix/shared', async c => {
-    const session = c.get('session');
-    if (!session) throw new UnauthenticatedError();
+    const principal = c.get('principal');
+    if (principal.kind === 'anonymous')
+        throw new UnauthenticatedError();
 
     const accountId = `${IdTypes.account}/${c.req.param('suffix')}`;
-    if (!session.accounts.some(a => a.id === accountId)) {
+    if (!principal.accounts.some(a => a.id === accountId)) {
         throw new UnauthorizedError(
             'Account is not part of the current session.'
         );
@@ -91,11 +94,12 @@ AccountApp.get('/:suffix/shared', async c => {
  * no verified email (nothing could have been addressed to it).
  */
 AccountApp.get('/:suffix/invitations', async c => {
-    const session = c.get('session');
-    if (!session) throw new UnauthenticatedError();
+    const principal = c.get('principal');
+    if (principal.kind === 'anonymous')
+        throw new UnauthenticatedError();
 
     const accountId = `${IdTypes.account}/${c.req.param('suffix')}`;
-    const account = session.accounts.find(a => a.id === accountId);
+    const account = principal.accounts.find(a => a.id === accountId);
     if (!account) {
         throw new UnauthorizedError(
             'Account is not part of the current session.'
@@ -123,11 +127,12 @@ const PatchAccountSchema = z.object({
  * account (it must appear in their session).
  */
 AccountApp.patch('/:suffix', async c => {
-    const session = c.get('session');
-    if (!session) throw new UnauthenticatedError();
+    const principal = c.get('principal');
+    if (principal.kind === 'anonymous')
+        throw new UnauthenticatedError();
 
     const accountId = `${IdTypes.account}/${c.req.param('suffix')}`;
-    if (!session.accounts.some(a => a.id === accountId)) {
+    if (!principal.accounts.some(a => a.id === accountId)) {
         throw new UnauthorizedError(
             'Account is not part of the current session.'
         );

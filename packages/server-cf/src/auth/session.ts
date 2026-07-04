@@ -6,6 +6,7 @@ import { ParseError, UnexpectedError } from '@djibb/protocol/errors';
 import { DatelikeToDateSchema } from '@djibb/protocol/schema';
 import { AccountSchema, type Account } from '@djibb/protocol/account';
 import { newId } from '@djibb/protocol/id';
+import { accountFromRow } from './account-row';
 
 /**
  * Attributes that are optional to a session.
@@ -242,22 +243,10 @@ export async function GetSessionById(
 
     for (const row of queryResults.results as any) {
         if (row.account_id) {
-            accounts.push({
-                id: row.account_id,
-                display_name: row.display_name,
-                email: row.email,
-                email_verified: row.email_verified,
-                flags: row.flags ? JSON.parse(row.flags) : null,
-                image: row.image,
-                provider_name: row.provider_name,
-                provider_client_id: row.provider_client_id,
-                time_created: new Date(row.account_time_created * 1000),
-                time_deleted: row.account_time_deleted
-                    ? new Date(row.account_time_deleted * 1000)
-                    : null,
-                time_updated: new Date(row.account_time_updated * 1000),
-                user_name: row.user_name,
-            });
+            // Single accounts-join-row → Account mapper, shared with the
+            // bearer-credential path (`accountFromRow`). One place to map
+            // a `accounts` row; neither auth path can drift from the other.
+            accounts.push(accountFromRow(row));
         }
 
         // Only need to set these once.

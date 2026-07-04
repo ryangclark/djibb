@@ -24,15 +24,16 @@ export const WorkspaceInviteApp = new Hono<HonoEnv>();
 WorkspaceInviteApp.use('*', HandleSession);
 
 WorkspaceInviteApp.get('/:slug', async c => {
-    const session = c.get('session');
-    if (!session) throw new UnauthenticatedError();
+    const principal = c.get('principal');
+    if (principal.kind === 'anonymous')
+        throw new UnauthenticatedError();
 
     // Match against every verified email on the session, not just the
     // active account's: the invite may be addressed to a different
     // account the user holds, and the banner lets them switch before
     // accepting. `acceptInvitation` does the authoritative per-account
     // identity match at accept time.
-    const identityValues = session.accounts.flatMap(a =>
+    const identityValues = principal.accounts.flatMap(a =>
         a.email_verified && a.email ? [a.email.trim().toLowerCase()] : []
     );
 

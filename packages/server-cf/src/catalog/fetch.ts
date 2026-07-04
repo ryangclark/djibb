@@ -21,14 +21,15 @@ CatalogApp.use('*', HandleSession);
  * shows what *this* account owns, nothing else.
  */
 CatalogApp.get('/', async c => {
-    const session = c.get('session');
-    if (!session) throw new UnauthenticatedError();
+    const principal = c.get('principal');
+    if (principal.kind === 'anonymous')
+        throw new UnauthenticatedError();
 
     const headerAccount = c.req.header(ACTIVE_ACCOUNT_HEADER) || null;
     const accountId =
-        headerAccount && session.accounts.some(a => a.id === headerAccount)
+        headerAccount && principal.accounts.some(a => a.id === headerAccount)
             ? headerAccount
-            : session.accounts[0]?.id;
+            : principal.accounts[0]?.id;
     if (!accountId) throw new UnauthorizedError();
 
     const entities = await ListOwnedEntities(c.env.DJIBB_AUTH, accountId);

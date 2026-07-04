@@ -23,9 +23,10 @@
  * request resolves to an Account exactly as a cookie session does, then
  * flows through the single `(Account, entity) → role` model (ADR 0021).
  */
-import { ParseError, UnexpectedError } from '@djibb/protocol/errors';
-import { AccountSchema, type Account } from '@djibb/protocol/account';
+import { UnexpectedError } from '@djibb/protocol/errors';
+import { type Account } from '@djibb/protocol/account';
 import { newId, randomString } from '@djibb/protocol/id';
+import { accountFromRow } from './account-row';
 
 /**
  * Length of the random secret half of a bearer token. 43 url-safe chars
@@ -231,11 +232,20 @@ export async function VerifyBearerCredential(
     // from an unknown handle.
     if (!timingSafeEqual(presentedHash, row.secret_hash)) return null;
 
-    // Soft state: revoked is terminal; expired is past its window.
-    if (row.time_revoked != null) return null;
-    if (row.time_expires != null && row.time_expires <= now) return null;
+    // Soft state: admit only a live credential. `credentialState` is the
+    // single definition of revoked/expired/active (revoked beats expired)
+    // — shared with the connected-clients read so the auth decision and
+    // the management-surface badge can't disagree.
+    if (
+        credentialState(
+            { time_revoked: row.time_revoked, time_expires: row.time_expires },
+            now,
+        ) !== 'active'
+    ) {
+        return null;
+    }
 
-    const account = parseAccountRow(row);
+    const account = accountFromRow(row);
 
     // Best-effort, throttled, off the hot path.
     if (
@@ -259,28 +269,44 @@ export async function VerifyBearerCredential(
 }
 
 /**
- * Binding enforcement (ADR 0022 §Negative consequences, GH #20). A
- * credential bound to an entity (`bound_entity_id` set) may act ONLY on
- * that entity; on any other it is denied. Unbound credentials (`NULL`) and
- * absent ones (cookie sessions / anonymous) are unaffected — usable
- * wherever the Account has access.
+ * Binding enforcement (ADR 0022 §Negative consequences, GH #20): does a
+ * token with this `boundEntityId` permit acting on `entityId`?
  *
- * Prefix-agnostic equality, so one check covers a bound List, Template,
- * Workspace, or Account: the id prefix (`l/`, `t/`, `w/`, `a/`) is part of
- * the compared value (ADR 0022 §4).
+ * The single binding rule (candidate 2): does a token with this
+ * `boundEntityId` permit acting on `entityId`? An unbound token (`null`)
+ * permits any entity; a bound token permits exactly its own. Prefix-
+ * agnostic — the id prefix (`l/`, `t/`, `w/`, `a/`) is part of the
+ * compared value, so one rule covers every entity kind (ADR 0022 §4).
  *
- * Pure predicate by design: the binding *cannot* be enforced at the
- * request→Account seam (the target entity isn't in scope there), so the
- * carrier threads forward and this rule is applied at the per-entity authz
- * check, where the entity is finally known. Returns `true` to permit,
- * `false` to deny.
+ * This leaf is the one definition shared by the per-entity authz gate
+ * (where it *enforces*) and the connected-clients read (where it
+ * *narrows visibility*), so "what a token may do" and "what a manager
+ * sees" can never drift apart.
  */
-export function credentialPermitsEntity(
-    credential: ResolvedCredential | null,
+export function tokenBindsToEntity(
+    boundEntityId: string | null,
     entityId: string,
 ): boolean {
-    if (!credential || credential.bound_entity_id == null) return true;
-    return credential.bound_entity_id === entityId;
+    if (boundEntityId == null) return true;
+    return boundEntityId === entityId;
+}
+
+/**
+ * The single definition of a credential's lifecycle state (folded
+ * candidate 3), over the soft-state columns. **Revoked beats expired**: a
+ * revoked-and-also-past-window token reads `revoked`. Shared by
+ * `VerifyBearerCredential` (admit iff `active`) and the connected-clients
+ * read (the state badge), so the auth decision and the surface agree by
+ * construction. Credential-only — sessions have no `revoked` state
+ * (revoke deletes the row) and keep their own active/expired split.
+ */
+export function credentialState(
+    row: { time_revoked: number | null; time_expires: number | null },
+    now: number,
+): 'active' | 'revoked' | 'expired' {
+    if (row.time_revoked != null) return 'revoked';
+    if (row.time_expires != null && row.time_expires <= now) return 'expired';
+    return 'active';
 }
 
 /**
@@ -333,39 +359,3 @@ function touchLastUsed(d1: D1Database, credentialId: string, now: number) {
         .run();
 }
 
-/**
- * Builds an {@link Account} from a credentials⋈accounts join row,
- * mirroring `GetSessionById` in `auth/session.ts`.
- */
-function parseAccountRow(row: Record<string, any>): Account {
-    const candidate = {
-        id: row.account_id,
-        display_name: row.display_name,
-        email: row.email,
-        email_verified: row.email_verified,
-        flags: row.flags ? JSON.parse(row.flags) : null,
-        image: row.image,
-        provider_name: row.provider_name,
-        provider_client_id: row.provider_client_id,
-        time_created: new Date(row.account_time_created * 1000),
-        time_deleted: row.account_time_deleted
-            ? new Date(row.account_time_deleted * 1000)
-            : null,
-        time_updated: new Date(row.account_time_updated * 1000),
-        user_name: row.user_name,
-    };
-
-    const parseResult = AccountSchema.safeParse(candidate);
-    if (!parseResult.success) {
-        console.error(
-            '`VerifyBearerCredential()` account parse error:',
-            ...parseResult.error.issues.map(issue => ({
-                ...issue,
-                path: issue.path.join('/'),
-            })),
-        );
-        throw new ParseError();
-    }
-
-    return parseResult.data;
-}

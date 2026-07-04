@@ -582,7 +582,9 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
     // Mint session. Merge into any existing session so multi-Account-
     // per-session flows work (user adds a second Account by emailing
     // themselves a sign-in link from a logged-in tab).
-    const existingSession = c.get('session');
+    const existing = c.get('principal');
+    const fromSessionId =
+        existing.kind === 'session' ? existing.sessionId : undefined;
     let session;
     try {
         session = await CreateSession(
@@ -591,7 +593,7 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
                 accounts: [account],
                 ip_country: c.req.header('CF-IPCountry') || '',
             },
-            existingSession?.id
+            fromSessionId
         );
     } catch (err) {
         console.error('`handleMagicConsume()` create-session error:', err);

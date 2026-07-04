@@ -173,9 +173,20 @@ Account surface as their own rows (label, `bound_entity_id`, last-used, Revoke).
 Because sessions live in their own substrate (§4), a complete "what's connected"
 view **unions two sources** — active sessions (`sessions`/`AccountSession`) and
 issued tokens (`issued_credentials`) — exactly as the access surface already
-unions multiple grant axes. A credentials projection is emitted to D1 via the ADR
-0003 pipeline, like `entity_memberships` / `entity_invitations_index`. Presenting
-it
+unions multiple grant axes.
+
+> **Amended in implementation (GH #23):** this view is a **union read**, *not* an
+> ADR 0003 D1 projection. The projection pipeline (DO-authoritative → D1 emit +
+> ADR 0007 reconciliation) exists to copy state that *originates in a Durable
+> Object*. Neither source here does: `sessions` and `issued_credentials` are
+> natively authoritative in D1, so there is nothing to emit or reconcile — the
+> surface simply reads and unions the two tables (`auth/connected.ts`
+> `ListConnectedClients`). ADR 0003 is not contradicted (it governs DO-owned
+> *entity* data); the auth substrate is just out of its scope. The original
+> "credentials projection emitted to D1 via the ADR 0003 pipeline" wording below
+> is superseded by this note.
+
+Presenting it
 adjacent to the existing roster — and a credential-history view, and mutation-log
 attribution — are **djibb.com-client features** captured as follow-up issues that
 reference this ADR; they do not change the protocol-level substrate decided here.
