@@ -61,6 +61,8 @@ export {
     EDIT_ROLES,
     FRICTION_TIER_MUTATORS,
     isFrictionTier,
+    TERMINAL_MUTATORS,
+    isTerminal,
 } from './_shared';
 export type {
     ServerMutatorCtx,
