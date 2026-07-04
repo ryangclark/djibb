@@ -47,3 +47,4 @@ To learn the contract you build against, read the **protocol** row and ignore th
 - [0010](0010-authentication-magic-link-floor.md) — Authentication: magic-link floor, OAuth, passkey — *protocol, server-cf*
 - [0017](0017-self-improvement-loop-and-carryover.md) — Self-improvement loop; carryover durability axis — *protocol, client/agent*
 - [0022](0022-client-authentication-and-credentials.md) — Client authentication and credentials — *protocol, client/cli*
+- [0024](0024-off-domain-client-sign-in-interactive-credential-mint.md) — Off-domain client sign-in: the interactive credential mint — *protocol, server-cf*
