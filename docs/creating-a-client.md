@@ -201,15 +201,14 @@ ADR first.
 
 Gaps above are extraction chores; these are design work.
 
-1. **Read authorization is incomplete** (ADR 0021). View-floor reads
-   and accept-to-view are decided but the read-authz hole is not fully
-   closed. Any client whose premise is *secrecy* — Secret Santa being
+1. **Item-level read secrecy doesn't exist** (ADR 0021). Entity-level
+   view-floor reads are enforced (GH #13), but roles gate *whole
+   entities*: any client whose premise is secrecy — Secret Santa being
    the flagship case: giftees must not see claims on their own list —
-   is blocked on finishing this, and likely needs more: today's roles
-   gate whole entities, and "hide these *items* (or this field) from
-   the owner" is item-level visibility the lattice doesn't express.
-   Conditional subtrees (ADR 0019) may be the seed of an answer;
-   otherwise this is a new ADR before that client is honest.
+   needs "hide these *items* (or this field) from a specific member,"
+   which the role lattice doesn't express. Conditional subtrees
+   (ADR 0019) may be the seed of an answer; otherwise this is a new
+   ADR before that client is honest.
 2. **The interactive credential mint (ADR 0024, Proposed) isn't built
    yet — and it's the linchpin of the scattered-clients vision.**
    Off-domain clients can't ride the cookie; the designated shape is a
