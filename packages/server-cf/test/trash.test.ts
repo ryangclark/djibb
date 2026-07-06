@@ -18,7 +18,7 @@ import { CreateAccount } from '../src/account/service';
 import {
     EmitEntityMembershipsToCatalog,
     EmitEntitySnapshotToCatalog,
-} from '../src/list/entity';
+} from '../src/derived-index/d1';
 import { ListTrashedEntitiesForAccount } from '../src/catalog/service';
 import { newId } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';

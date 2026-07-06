@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 
 import { CreateAccount } from '../src/account/service';
-import { EmitEntitySnapshotToCatalog } from '../src/list/entity';
+import { EmitEntitySnapshotToCatalog } from '../src/derived-index/d1';
 import { ListOwnedEntities } from '../src/catalog/service';
 import { newId } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';

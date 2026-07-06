@@ -68,7 +68,7 @@ import {
     EmitEntityMembershipsToCatalog,
     EmitEntitySnapshotToCatalog,
     GetEntityVersion,
-} from './entity';
+} from '../derived-index/d1';
 import {
     CountInvitesByInviterSince,
     CountOutstandingInvitesByInviter,

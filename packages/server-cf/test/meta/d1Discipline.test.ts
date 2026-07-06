@@ -42,7 +42,6 @@ const ALLOWLIST = new Map<string, number>([
     ['auth/session.ts', 8],
     ['catalog/service.ts', 4],
     ['list/durable_object.ts', 6],
-    ['list/entity.ts', 7],
     ['list/invitations.ts', 11],
     ['list/slug.ts', 2],
     ['workspace/service.ts', 3],

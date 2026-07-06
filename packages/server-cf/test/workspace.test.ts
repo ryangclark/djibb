@@ -3,7 +3,7 @@ import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 
 import { CreateAccount } from '../src/account/service';
 import { GetWorkspacesByAccountId } from '../src/workspace/service';
-import { GetEntity } from '../src/list/entity';
+import { GetEntity } from '../src/derived-index/d1';
 import type { Account } from '@djibb/protocol/account';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 

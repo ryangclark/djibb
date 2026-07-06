@@ -36,7 +36,7 @@ import { z } from 'zod';
 import { IdTypes } from '@djibb/protocol/id';
 import { GetMembership } from '../workspace/service';
 import { canRead, resolveRole } from '../auth/resolver';
-import { GetEntity } from './entity';
+import { GetEntity } from '../derived-index/d1';
 import { asLocalList } from './durable_object';
 import { initListArgsSchema, mintFromBlankArgsSchema } from '@djibb/protocol/list/mutators/client';
 import { OWNER_ROLES } from '@djibb/protocol/list/mutators/_shared';
