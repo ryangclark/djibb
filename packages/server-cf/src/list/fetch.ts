@@ -1,4 +1,4 @@
-import { Hono, type Context } from 'hono';
+import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { PushRequestV1 } from 'replicache';
 
@@ -16,11 +16,7 @@ import {
     ResolveCredentialLabels,
     partitionConnectedClients,
 } from '../auth/d1';
-import {
-    type AuthorizationRole,
-    AuthorizationRoleEnum,
-    type AuthorizationRules,
-} from '@djibb/protocol/auth/rules';
+import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
 
 import {
     BadRequestError,
@@ -35,7 +31,12 @@ import { ReplicachePullRequestSchema } from '../replicache';
 import { z } from 'zod';
 import { IdTypes } from '@djibb/protocol/id';
 import { GetMembership } from '../workspace/service';
-import { canRead, resolveRole } from '../auth/resolver';
+import {
+    canRead,
+    resolveRequestRole,
+    resolvePreInitRole,
+    type RoleResolutionDeps,
+} from '../auth/resolver';
 import { GetEntity } from '../derived-index/d1';
 import { asLocalList } from './durable_object';
 import { initListArgsSchema, mintFromBlankArgsSchema } from '@djibb/protocol/list/mutators/client';
@@ -46,70 +47,14 @@ const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
 type EntityType = 'list' | 'template' | 'workspace';
 
 /**
- * Resolves a role from the session against given rules + the calling
- * account's workspace membership. Cross-account picking (explicit >
- * workspace > default; active-account tiebreaker) lives here because it
- * is orthogonal to per-account role resolution.
+ * The role-resolution module's one dependency (ADR 0025: membership
+ * reads go through the Derived Index owner via `GetMembership`).
  */
-async function resolveSessionRole(
-    c: Context<HonoEnv>,
-    rules: AuthorizationRules,
-    workspaceId: string | null,
-): Promise<AuthorizationRole> {
-    const sessionAccounts = principalAccounts(c.get('principal'));
-
-    const activeAccountHeader = c.req.header(ACTIVE_ACCOUNT_HEADER) || null;
-    const activeAccountId = activeAccountHeader
-        ? sessionAccounts.find(a => a.id === activeAccountHeader)?.id ?? null
-        : null;
-
-    type Candidate = {
-        accountId: string;
-        role: AuthorizationRole;
-        source: 'explicit' | 'workspace' | 'default';
+function roleDeps(d1: D1Database): RoleResolutionDeps {
+    return {
+        getMembershipRole: async (accountId, workspaceId) =>
+            (await GetMembership(d1, accountId, workspaceId))?.role ?? null,
     };
-    const candidates: Candidate[] = [];
-
-    for (const account of sessionAccounts) {
-        const hasExplicit =
-            rules.authorized_accounts[account.id] != null;
-        let workspaceRole = null;
-        if (!hasExplicit && workspaceId) {
-            const membership = await GetMembership(
-                c.env.DJIBB_AUTH,
-                account.id,
-                workspaceId,
-            );
-            workspaceRole = membership?.role ?? null;
-        }
-        candidates.push({
-            accountId: account.id,
-            role: resolveRole(
-                { account_id: account.id },
-                rules,
-                workspaceRole,
-            ),
-            source: hasExplicit
-                ? 'explicit'
-                : workspaceRole
-                ? 'workspace'
-                : 'default',
-        });
-    }
-
-    function pickByActive(level: Candidate[]): Candidate {
-        return (
-            (activeAccountId
-                ? level.find(c => c.accountId === activeAccountId)
-                : undefined) ?? level[0]!
-        );
-    }
-
-    const explicit = candidates.filter(c => c.source === 'explicit');
-    const workspace = candidates.filter(c => c.source === 'workspace');
-    if (explicit.length) return pickByActive(explicit).role;
-    if (workspace.length) return pickByActive(workspace).role;
-    return resolveRole(null, rules, null);
 }
 
 /**
@@ -207,11 +152,12 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
 
         c.set(
             'authorized_role',
-            await resolveSessionRole(
-                c,
-                entity.authorization_rules,
-                entity.workspace_id,
-            ),
+            await resolveRequestRole(roleDeps(c.env.DJIBB_AUTH), {
+                principal: c.get('principal'),
+                activeAccountId: c.req.header(ACTIVE_ACCOUNT_HEADER) || null,
+                rules: entity.authorization_rules,
+                workspaceId: entity.workspace_id,
+            }),
         );
 
         await next();
@@ -502,30 +448,13 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
                 );
             }
 
-            const sessionAccounts = principalAccounts(c.get('principal'));
-            if (initArgs.accountId) {
-                const ownsAccount = sessionAccounts.some(
-                    a => a.id === initArgs.accountId,
-                );
-                if (!ownsAccount) throw new UnauthorizedError();
-            }
-            if (initArgs.workspaceId) {
-                if (!initArgs.accountId) throw new UnauthorizedError();
-                const membership = await GetMembership(
-                    c.env.DJIBB_AUTH,
-                    initArgs.accountId,
-                    initArgs.workspaceId,
-                );
-                if (!membership) throw new UnauthorizedError();
-            }
-
-            // Init has no prior rules to consult: the caller is the
-            // owner-to-be (if authed) or an anonymous editor of an
-            // ownerless list. Skip the rules round-trip; assign the
-            // role directly.
             c.set(
                 'authorized_role',
-                initArgs.accountId ? 'owner' : 'ownerless',
+                await resolvePreInitRole(roleDeps(c.env.DJIBB_AUTH), {
+                    principal: c.get('principal'),
+                    claimedAccountId: initArgs.accountId ?? null,
+                    claimedWorkspaceId: initArgs.workspaceId ?? null,
+                }),
             );
         }
 
