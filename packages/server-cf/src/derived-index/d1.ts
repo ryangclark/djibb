@@ -6,7 +6,12 @@ import {
 } from '@djibb/protocol/auth/rules';
 import { UnexpectedError } from '@djibb/protocol/errors';
 import { ENTITY_ROW_TYPES, SlotEnum, type Slot } from '@djibb/protocol/list';
-import { defaultSlugForId } from '@djibb/protocol/list/slug';
+import {
+    defaultSlugForId,
+    RESERVED_SLUGS,
+    SLUG_PATTERN,
+    type SlugClaimResult,
+} from '@djibb/protocol/list/slug';
 
 // Re-export the pure default-slug derivation (now owned by
 // `@djibb/protocol/list/slug`) so existing `../entity` importers — the
@@ -333,4 +338,112 @@ export async function EmitEntitySnapshotToCatalog(
             snapshot.version,
         )
         .run();
+}
+
+/**
+ * Atomically attempt to set `slug` on a `workspace_entities` row —
+ * slug claim arbitration for the catalog (ADR 0011 §Step 7b.5, backend
+ * half). The single-DO server mutator can't see other DOs' slugs; D1
+ * holds the `UNIQUE(type, slug)` invariant. The pure validation
+ * contract (`SLUG_PATTERN`, `RESERVED_SLUGS`, the `SlugClaim*` result
+ * shape) lives in `@djibb/protocol/list/slug`. Called by the in-DO
+ * preflight for `setWorkspaceSlug` (and any future setSlug mutator for
+ * other entity types).
+ *
+ * Validates the slug locally (pattern + reserved set), then runs a
+ * single guarded UPDATE. The UPDATE's `WHERE NOT EXISTS (collision)`
+ * predicate makes the check-and-write atomic at the statement level;
+ * a concurrent claim of the same slug either lands first (our UPDATE
+ * sees the collision and rowsWritten = 0) or lands second (the UNIQUE
+ * index trips on insert side). The UNIQUE constraint catch covers
+ * the race where the collision check passes but the index fires
+ * between predicate eval and write — vanishingly rare in SQLite's
+ * per-statement world, but cheap to be paranoid.
+ *
+ * Entity-typed: the collision check is scoped to `type = ?` so
+ * `/w/myteam` and `/l/myteam` can coexist (UNIQUE(type, slug) on
+ * the catalog).
+ */
+export async function tryClaimSlug(
+    d1: D1Database,
+    entityId: string,
+    entityType: 'list' | 'template' | 'workspace',
+    newSlug: string,
+): Promise<SlugClaimResult> {
+    if (!SLUG_PATTERN.test(newSlug)) {
+        return {
+            ok: false,
+            reason: 'slug_invalid',
+            message: `Slug "${newSlug}" doesn't match the allowed pattern (3-40 chars, lowercase alphanumeric + hyphen, no leading/trailing hyphen).`,
+        };
+    }
+    if (RESERVED_SLUGS.has(newSlug)) {
+        return {
+            ok: false,
+            reason: 'slug_reserved',
+            message: `Slug "${newSlug}" is reserved.`,
+        };
+    }
+
+    try {
+        const result = await d1
+            .prepare(
+                `UPDATE workspace_entities
+                    SET slug = ?
+                  WHERE id = ?
+                    AND type = ?
+                    AND time_deleted IS NULL
+                    AND NOT EXISTS (
+                        SELECT 1 FROM workspace_entities
+                         WHERE type = ?
+                           AND slug = ?
+                           AND id != ?
+                    )`,
+            )
+            .bind(newSlug, entityId, entityType, entityType, newSlug, entityId)
+            .run();
+        const rowsWritten =
+            (result.meta as { changes?: number } | undefined)?.changes ?? 0;
+        if (rowsWritten === 0) {
+            // Either the row doesn't exist (or is soft-deleted), or
+            // the collision check tripped. Disambiguate with a cheap
+            // followup lookup so the outcome reason is honest.
+            const existing = await d1
+                .prepare(
+                    `SELECT 1 FROM workspace_entities
+                      WHERE id = ?
+                        AND type = ?
+                        AND time_deleted IS NULL
+                      LIMIT 1`,
+                )
+                .bind(entityId, entityType)
+                .first();
+            if (!existing) {
+                return {
+                    ok: false,
+                    reason: 'entity_missing',
+                    message: `No ${entityType} found for id "${entityId}".`,
+                };
+            }
+            return {
+                ok: false,
+                reason: 'slug_taken',
+                message: `Slug "${newSlug}" is already in use by another ${entityType}.`,
+            };
+        }
+        return { ok: true };
+    } catch (error) {
+        // UNIQUE constraint violation — same outcome as the
+        // NOT EXISTS predicate catching the collision, just delivered
+        // by the index instead of the subquery.
+        const msg = error instanceof Error ? error.message : String(error);
+        if (/UNIQUE|constraint/i.test(msg)) {
+            return {
+                ok: false,
+                reason: 'slug_taken',
+                message: `Slug "${newSlug}" is already in use by another ${entityType}.`,
+            };
+        }
+        throw error;
+    }
 }

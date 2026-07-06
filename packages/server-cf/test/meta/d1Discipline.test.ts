@@ -43,7 +43,6 @@ const ALLOWLIST = new Map<string, number>([
     ['catalog/service.ts', 4],
     ['list/durable_object.ts', 6],
     ['list/invitations.ts', 11],
-    ['list/slug.ts', 2],
     ['workspace/service.ts', 3],
 ]);
 

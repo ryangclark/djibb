@@ -85,7 +85,7 @@ import {
     type InvitationIdentityKind,
     type InvitePreflightFailureReason,
 } from './invitations';
-import { tryClaimSlug } from './slug';
+import { tryClaimSlug } from '../derived-index/d1';
 import { preflightMoveList } from '@djibb/protocol/list/mutators/moveList';
 import { GetAccountByEmail, GetAccountById } from '../account/service';
 import { GetMembership, mintPersonalWorkspaceEntity } from '../workspace/service';
