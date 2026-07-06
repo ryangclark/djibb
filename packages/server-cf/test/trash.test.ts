@@ -19,7 +19,7 @@ import {
     EmitEntityMembershipsToCatalog,
     EmitEntitySnapshotToCatalog,
 } from '../src/derived-index/d1';
-import { ListTrashedEntitiesForAccount } from '../src/catalog/service';
+import { ListTrashedEntitiesForAccount } from '../src/derived-index/d1';
 import { newId } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 import type { Account } from '@djibb/protocol/account';

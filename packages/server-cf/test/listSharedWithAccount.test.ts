@@ -7,7 +7,7 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 
-import { ListSharedWithAccount } from '../src/catalog/service';
+import { ListSharedWithAccount } from '../src/derived-index/d1';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 const NOW = 1_700_000_000;
