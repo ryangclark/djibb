@@ -243,7 +243,7 @@ describe('resolveRequestRole', () => {
             ).resolves.toBe('viewer');
         });
 
-        it('active-account header breaks ties within a level', async () => {
+        it('active-account header selects the acting account within a level', async () => {
             await expect(
                 resolve({
                     principal: sessionPrincipal(ACCOUNT_ID, OTHER_ACCOUNT_ID),
@@ -254,6 +254,50 @@ describe('resolveRequestRole', () => {
                             [OTHER_ACCOUNT_ID]: { role: 'viewer' },
                         },
                     }),
+                }),
+            ).resolves.toBe('viewer');
+        });
+
+        it('active-account header selects the acting account across specificity levels', async () => {
+            // Account A explicitly demoted to viewer; account B is a
+            // workspace admin with no explicit entry. The header names B:
+            // B's grant is independently legitimate — the header is a
+            // statement of who is acting, not a tiebreak hint, so B's
+            // admin wins even though A's source is more specific.
+            await expect(
+                resolve({
+                    principal: sessionPrincipal(ACCOUNT_ID, OTHER_ACCOUNT_ID),
+                    activeAccountId: OTHER_ACCOUNT_ID,
+                    rules: rules({
+                        authorized_accounts: {
+                            [ACCOUNT_ID]: { role: 'viewer' },
+                        },
+                    }),
+                    workspaceId: WORKSPACE_ID,
+                    memberships: {
+                        [`${OTHER_ACCOUNT_ID}:${WORKSPACE_ID}`]: 'admin',
+                    },
+                }),
+            ).resolves.toBe('admin');
+        });
+
+        it('an explicitly demoted active account keeps its demotion', async () => {
+            // The inverse: the header names the demoted account itself.
+            // Selecting the acting account never escapes that account's
+            // own explicit demotion.
+            await expect(
+                resolve({
+                    principal: sessionPrincipal(ACCOUNT_ID, OTHER_ACCOUNT_ID),
+                    activeAccountId: ACCOUNT_ID,
+                    rules: rules({
+                        authorized_accounts: {
+                            [ACCOUNT_ID]: { role: 'viewer' },
+                        },
+                    }),
+                    workspaceId: WORKSPACE_ID,
+                    memberships: {
+                        [`${OTHER_ACCOUNT_ID}:${WORKSPACE_ID}`]: 'admin',
+                    },
                 }),
             ).resolves.toBe('viewer');
         });

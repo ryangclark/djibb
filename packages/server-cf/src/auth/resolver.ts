@@ -68,12 +68,20 @@ function resolveRole(
 }
 
 /**
- * Resolves the role a request holds on one entity: every account the
- * principal carries runs the per-account ladder, then cross-account
- * selection picks the acting one (explicit > workspace > default source
- * specificity; `activeAccountId` — the `X-Djibb-Active-Account` header,
- * pre-extracted but unvalidated — breaks ties within the winning level
- * and is ignored unless it names an account the principal holds).
+ * Resolves the role a request holds on one entity.
+ *
+ * A valid `activeAccountId` (the `X-Djibb-Active-Account` header,
+ * pre-extracted but unvalidated) wins outright: it is a statement of
+ * *who is acting*, not a tiebreak hint, so that account's ladder result
+ * is returned even when another of the principal's accounts resolves at
+ * a more specific source — e.g. account A explicitly demoted to
+ * `restricted` while the header names workspace-admin account B: B's
+ * grant is independently legitimate, and the header selects it. A header
+ * naming an account the principal doesn't hold is ignored.
+ *
+ * Without a header, every account runs the per-account ladder and
+ * source specificity picks the acting one (explicit > workspace >
+ * default, first account within a level).
  *
  * The membership lookup is skipped for accounts with an explicit entry
  * (the ladder can't reach it) and when the entity has no workspace.
@@ -90,12 +98,21 @@ export async function resolveRequestRole(
     const { rules, workspaceId } = input;
     const accounts = principalAccounts(input.principal);
 
-    const activeAccountId = input.activeAccountId
-        ? accounts.find(a => a.id === input.activeAccountId)?.id ?? null
+    async function ladder(accountId: string): Promise<AuthorizationRole> {
+        const hasExplicit = rules.authorized_accounts[accountId] != null;
+        const workspaceRole =
+            !hasExplicit && workspaceId
+                ? await deps.getMembershipRole(accountId, workspaceId)
+                : null;
+        return resolveRole({ account_id: accountId }, rules, workspaceRole);
+    }
+
+    const activeAccount = input.activeAccountId
+        ? accounts.find(a => a.id === input.activeAccountId) ?? null
         : null;
+    if (activeAccount) return ladder(activeAccount.id);
 
     type Candidate = {
-        accountId: string;
         role: AuthorizationRole;
         source: 'explicit' | 'workspace' | 'default';
     };
@@ -111,7 +128,6 @@ export async function resolveRequestRole(
             );
         }
         candidates.push({
-            accountId: account.id,
             role: resolveRole({ account_id: account.id }, rules, workspaceRole),
             source: hasExplicit
                 ? 'explicit'
@@ -121,18 +137,10 @@ export async function resolveRequestRole(
         });
     }
 
-    function pickByActive(level: Candidate[]): Candidate {
-        return (
-            (activeAccountId
-                ? level.find(c => c.accountId === activeAccountId)
-                : undefined) ?? level[0]!
-        );
-    }
-
-    const explicit = candidates.filter(c => c.source === 'explicit');
-    const workspace = candidates.filter(c => c.source === 'workspace');
-    if (explicit.length) return pickByActive(explicit).role;
-    if (workspace.length) return pickByActive(workspace).role;
+    const explicit = candidates.find(c => c.source === 'explicit');
+    if (explicit) return explicit.role;
+    const workspace = candidates.find(c => c.source === 'workspace');
+    if (workspace) return workspace.role;
     return resolveRole(null, rules, null);
 }
 
