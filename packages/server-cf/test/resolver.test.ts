@@ -2,11 +2,14 @@ import { describe, it, expect } from 'vitest';
 import {
     canEdit,
     canRead,
+    requireManager,
+    requireReadable,
     resolvePreInitRole,
     resolveRequestRole,
     type RoleResolutionDeps,
 } from '../src/auth/resolver';
 import { UnauthorizedError } from '../src/auth/errors';
+import { NotFoundError } from '@djibb/protocol/errors';
 import type { RequestPrincipal } from '../src/auth/principal';
 import type { Account } from '@djibb/protocol/account';
 import type {
@@ -422,6 +425,38 @@ describe('canRead', () => {
 
     it.each(['restricted', 'submitter'] as const)('%s cannot read', role =>
         expect(canRead(role)).toBe(false),
+    );
+});
+
+describe('requireManager', () => {
+    it.each(['owner', 'admin'] as const)('%s passes and is returned', role =>
+        expect(requireManager(role, 'audit log')).toBe(role),
+    );
+
+    it.each(['editor', 'checker', 'viewer', 'restricted'] as const)(
+        '%s throws UnauthorizedError naming the surface',
+        role => {
+            expect(() => requireManager(role, 'audit log')).toThrowError(
+                'audit log is restricted to owners and admins',
+            );
+            expect(() => requireManager(role, 'audit log')).toThrowError(
+                UnauthorizedError,
+            );
+        },
+    );
+});
+
+describe('requireReadable', () => {
+    it.each(['owner', 'viewer', 'ownerless'] as const)(
+        '%s passes and is returned',
+        role => expect(requireReadable(role)).toBe(role),
+    );
+
+    it.each(['restricted', 'submitter'] as const)(
+        '%s gets a 404, not a 403 — existence must not leak',
+        role => {
+            expect(() => requireReadable(role)).toThrowError(NotFoundError);
+        },
     );
 });
 

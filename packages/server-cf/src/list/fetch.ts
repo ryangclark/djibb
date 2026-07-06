@@ -32,7 +32,8 @@ import { z } from 'zod';
 import { IdTypes } from '@djibb/protocol/id';
 import { GetMembership } from '../workspace/service';
 import {
-    canRead,
+    requireManager,
+    requireReadable,
     resolveRequestRole,
     resolvePreInitRole,
     type RoleResolutionDeps,
@@ -40,7 +41,6 @@ import {
 import { GetEntity } from '../derived-index/d1';
 import { asLocalList } from './durable_object';
 import { initListArgsSchema, mintFromBlankArgsSchema } from '@djibb/protocol/list/mutators/client';
-import { OWNER_ROLES } from '@djibb/protocol/list/mutators/_shared';
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
 
@@ -167,12 +167,9 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
         const entity = c.get('entity');
         if (!entity) throw new NotFoundError();
 
-        // View-floor (ADR 0021 / issue #13): this route returns the
-        // entity row (name, rules, description) — content below the read
-        // floor. A below-floor role (`restricted` / `submitter`) gets a
-        // 404 rather than leaking existence/metadata, consistent with the
-        // empty content patch `handlePull` returns over `/pull`.
-        if (!canRead(c.get('authorized_role'))) throw new NotFoundError();
+        // This route returns the entity row (name, rules, description) —
+        // content below the read floor, so it's gated on it.
+        requireReadable(c.get('authorized_role'));
 
         const listId = c.get('list').name ?? c.get('entity_id');
         if (!listId) throw new UnexpectedError('invalid listId');
@@ -210,11 +207,7 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
         const entity = c.get('entity');
         if (!entity) throw new NotFoundError();
 
-        if (!OWNER_ROLES.includes(c.get('authorized_role'))) {
-            throw new UnauthorizedError(
-                'audit log is restricted to owners and admins',
-            );
-        }
+        requireManager(c.get('authorized_role'), 'audit log');
 
         const limitParam = Number(c.req.query('limit'));
         const limit = Number.isFinite(limitParam) ? limitParam : 50;
@@ -281,11 +274,7 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
         const entity = c.get('entity');
         if (!entity) throw new NotFoundError();
 
-        if (!OWNER_ROLES.includes(c.get('authorized_role'))) {
-            throw new UnauthorizedError(
-                'connected clients are restricted to owners and admins',
-            );
-        }
+        requireManager(c.get('authorized_role'), 'connected clients');
 
         const memberAccountIds = Object.keys(
             entity.authorization_rules.authorized_accounts,
@@ -328,11 +317,7 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
         const entity = c.get('entity');
         if (!entity) throw new NotFoundError();
 
-        if (!OWNER_ROLES.includes(c.get('authorized_role'))) {
-            throw new UnauthorizedError(
-                'revoking connected clients is restricted to owners and admins',
-            );
-        }
+        requireManager(c.get('authorized_role'), 'revoking connected clients');
 
         const body = await c.req.json().catch(() => {
             throw new ParseError();

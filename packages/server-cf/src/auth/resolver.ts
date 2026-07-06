@@ -21,6 +21,9 @@ import type {
     AuthorizationRole,
     AuthorizationRules,
 } from '@djibb/protocol/auth/rules';
+import { NotFoundError } from '@djibb/protocol/errors';
+import { OWNER_ROLES } from '@djibb/protocol/list/mutators/_shared';
+
 import { UnauthorizedError } from './errors';
 import { principalAccounts, type RequestPrincipal } from './principal';
 
@@ -216,4 +219,33 @@ export function canRead(role: AuthorizationRole): boolean {
 
 export function canEdit(role: AuthorizationRole): boolean {
     return EDITABLE_ROLES.has(role);
+}
+
+/**
+ * Manager gate for the owner/admin-only surfaces (/audit, /connected,
+ * /connected/revoke). The failure mode is part of the interface: a 403
+ * naming the surface — below-manager callers may know these surfaces
+ * exist, they just can't use them.
+ */
+export function requireManager(
+    role: AuthorizationRole,
+    surface: string,
+): AuthorizationRole {
+    if (!OWNER_ROLES.includes(role)) {
+        throw new UnauthorizedError(
+            `${surface} is restricted to owners and admins`,
+        );
+    }
+    return role;
+}
+
+/**
+ * Read-floor gate for routes that return entity content or metadata.
+ * The failure mode is part of the interface: a below-floor role gets a
+ * 404, not a 403 — existence must not leak (ADR 0021, issue #13),
+ * consistent with the empty content patch `handlePull` returns.
+ */
+export function requireReadable(role: AuthorizationRole): AuthorizationRole {
+    if (!canRead(role)) throw new NotFoundError();
+    return role;
 }
