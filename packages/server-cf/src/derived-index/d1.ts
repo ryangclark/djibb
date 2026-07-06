@@ -261,14 +261,155 @@ export async function GetEntityMembershipRole(
     accountId: string,
     entityId: string,
 ): Promise<string | null> {
+    const row = await GetMembershipRow(d1, accountId, entityId);
+    return row?.role ?? null;
+}
+
+const MembershipIndexRowSchema = z.object({
+    account_id: z.string(),
+    role: z.string(),
+    time_joined: z.number(),
+});
+
+export type MembershipIndexRow = z.infer<typeof MembershipIndexRowSchema>;
+
+/**
+ * Read an account's membership row on an entity from the
+ * `entity_memberships` projection. `time_joined` is the projection's
+ * `time_updated` (epoch seconds) — the emit that last rewrote the row.
+ * Returns null when no membership exists. Role-enum narrowing is the
+ * caller's concern; the projection stores whatever the rules JSON held.
+ */
+export async function GetMembershipRow(
+    d1: D1Database,
+    accountId: string,
+    entityId: string,
+): Promise<MembershipIndexRow | null> {
     const row = await d1
         .prepare(
-            `SELECT role FROM entity_memberships
+            `SELECT account_id, role, time_updated AS time_joined
+             FROM entity_memberships
              WHERE account_id = ? AND entity_id = ? LIMIT 1`,
         )
         .bind(accountId, entityId)
-        .first<{ role: string }>();
-    return row?.role ?? null;
+        .first();
+    if (!row) return null;
+    const parsed = MembershipIndexRowSchema.safeParse(row);
+    if (!parsed.success) {
+        console.error('GetMembershipRow parse error:', parsed.error.format());
+        throw new UnexpectedError();
+    }
+    return parsed.data;
+}
+
+const WorkspaceForAccountRowSchema = z.object({
+    id: z.string(),
+    name: z.string().nullable(),
+    slug: z.string(),
+    slot: SlotEnum.nullable(),
+    /** Raw JSON blob as stored; view-shaping (image_url etc.) is the caller's. */
+    meta: z.string().nullable(),
+    time_created: z.number(),
+    time_deleted: z.number().nullable(),
+    time_updated: z.number(),
+    role: z.string(),
+    time_joined: z.number(),
+});
+
+export type WorkspaceForAccountRow = z.infer<typeof WorkspaceForAccountRowSchema>;
+
+/**
+ * Every live workspace an account is a member of, from the
+ * `entity_memberships` ⋈ `workspace_entities` projections — personal
+ * workspace first, then by creation time (ADR 0011 §Step 7b.2).
+ */
+export async function GetWorkspaceRowsForAccount(
+    d1: D1Database,
+    accountId: string,
+): Promise<WorkspaceForAccountRow[]> {
+    const result = await d1
+        .prepare(
+            `SELECT
+                we.id, we.name, we.slug, we.slot, we.meta,
+                we.time_created, we.time_deleted, we.time_updated,
+                em.role, em.time_updated AS time_joined
+            FROM entity_memberships em
+            JOIN workspace_entities we ON we.id = em.entity_id
+            WHERE em.account_id = ?
+              AND we.type = 'workspace'
+              AND we.time_deleted IS NULL
+            ORDER BY (we.slot = 'personal_workspace') DESC, we.time_created ASC`,
+        )
+        .bind(accountId)
+        .all();
+    if (!result.success) {
+        console.error('GetWorkspaceRowsForAccount query failed');
+        throw new UnexpectedError();
+    }
+    return result.results.map((row) => {
+        const parsed = WorkspaceForAccountRowSchema.safeParse(row);
+        if (!parsed.success) {
+            console.error(
+                'GetWorkspaceRowsForAccount parse error:',
+                parsed.error.format(),
+            );
+            throw new UnexpectedError();
+        }
+        return parsed.data;
+    });
+}
+
+/**
+ * ADR 0011 §Step 10d.3: resolve a workspace slug to its entity id +
+ * name, but ONLY for a caller who actually holds a pending invitation
+ * to that workspace.
+ *
+ * The pre-membership accept surface (`/w/[slug]` invitee branch) needs
+ * the entity id to mount Replicache by id — but the account isn't a
+ * member yet, so it can't come off the session's workspace list. A bare
+ * slug→id lookup would be a discovery oracle: workspace slugs are
+ * human-guessable (unlike entity nanoids), and restricted-role pulls are
+ * currently permitted (see the ADR 0009 shakedown handoff, corner #6),
+ * so leaking the id would let any authed user read a workspace's
+ * contents. Gating on a pending invite in `entity_invitations_index`
+ * keeps this purpose-specific: you can only resolve a workspace you were
+ * invited to.
+ *
+ * `identityValues` is the set of verified email identities for the
+ * active account (lowercased), matched against pending, unexpired
+ * invite rows. Returns null when no slug match, no pending invite, or
+ * the invite expired — the route maps all of these to 404 so the
+ * negative cases are indistinguishable.
+ */
+export async function ResolveInvitedWorkspaceBySlug(
+    d1: D1Database,
+    {
+        slug,
+        identityValues,
+        nowSeconds,
+    }: { slug: string; identityValues: string[]; nowSeconds: number },
+): Promise<{ id: string; name: string | null } | null> {
+    if (identityValues.length === 0) return null;
+    const placeholders = identityValues.map(() => '?').join(', ');
+    const row = await d1
+        .prepare(
+            `SELECT we.id AS id, we.name AS name
+            FROM workspace_entities we
+            JOIN entity_invitations_index ei ON ei.target_id = we.id
+            WHERE we.type = 'workspace'
+              AND we.slug = ?
+              AND we.time_deleted IS NULL
+              AND ei.target_type = 'workspace'
+              AND ei.status = 'pending'
+              AND ei.identity_kind = 'email'
+              AND ei.time_expires > ?
+              AND ei.identity_value IN (${placeholders})
+            LIMIT 1`,
+        )
+        .bind(slug, nowSeconds, ...identityValues)
+        .first<{ id: string; name: string | null }>();
+    if (!row) return null;
+    return { id: row.id, name: row.name ?? null };
 }
 
 export async function EmitEntitySnapshotToCatalog(
