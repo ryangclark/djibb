@@ -35,7 +35,7 @@ import {
     CreateAccount,
     GetAccountByEmail,
 } from '../account/service';
-import { CreateSession } from './session';
+import { CreateSession } from './d1';
 import { randomString } from '@djibb/protocol/id';
 import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
 import {

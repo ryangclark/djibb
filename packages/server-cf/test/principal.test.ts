@@ -20,8 +20,8 @@ import { env } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { resolvePrincipal } from '../src/auth/principal';
-import { CreateCredential } from '../src/auth/credential';
-import { CreateSession } from '../src/auth/session';
+import { CreateCredential } from '../src/auth/d1';
+import { CreateSession } from '../src/auth/d1';
 import { newId } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 

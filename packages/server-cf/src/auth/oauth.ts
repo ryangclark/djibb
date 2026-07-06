@@ -11,7 +11,7 @@ import {
     GetAccountByEmail,
     GetAccountByGoogleId,
 } from '../account/service';
-import { CreateSession } from './session';
+import { CreateSession } from './d1';
 import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
 import {
     BaseSessionCookieAttributes,

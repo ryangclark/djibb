@@ -24,8 +24,8 @@
  * principal acts at its Account's resolved role exactly as before.
  */
 import type { Account } from '@djibb/protocol/account';
-import { ValidateSession } from './session';
-import { VerifyBearerCredential } from './credential';
+import { ValidateSession } from './d1';
+import { VerifyBearerCredential } from './d1';
 
 /**
  * Who a request resolves to. The two authed arms share `accounts` (a

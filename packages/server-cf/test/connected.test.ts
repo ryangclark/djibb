@@ -24,8 +24,8 @@ import {
     ResolveAccountDisplays,
     ResolveCredentialLabels,
     partitionConnectedClients,
-} from '../src/auth/connected';
-import { CreateCredential } from '../src/auth/credential';
+} from '../src/auth/d1';
+import { CreateCredential } from '../src/auth/d1';
 import { newId } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 

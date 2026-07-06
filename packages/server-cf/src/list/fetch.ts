@@ -8,14 +8,14 @@ import { HandleSession } from '../auth/middleware';
 import {
     tokenBindsToEntity,
     RevokeEntityBoundCredential,
-} from '../auth/credential';
+} from '../auth/d1';
 import { actingCredentialId, principalAccounts } from '../auth/principal';
 import {
     ListConnectedClients,
     ResolveAccountDisplays,
     ResolveCredentialLabels,
     partitionConnectedClients,
-} from '../auth/connected';
+} from '../auth/d1';
 import {
     type AuthorizationRole,
     AuthorizationRoleEnum,

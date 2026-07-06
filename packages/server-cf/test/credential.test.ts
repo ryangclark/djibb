@@ -33,7 +33,7 @@ import {
     hashSecret,
     tokenBindsToEntity,
     type ResolvedCredential,
-} from '../src/auth/credential';
+} from '../src/auth/d1';
 import { newId } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 

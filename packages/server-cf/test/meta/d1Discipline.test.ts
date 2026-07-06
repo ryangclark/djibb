@@ -36,10 +36,7 @@ const OWNER_MODULES = new Set([
 const ALLOWLIST = new Map<string, number>([
     ['account/service.ts', 5],
     ['account/username.ts', 2],
-    ['auth/connected.ts', 4],
-    ['auth/credential.ts', 4],
     ['auth/magic.ts', 4],
-    ['auth/session.ts', 8],
 ]);
 
 const D1_CALL = /\.(?:prepare|batch)\(/g;
