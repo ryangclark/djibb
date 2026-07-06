@@ -17,7 +17,7 @@ System-wide and protocol-level decisions live in [`docs/adr/`](./docs/adr/).
 
 | Context | Where | What it covers |
 | ------- | ----- | -------------- |
-| Cloudflare backend | `packages/server-cf/` | The one backend: Durable Objects, D1, reconciliation, auth enforcement. Also hosts the `djibb` CLI in its bin. |
+| Cloudflare backend | [`packages/server-cf/`](./packages/server-cf/CONTEXT.md) | The one backend: Durable Objects, D1, reconciliation, auth enforcement. Also hosts the `djibb` CLI in its bin. |
 
 ## Clients
 
