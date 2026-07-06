@@ -20,7 +20,7 @@ import {
     preflightInviteByIdentity,
     type InvitePreflightDeps,
 } from '../src/list/invitations';
-import { GetAccountByEmail } from '../src/account/service';
+import { GetAccountByEmail } from '../src/auth/d1';
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 

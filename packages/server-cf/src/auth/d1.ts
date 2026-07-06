@@ -10,10 +10,16 @@
 import { z } from 'zod';
 import { createDate, isWithinExpirationDate } from 'oslo';
 import { SESSION_EXPIRATION } from './constants';
-import { ParseError, UnexpectedError } from '@djibb/protocol/errors';
+import {
+    FailedPreconditionError,
+    NotFoundError,
+    ParseError,
+    UnexpectedError,
+} from '@djibb/protocol/errors';
 import { DatelikeToDateSchema } from '@djibb/protocol/schema';
 import { AccountSchema, type Account } from '@djibb/protocol/account';
 import { newId, randomString } from '@djibb/protocol/id';
+import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
 import { accountFromRow } from './account-row';
 
 // ═══ from auth/session.ts ═══
@@ -984,4 +990,450 @@ export function partitionConnectedClients(clients: readonly ConnectedClient[]): 
         (c.state === 'active' ? active : history).push(c);
     }
     return { active, history };
+}
+
+
+// ═══ magic-link token substrate (from auth/magic.ts) ═══
+
+/**
+ * Rate-limit policy (ADR 0010).
+ *
+ * All limits apply to /request (token mint + email send). /consume
+ * is not rate-limited here — a flood of consume attempts against a
+ * harvested-but-unknown-hash space is bounded by the SHA-256 keyspace,
+ * not by request volume.
+ *
+ * Limits are enforced by counting rows in `magic_link_tokens` over
+ * a window. Rows are not purged on consume (the row's lifecycle is
+ * its own — see the `time_consumed` column), so the count over a
+ * window is a faithful "how many tokens did this target generate
+ * recently?" regardless of how many were actually clicked.
+ */
+export const MAGIC_RATE_LIMITS = {
+    /** Min seconds between successive /request calls for the same email. */
+    PER_EMAIL_COOLDOWN_SEC: 60,
+    /** Max /request calls per email in a 15-minute window. */
+    PER_EMAIL_15MIN: 3,
+    PER_EMAIL_15MIN_WINDOW_SEC: 15 * 60,
+    /** Max /request calls per email in a 24-hour window. */
+    PER_EMAIL_24H: 10,
+    PER_EMAIL_24H_WINDOW_SEC: 24 * 60 * 60,
+    /** Max /request calls per IP in a 1-hour window. */
+    PER_IP_HOUR: 20,
+    PER_IP_HOUR_WINDOW_SEC: 60 * 60,
+} as const;
+
+/**
+ * Reason codes returned when a /request call is rate-limited. Surfaced
+ * to clients (the sign-in UI maps these to user-visible messages) and
+ * useful for log analysis.
+ */
+export type RateLimitReason =
+    | 'cooldown' // 60-sec same-email cooldown
+    | 'email_15min' // per-email 15-min bucket
+    | 'email_24h' // per-email 24-hour bucket
+    | 'ip_hour'; // per-IP 1-hour bucket
+
+type RateLimitResult =
+    | { ok: true }
+    | { ok: false; reason: RateLimitReason; retryAfterSec: number };
+
+/**
+ * Atomically claim a magic-link token by its SHA-256 hash.
+ *
+ * Single UPDATE...RETURNING: if zero rows match, the token is
+ * either unknown, already consumed, or expired — the caller treats
+ * all three as the same "invalid token" failure (distinguishing
+ * them would help attackers triangulate token state).
+ *
+ * Exported for unit tests that exercise the single-use and
+ * expiry contracts directly against D1.
+ *
+ * @returns the row's `target_email` and `purpose` on success, or
+ *          `null` if no eligible row was found.
+ */
+export async function consumeMagicTokenRow(
+    d1: D1Database,
+    tokenHash: string,
+    now: number
+): Promise<{ target_email: string; purpose: string } | null> {
+    return d1
+        .prepare(
+            `UPDATE magic_link_tokens
+                SET time_consumed = ?
+                WHERE token_hash = ?
+                    AND time_consumed IS NULL
+                    AND time_expires > ?
+                RETURNING target_email, purpose;`
+        )
+        .bind(now, tokenHash, now)
+        .first<{ target_email: string; purpose: string }>();
+}
+
+/**
+ * Persist a freshly minted magic-link token row. The raw token is never
+ * stored — callers hash first (`hashToken` in auth/magic.ts).
+ */
+export async function InsertMagicLinkToken(
+    d1: D1Database,
+    args: {
+        tokenHash: string;
+        targetEmail: string;
+        purpose: string;
+        timeCreated: number;
+        timeExpires: number;
+        requestIp: string | null;
+        userAgent: string | null;
+    },
+): Promise<void> {
+    await d1
+        .prepare(
+            `INSERT INTO magic_link_tokens (
+                token_hash,
+                target_email,
+                purpose,
+                time_created,
+                time_expires,
+                request_ip,
+                user_agent
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+        )
+        .bind(
+            args.tokenHash,
+            args.targetEmail,
+            args.purpose,
+            args.timeCreated,
+            args.timeExpires,
+            args.requestIp,
+            args.userAgent,
+        )
+        .run();
+}
+
+/**
+ * Run the four rate-limit checks against `magic_link_tokens` (ADR 0010).
+ *
+ * Strategy: one query fetches the per-email timestamps inside the
+ * 24-hour window (the widest email-bucket); the three email-bucket
+ * checks (cooldown, 15-min, 24-h) are derived from that single
+ * result. A second query covers the per-IP bucket.
+ *
+ * Total: 1–2 D1 reads per /request, both indexed
+ * (idx_magic__by_email_time, idx_magic__by_ip_time). Cheap.
+ *
+ * Returns the *first* limit hit; we don't continue past a block.
+ * Retry-after values are the precise number of seconds until that
+ * specific limit relaxes — `Math.ceil((oldest_in_window + window)
+ * - now)` — so the UI can show an accurate countdown.
+ */
+export async function checkRateLimits(
+    d1: D1Database,
+    args: { email: string; ip: string | null; now: number }
+): Promise<RateLimitResult> {
+    const { email, ip, now } = args;
+    const since24h = now - MAGIC_RATE_LIMITS.PER_EMAIL_24H_WINDOW_SEC;
+
+    // Pull all per-email timestamps inside the widest (24h) window.
+    // DESC ordering lets us check the cooldown (top row) and the
+    // 15-min bucket (top N rows) without re-querying.
+    const emailRows = await d1
+        .prepare(
+            `SELECT time_created
+                FROM magic_link_tokens
+                WHERE target_email = ?
+                    AND time_created >= ?
+                ORDER BY time_created DESC;`
+        )
+        .bind(email, since24h)
+        .all<{ time_created: number }>();
+
+    const emailTimes = emailRows.results.map(r => r.time_created);
+
+    // 1) 60-sec cooldown — only relevant to the single most recent token.
+    if (emailTimes.length > 0) {
+        const lastAge = now - emailTimes[0]!;
+        if (lastAge < MAGIC_RATE_LIMITS.PER_EMAIL_COOLDOWN_SEC) {
+            return {
+                ok: false,
+                reason: 'cooldown',
+                retryAfterSec: Math.max(
+                    1,
+                    MAGIC_RATE_LIMITS.PER_EMAIL_COOLDOWN_SEC - lastAge
+                ),
+            };
+        }
+    }
+
+    // 2) 15-min bucket — count entries inside the 15-min window.
+    const since15min = now - MAGIC_RATE_LIMITS.PER_EMAIL_15MIN_WINDOW_SEC;
+    const in15min = emailTimes.filter(t => t >= since15min);
+    if (in15min.length >= MAGIC_RATE_LIMITS.PER_EMAIL_15MIN) {
+        // Oldest of the in-window tokens is the one whose ageout
+        // would free up a slot. emailTimes is DESC, so the last
+        // element in in15min is the oldest in-window.
+        const oldest = in15min[in15min.length - 1]!;
+        const ageout =
+            oldest + MAGIC_RATE_LIMITS.PER_EMAIL_15MIN_WINDOW_SEC - now;
+        return {
+            ok: false,
+            reason: 'email_15min',
+            retryAfterSec: Math.max(1, ageout),
+        };
+    }
+
+    // 3) 24-h bucket — count is just emailTimes.length (already
+    //    filtered to the 24-h window in the query above).
+    if (emailTimes.length >= MAGIC_RATE_LIMITS.PER_EMAIL_24H) {
+        const oldest = emailTimes[emailTimes.length - 1]!;
+        const ageout =
+            oldest + MAGIC_RATE_LIMITS.PER_EMAIL_24H_WINDOW_SEC - now;
+        return {
+            ok: false,
+            reason: 'email_24h',
+            retryAfterSec: Math.max(1, ageout),
+        };
+    }
+
+    // 4) Per-IP bucket. Skipped when we couldn't capture an IP — the
+    //    other three limits still apply, so this isn't a bypass.
+    if (ip) {
+        const sinceIPHour = now - MAGIC_RATE_LIMITS.PER_IP_HOUR_WINDOW_SEC;
+        const ipRows = await d1
+            .prepare(
+                `SELECT time_created
+                    FROM magic_link_tokens
+                    WHERE request_ip = ?
+                        AND time_created >= ?
+                    ORDER BY time_created ASC
+                    LIMIT ?;`
+            )
+            .bind(ip, sinceIPHour, MAGIC_RATE_LIMITS.PER_IP_HOUR)
+            .all<{ time_created: number }>();
+
+        if (ipRows.results.length >= MAGIC_RATE_LIMITS.PER_IP_HOUR) {
+            const oldest = ipRows.results[0]!.time_created;
+            const ageout =
+                oldest + MAGIC_RATE_LIMITS.PER_IP_HOUR_WINDOW_SEC - now;
+            return {
+                ok: false,
+                reason: 'ip_hour',
+                retryAfterSec: Math.max(1, ageout),
+            };
+        }
+    }
+
+    return { ok: true };
+}
+
+
+// ═══ accounts substrate (from account/service.ts) ═══
+
+/**
+ * Insert a fully-shaped Account row. Validation and the personal-
+ * workspace mint stay with `CreateAccount` (account/service.ts); this
+ * is only the substrate write.
+ */
+export async function InsertAccountRow(
+    d1: D1Database,
+    account: Account,
+): Promise<void> {
+    const stmt = d1
+        .prepare(
+            `INSERT INTO accounts (
+                id,
+                display_name,
+                email,
+                email_verified,
+                flags,
+                image,
+                provider_name,
+                provider_client_id,
+                time_created,
+                time_updated,
+                user_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+            account.id,
+            account.display_name,
+            account.email,
+            account.email_verified,
+            account.flags,
+            account.image,
+            account.provider_name,
+            account.provider_client_id,
+            Math.floor(account.time_created.getTime() / 1000),
+            Math.floor(account.time_updated.getTime() / 1000),
+            account.user_name
+        );
+    try {
+        await d1.batch([stmt]);
+    } catch (err) {
+        console.error('`InsertAccountRow()` batch error:', err);
+        throw new UnexpectedError();
+    }
+}
+
+export async function GetAccountById(d1: D1Database, id: string) {
+    return d1
+        .prepare(`SELECT * FROM accounts WHERE id = ? LIMIT 1;`)
+        .bind(id)
+        .first()
+        .catch(err => {
+            console.error('`GetAccountByID()` query error:', err);
+            throw new UnexpectedError();
+        })
+        .then(shape_AccountRow);
+}
+
+/**
+ * Look up an Account by its canonical email (case-insensitive).
+ *
+ * Used by both the magic-link consume path and the OAuth callback's
+ * email-match-first resolution (ADR 0010 option C). The Account's
+ * `email` column is the matching key; provider tag and Account ID
+ * are not consulted here.
+ *
+ * NOTE: assumes one email per Account at v1 (see CONTEXT.md, the
+ * "One verified email per Account at v1" note). When that lifts via
+ * a future `account_emails` sibling table, this function moves to
+ * joining through that table — and that's the only place that needs
+ * to change.
+ */
+export async function GetAccountByEmail(
+    d1: D1Database,
+    email: string
+): Promise<Account | null> {
+    if (!email) {
+        throw new Error('`GetAccountByEmail()` error: empty email!');
+    }
+
+    return d1
+        .prepare(
+            `SELECT *
+            FROM accounts
+            WHERE LOWER(email) = LOWER(?)
+                AND time_deleted IS NULL
+            LIMIT 1;`
+        )
+        .bind(email)
+        .first()
+        .catch(err => {
+            console.error('`GetAccountByEmail()` query error:', err);
+            throw err;
+        })
+        .then(shape_AccountRow);
+}
+
+export async function GetAccountByGoogleId(
+    d1: D1Database,
+    providerClientId: string
+): Promise<Account | null> {
+    if (!providerClientId) {
+        throw new Error(
+            '`GetAccountByGoogleId()` error: invalid `providerClientId`!'
+        );
+    }
+
+    return d1
+        .prepare(
+            `SELECT *
+            FROM accounts
+            WHERE provider_name = ?
+                AND provider_client_id = ?
+            LIMIT 1;`
+        )
+        .bind(OAUTH_PROVIDER.enum.google, providerClientId)
+        .first()
+        .catch(err => {
+            console.error('`GetAccountByGoogleId()` query error:', err);
+            throw err;
+        })
+        .then(shape_AccountRow);
+}
+
+function shape_AccountRow(row: any): Account | null {
+    if (!row) return null;
+
+    const account = {
+        id: row.id,
+        display_name: row.display_name,
+        email: row.email,
+        email_verified: row.email_verified,
+        flags: row.flags ? JSON.parse(row.flags) : null,
+        image: row.image,
+        provider_name: row.provider_name,
+        provider_client_id: row.provider_client_id,
+        time_created: new Date(row.time_created * 1000),
+        time_deleted: row.account_time_deleted
+            ? new Date(row.account_time_deleted * 1000)
+            : null,
+        time_updated: new Date(row.time_updated * 1000),
+        user_name: row.user_name,
+    };
+
+    // Parse via zod to help ensure nothing's broken/omitted in shaping.
+    const parseResult = AccountSchema.safeParse(account);
+
+    if (!parseResult.success) {
+        console.error(
+            '`shape_AccountRow()` parse error:',
+            parseResult.error.format(),
+            'row:',
+            row
+        );
+
+        throw new ParseError();
+    }
+
+    return parseResult.data;
+}
+
+/**
+ * Write an account's (pre-validated, lowercased) username. Format and
+ * reserved-word policy live in account/username.ts; this is only the
+ * substrate write, mapping the UNIQUE index to a domain error.
+ */
+export async function UpdateAccountUsername(
+    d1: D1Database,
+    accountId: string,
+    username: string,
+): Promise<void> {
+    try {
+        const result = await d1
+            .prepare(
+                `UPDATE accounts SET user_name = ?, time_updated = ?
+                 WHERE id = ?`,
+            )
+            .bind(username, Math.floor(Date.now() / 1000), accountId)
+            .run();
+        if (!result.meta.changes) throw new NotFoundError('Account not found.');
+    } catch (err: any) {
+        if (err instanceof NotFoundError) throw err;
+        if (String(err?.message ?? '').includes('UNIQUE')) {
+            throw new FailedPreconditionError('Username already taken.');
+        }
+        console.error('UpdateAccountUsername error:', err);
+        throw new UnexpectedError();
+    }
+}
+
+/**
+ * Public-profile lookup by (lowercased) username. Case folding and
+ * format checks are the caller's (account/username.ts).
+ */
+export async function GetAccountRowByUsername(
+    d1: D1Database,
+    username: string,
+): Promise<{ id: string; display_name: string; image: string | null } | null> {
+    const row = await d1
+        .prepare(
+            `SELECT id, display_name, image FROM accounts
+             WHERE user_name = ? COLLATE NOCASE
+                AND time_deleted IS NULL
+             LIMIT 1`,
+        )
+        .bind(username)
+        .first<{ id: string; display_name: string; image: string | null }>();
+    return row ?? null;
 }

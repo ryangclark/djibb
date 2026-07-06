@@ -26,15 +26,15 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { CreateAccount, GetAccountByEmail } from '../src/account/service';
+import { CreateAccount } from '../src/account/service';
+import { GetAccountByEmail } from '../src/auth/d1';
 import type { Account } from '@djibb/protocol/account';
+import { hashToken, shouldExposeDevSeam } from '../src/auth/magic';
 import {
     MAGIC_RATE_LIMITS,
     checkRateLimits,
     consumeMagicTokenRow,
-    hashToken,
-    shouldExposeDevSeam,
-} from '../src/auth/magic';
+} from '../src/auth/d1';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────

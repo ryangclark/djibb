@@ -23,20 +23,17 @@ import { describe, expect, it } from 'vitest';
 const SRC_ROOT = join(__dirname, '..', '..', 'src');
 
 /** The only files allowed to issue D1 SQL (repo-relative to src/). */
-const OWNER_MODULES = new Set([
-    'auth/d1.ts',
-    'account/d1.ts',
-    'derived-index/d1.ts',
-]);
+// NOTE: ADR 0025 originally planned a third module (account/d1.ts,
+// owning a `usernames` table) — but usernames turned out to be a
+// column on `accounts`, so the auth substrate owns them and there is
+// no third module. See the correction note in the ADR.
+const OWNER_MODULES = new Set(['auth/d1.ts', 'derived-index/d1.ts']);
 
 /**
  * Pre-ADR-0025 offenders and their call-site counts at ratchet start.
  * Shrink-only: lower (or delete at zero) as files migrate; never raise.
  */
 const ALLOWLIST = new Map<string, number>([
-    ['account/service.ts', 5],
-    ['account/username.ts', 2],
-    ['auth/magic.ts', 4],
 ]);
 
 const D1_CALL = /\.(?:prepare|batch)\(/g;

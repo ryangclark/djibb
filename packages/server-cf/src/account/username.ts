@@ -1,5 +1,6 @@
-import { BadRequestError, FailedPreconditionError, NotFoundError, UnexpectedError } from '@djibb/protocol/errors';
+import { BadRequestError } from '@djibb/protocol/errors';
 import { RESERVED_SLUGS } from '@djibb/protocol/list/slug';
+import { GetAccountRowByUsername, UpdateAccountUsername } from '../auth/d1';
 
 /**
  * Username format: lowercase letter to start, then letters, digits,
@@ -55,25 +56,7 @@ export async function SetAccountUsername(
 ): Promise<string> {
     const username = normalizeUsername(rawUsername);
     assertUsernameFormat(username);
-
-    try {
-        const result = await d1
-            .prepare(
-                `UPDATE accounts SET user_name = ?, time_updated = ?
-                 WHERE id = ?`
-            )
-            .bind(username, Math.floor(Date.now() / 1000), accountId)
-            .run();
-        if (!result.meta.changes) throw new NotFoundError('Account not found.');
-    } catch (err: any) {
-        if (err instanceof NotFoundError) throw err;
-        if (String(err?.message ?? '').includes('UNIQUE')) {
-            throw new FailedPreconditionError('Username already taken.');
-        }
-        console.error('SetAccountUsername error:', err);
-        throw new UnexpectedError();
-    }
-
+    await UpdateAccountUsername(d1, accountId, username);
     return username;
 }
 
@@ -83,15 +66,5 @@ export async function GetAccountByUsername(
 ): Promise<{ id: string; display_name: string; image: string | null } | null> {
     const username = normalizeUsername(rawUsername);
     if (!USERNAME_PATTERN.test(username)) return null;
-
-    const row = await d1
-        .prepare(
-            `SELECT id, display_name, image FROM accounts
-             WHERE user_name = ? COLLATE NOCASE
-                AND time_deleted IS NULL
-             LIMIT 1`
-        )
-        .bind(username)
-        .first<{ id: string; display_name: string; image: string | null }>();
-    return row ?? null;
+    return GetAccountRowByUsername(d1, username);
 }

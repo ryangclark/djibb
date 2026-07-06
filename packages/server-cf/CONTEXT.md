@@ -9,5 +9,5 @@ The D1 projection of DO-authoritative entity state — memberships, workspace ca
 _Avoid_: cache, mirror, "the D1 tables"
 
 **Auth substrate**:
-The D1 tables where D1 itself is authoritative rather than derived: accounts, sessions, magic-link tokens, issued credentials, usernames. The counterpart family to the Derived Index (ADR 0025).
+The D1 tables where D1 itself is authoritative rather than derived: accounts (including usernames), sessions, magic-link tokens, issued credentials. The counterpart family to the Derived Index (ADR 0025).
 _Avoid_: user tables, auth DB

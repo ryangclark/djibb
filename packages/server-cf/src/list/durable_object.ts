@@ -92,7 +92,7 @@ import {
     type InvitePreflightFailureReason,
 } from './invitations';
 import { preflightMoveList } from '@djibb/protocol/list/mutators/moveList';
-import { GetAccountByEmail, GetAccountById } from '../account/service';
+import { GetAccountByEmail, GetAccountById } from '../auth/d1';
 import { GetMembership, mintPersonalWorkspaceEntity } from '../workspace/service';
 import {
     sendEntityInvitationEmail,

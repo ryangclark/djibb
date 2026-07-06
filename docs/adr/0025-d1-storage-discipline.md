@@ -1,4 +1,4 @@
-# ADR 0025: D1 storage discipline — three owner modules, no port
+# ADR 0025: D1 storage discipline — two owner modules, no port
 
 - **Status:** Accepted
 - **Date:** 2026-07-06
@@ -12,11 +12,17 @@ The D1 tables split into two families with different authority models: the **Der
 
 ## Decision
 
-**All D1 SQL lives in exactly three owner modules; every other file calls named operations on them.**
+**All D1 SQL lives in exactly two owner modules; every other file calls named operations on them.**
+
+> **Correction (2026-07-06, during implementation):** the plan below
+> named a third module, `account/d1.ts`, owning a `usernames` table.
+> No such table exists — usernames are a column on `accounts` — so the
+> auth substrate owns them and the third module was never created.
+> `account/username.ts` keeps the format/reserved-word policy and calls
+> `auth/d1.ts` for the substrate reads/writes.
 
 - `derived-index/d1.ts` — owns the Derived Index family. Ownership follows the lifecycle (born from DO snapshot emits, swept together), not the reading context: catalog, workspace service, role resolver, and the DO's emit paths all call in.
 - `auth/d1.ts` — owns the auth substrate (accounts, sessions, magic-link tokens, issued credentials).
-- `account/d1.ts` — owns `usernames`.
 
 **One module owns each table's writes.** A context that needs another family's table calls the owning module (e.g. `account/service.ts` calls `auth/d1.ts::CreateAccount`), never inlines the SQL.
 
