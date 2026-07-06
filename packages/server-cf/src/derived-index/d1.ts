@@ -1,11 +1,17 @@
 import { z } from 'zod';
 
 import {
+    type AccountRole,
     type AuthorizationRules,
     AuthorizationRulesSchema,
 } from '@djibb/protocol/auth/rules';
 import { UnexpectedError } from '@djibb/protocol/errors';
 import { ENTITY_ROW_TYPES, SlotEnum, type Slot } from '@djibb/protocol/list';
+import type {
+    InvitationIdentityKind,
+    InvitationStatus,
+    PendingInviteRow,
+} from '@djibb/protocol/list/invitations';
 import {
     defaultSlugForId,
     RESERVED_SLUGS,
@@ -861,4 +867,284 @@ export async function ListPendingInvitationsForIdentities(
         result.results ?? [],
         'ListPendingInvitationsForIdentities',
     );
+}
+
+
+// ─── Invitations index ──────────────────────────────────────────────
+// The `entity_invitations_index` projection of DO-resident pending
+// invitations (ADR 0009). The DO's `pending_invites` table is
+// authoritative; these rows are emitted post-commit and reconciled by
+// EmitInvitationsSnapshot. Row-shape types come from the invitation
+// protocol; the DO-side half lives in `list/invitations.ts`.
+
+/**
+ * Reconcile the D1 `entity_invitations_index` against the DO's current
+ * `pending_invites` table for a single target entity.
+ *
+ *   - DO rows are UPSERTed into D1 as `status='pending'` (creating new
+ *     index rows where needed; refreshing role/expiry on existing
+ *     pending rows).
+ *   - D1 pending rows whose (identity_kind, identity_value) is NOT in
+ *     the DO snapshot are marked `status='revoked'`. This is how
+ *     revoke surfaces to the index without a separate emit path.
+ *
+ * Acceptance flips a row to `status='accepted'` via a direct emit
+ * (future slice) before this reconciler runs, so the "missing in DO ⇒
+ * revoked" rule must only consider rows currently `status='pending'`.
+ *
+ * Per ADR 0003 the DO is authoritative; this emit is best-effort. The
+ * push-path caller logs and moves on; the alarm-driven reconciliation
+ * (ADR 0007) is the eventual repair path for persistent drift.
+ */
+export async function EmitInvitationsSnapshot(
+    d1: D1Database,
+    {
+        targetId,
+        targetType,
+        doInvites,
+        newIdForRow,
+    }: {
+        targetId: string;
+        targetType: 'list' | 'template' | 'workspace';
+        doInvites: readonly PendingInviteRow[];
+        /**
+         * Caller-supplied ID minter for fresh index rows. Injected so
+         * this module doesn't depend on the id module's nanoid (which
+         * keeps it pure for testing).
+         */
+        newIdForRow: () => string;
+    }
+): Promise<void> {
+    // Map DO rows by (kind, value) for set-difference.
+    const doKey = (k: string, v: string) => `${k} ${v}`;
+    const doRowsByKey = new Map<string, PendingInviteRow>();
+    for (const row of doInvites) {
+        doRowsByKey.set(doKey(row.identity_kind, row.identity_value), row);
+    }
+
+    // Read current D1 pending rows for this target.
+    const existing = await d1
+        .prepare(
+            `SELECT id, identity_kind, identity_value
+             FROM entity_invitations_index
+             WHERE target_id = ? AND status = 'pending'`
+        )
+        .bind(targetId)
+        .all<{
+            id: string;
+            identity_kind: string;
+            identity_value: string;
+        }>();
+
+    const existingByKey = new Map<
+        string,
+        { id: string; identity_kind: string; identity_value: string }
+    >();
+    for (const row of existing.results ?? []) {
+        existingByKey.set(doKey(row.identity_kind, row.identity_value), row);
+    }
+
+    const stmts: D1PreparedStatement[] = [];
+
+    // UPSERT each DO row as pending. Existing pending rows get their
+    // role/expiry refreshed; new rows get a fresh id.
+    for (const [key, row] of doRowsByKey) {
+        const existingRow = existingByKey.get(key);
+        if (existingRow) {
+            stmts.push(
+                d1
+                    .prepare(
+                        `UPDATE entity_invitations_index
+                         SET role = ?, inviter_account_id = ?,
+                             time_created = ?, time_expires = ?
+                         WHERE id = ?`
+                    )
+                    .bind(
+                        row.role,
+                        row.inviter_account_id,
+                        row.time_created,
+                        row.time_expires,
+                        existingRow.id
+                    )
+            );
+        } else {
+            stmts.push(
+                d1
+                    .prepare(
+                        `INSERT INTO entity_invitations_index (
+                            id, target_id, target_type, identity_kind,
+                            identity_value, role, inviter_account_id,
+                            status, time_created, time_expires
+                         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+                    )
+                    .bind(
+                        newIdForRow(),
+                        targetId,
+                        targetType,
+                        row.identity_kind,
+                        row.identity_value,
+                        row.role,
+                        row.inviter_account_id,
+                        row.time_created,
+                        row.time_expires
+                    )
+            );
+        }
+    }
+
+    // Mark missing-in-DO pending rows as revoked.
+    for (const [key, row] of existingByKey) {
+        if (doRowsByKey.has(key)) continue;
+        stmts.push(
+            d1
+                .prepare(
+                    `UPDATE entity_invitations_index
+                     SET status = 'revoked'
+                     WHERE id = ?`
+                )
+                .bind(row.id)
+        );
+    }
+
+    if (stmts.length === 0) return;
+    await d1.batch(stmts);
+}
+
+/**
+ * Count invitations created by a single account within a sliding
+ * window. Used by the per-inviter rate limit (default 10/hour;
+ * ADR 0009 §"Other policy defaults"). Status-agnostic — abuse vector
+ * is "how many email sends triggered" not "how many are outstanding."
+ *
+ * Caller passes `sinceMs` as a unix-seconds threshold (e.g. now - 3600).
+ */
+export async function CountInvitesByInviterSince(
+    d1: D1Database,
+    inviterAccountId: string,
+    sinceSeconds: number
+): Promise<number> {
+    const row = await d1
+        .prepare(
+            `SELECT COUNT(*) AS c
+             FROM entity_invitations_index
+             WHERE inviter_account_id = ? AND time_created >= ?`
+        )
+        .bind(inviterAccountId, sinceSeconds)
+        .first<{ c: number }>();
+    return row?.c ?? 0;
+}
+
+/**
+ * Count an inviter's currently outstanding (pending) invitations
+ * across all targets. Default cap 25 per ADR 0009.
+ */
+export async function CountOutstandingInvitesByInviter(
+    d1: D1Database,
+    inviterAccountId: string
+): Promise<number> {
+    const row = await d1
+        .prepare(
+            `SELECT COUNT(*) AS c
+             FROM entity_invitations_index
+             WHERE inviter_account_id = ? AND status = 'pending'`
+        )
+        .bind(inviterAccountId)
+        .first<{ c: number }>();
+    return row?.c ?? 0;
+}
+
+/**
+ * Hard-delete all index rows for a target entity. Hook for the
+ * cascade-delete path (ADR 0008) when a List/Template DO is torn down.
+ */
+export async function DeleteInvitationsForTarget(
+    d1: D1Database,
+    targetId: string
+): Promise<void> {
+    await d1
+        .prepare(`DELETE FROM entity_invitations_index WHERE target_id = ?`)
+        .bind(targetId)
+        .run();
+}
+
+export type PendingIndexRow = {
+    id: string;
+    target_id: string;
+    target_type: 'list' | 'template';
+    identity_kind: InvitationIdentityKind;
+    identity_value: string;
+    role: AccountRole;
+    inviter_account_id: string;
+    status: InvitationStatus;
+    time_created: number;
+    time_expires: number;
+};
+
+/**
+ * Look up a single invitation row from the D1 index by
+ * (target_id, identity_kind, identity_value). Used by the
+ * `acceptInvitation` HTTP preflight so a revoked or never-existed link
+ * surfaces as 404 without round-tripping the DO.
+ *
+ * Returns the row regardless of status — callers decide whether
+ * accepted / revoked rows are interesting. v1 only matches against the
+ * normalized identity value (callers normalize first).
+ */
+export async function GetInvitationFromIndex(
+    d1: D1Database,
+    {
+        targetId,
+        identity_kind,
+        identity_value,
+    }: {
+        targetId: string;
+        identity_kind: InvitationIdentityKind;
+        identity_value: string;
+    }
+): Promise<PendingIndexRow | null> {
+    const row = await d1
+        .prepare(
+            `SELECT id, target_id, target_type, identity_kind, identity_value,
+                    role, inviter_account_id, status, time_created, time_expires
+             FROM entity_invitations_index
+             WHERE target_id = ?
+               AND identity_kind = ?
+               AND identity_value = ?
+             LIMIT 1`
+        )
+        .bind(targetId, identity_kind, identity_value)
+        .first<PendingIndexRow>();
+    return row ?? null;
+}
+
+/**
+ * Flip the matching D1 index row from `status='pending'` to
+ * `status='accepted'`. Called from the DO push handler's post-commit
+ * tail BEFORE `EmitInvitationsSnapshot` runs — otherwise the
+ * reconciler's "missing in DO ⇒ revoked" rule would clobber the
+ * accept (the DO row was tombstoned by the mutator). No-op if the row
+ * isn't currently pending (idempotent under retry).
+ */
+export async function MarkInvitationsAccepted(
+    d1: D1Database,
+    targetId: string,
+    accepted: ReadonlyArray<{
+        identity_kind: InvitationIdentityKind;
+        identity_value: string;
+    }>
+): Promise<void> {
+    if (accepted.length === 0) return;
+    const stmts = accepted.map(a =>
+        d1
+            .prepare(
+                `UPDATE entity_invitations_index
+                 SET status = 'accepted'
+                 WHERE target_id = ?
+                   AND identity_kind = ?
+                   AND identity_value = ?
+                   AND status = 'pending'`
+            )
+            .bind(targetId, a.identity_kind, a.identity_value)
+    );
+    await d1.batch(stmts);
 }

@@ -65,17 +65,18 @@ import { createSqlStorageEntityStore } from './store';
 import type { Account } from '@djibb/protocol/account';
 import { tryCatch, tryCatchAsync, type Result } from '@djibb/protocol/trycatch';
 import {
-    EmitEntityMembershipsToCatalog,
-    EmitEntitySnapshotToCatalog,
-    GetEntityVersion,
-} from '../derived-index/d1';
-import {
     CountInvitesByInviterSince,
     CountOutstandingInvitesByInviter,
+    EmitEntityMembershipsToCatalog,
+    EmitEntitySnapshotToCatalog,
     EmitInvitationsSnapshot,
+    GetEntityVersion,
     GetInvitationFromIndex,
-    InvitationIdentityKindEnum,
     MarkInvitationsAccepted,
+    tryClaimSlug,
+} from '../derived-index/d1';
+import {
+    InvitationIdentityKindEnum,
     ensurePendingInvitesTable,
     listPendingInvites,
     normalizeIdentityValue,
@@ -85,7 +86,6 @@ import {
     type InvitationIdentityKind,
     type InvitePreflightFailureReason,
 } from './invitations';
-import { tryClaimSlug } from '../derived-index/d1';
 import { preflightMoveList } from '@djibb/protocol/list/mutators/moveList';
 import { GetAccountByEmail, GetAccountById } from '../account/service';
 import { GetMembership, mintPersonalWorkspaceEntity } from '../workspace/service';
