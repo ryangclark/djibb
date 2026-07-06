@@ -46,8 +46,11 @@ type Session = { account_id: string } | null;
  * Per-account specificity ladder (highest to lowest):
  *   1. authorized_accounts[account_id] — explicit per-entity grant or
  *      demotion; wins both directions (it can grant above workspace
- *      membership *and* demote a workspace admin to `restricted` on a
- *      sensitive entity)
+ *      membership *and* demote a workspace admin on a sensitive entity —
+ *      though only down to `viewer`: `AccountRoleEnum` excludes
+ *      `restricted`/`submitter`, so sub-floor exclusion happens by
+ *      roster *removal* on a `default_role: 'restricted'` entity,
+ *      never by explicit entry)
  *   2. workspace membership — passed through as-is (ADR 0011 §Step 4:
  *      memberships carry `AuthorizationRole` directly)
  *   3. default_role — the floor for anyone else (including anonymous)
@@ -78,7 +81,7 @@ function resolveRole(
  * *who is acting*, not a tiebreak hint, so that account's ladder result
  * is returned even when another of the principal's accounts resolves at
  * a more specific source — e.g. account A explicitly demoted to
- * `restricted` while the header names workspace-admin account B: B's
+ * `viewer` while the header names workspace-admin account B: B's
  * grant is independently legitimate, and the header selects it. A header
  * naming an account the principal doesn't hold is ignored.
  *
