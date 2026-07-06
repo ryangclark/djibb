@@ -1148,3 +1148,112 @@ export async function MarkInvitationsAccepted(
     );
     await d1.batch(stmts);
 }
+
+// ─── DO orchestration support ───────────────────────────────────────
+// Reads/writes the entity DO issues against its own projection rows:
+// drift detection for the reconcile alarm, cascade fan-out batching
+// (ADR 0008), and the hard-delete purge.
+
+/**
+ * Count membership projection rows for an entity. The reconcile alarm
+ * compares this against the DO's authoritative rules to detect the
+ * "snapshot emit succeeded but membership emit failed" gap (ADR 0011
+ * §Step 7). Throws on read failure; the alarm treats that as drift.
+ */
+export async function CountMembershipsForEntity(
+    d1: D1Database,
+    entityId: string,
+): Promise<number> {
+    const row = await d1
+        .prepare(
+            `SELECT COUNT(*) AS n FROM entity_memberships WHERE entity_id = ?`,
+        )
+        .bind(entityId)
+        .first<{ n: number }>();
+    return row?.n ?? 0;
+}
+
+/**
+ * Resolve a workspace's routing slug from the catalog. Workspaces URL
+ * by slug (`/w/<slug>`, ADR 0011 §7b.5) but the DO's local sql doesn't
+ * carry it. Null when the row is missing — callers fall back to the id
+ * suffix so links still name the right DO.
+ */
+export async function GetWorkspaceSlug(
+    d1: D1Database,
+    workspaceId: string,
+): Promise<string | null> {
+    const row = await d1
+        .prepare(
+            `SELECT slug FROM workspace_entities
+              WHERE id = ? AND type = 'workspace' LIMIT 1;`,
+        )
+        .bind(workspaceId)
+        .first<{ slug: string | null }>();
+    return row?.slug ?? null;
+}
+
+/**
+ * Next batch of a workspace's live, directly-owned children for the
+ * cascade-archive fan-out (ADR 0008). `cascade_source IS NULL` keeps
+ * already-cascaded children out so the sweep converges; ordered by id
+ * so retries walk a stable frontier.
+ */
+export async function ListCascadeArchiveBatch(
+    d1: D1Database,
+    workspaceId: string,
+    limit: number,
+): Promise<string[]> {
+    const result = await d1
+        .prepare(
+            `SELECT id FROM workspace_entities
+             WHERE workspace_id = ?
+               AND time_deleted IS NULL
+               AND cascade_source IS NULL
+             ORDER BY id
+             LIMIT ?`,
+        )
+        .bind(workspaceId, limit)
+        .all<{ id: string }>();
+    return (result.results ?? []).map((r) => r.id);
+}
+
+/**
+ * Next batch of children that this workspace's cascade archived
+ * (`cascade_source = workspaceId`), for the cascade-restore fan-out
+ * (ADR 0008 / ADR 0011 §10a.5). Same stable-frontier ordering as the
+ * archive batch.
+ */
+export async function ListCascadeRestoreBatch(
+    d1: D1Database,
+    workspaceId: string,
+    limit: number,
+): Promise<string[]> {
+    const result = await d1
+        .prepare(
+            `SELECT id FROM workspace_entities
+             WHERE workspace_id = ?
+               AND cascade_source = ?
+               AND time_deleted IS NOT NULL
+             ORDER BY id
+             LIMIT ?`,
+        )
+        .bind(workspaceId, workspaceId, limit)
+        .all<{ id: string }>();
+    return (result.results ?? []).map((r) => r.id);
+}
+
+/**
+ * Purge an entity's catalog row. Hard-delete path only (ADR 0008): the
+ * caller deletes the row *before* tearing down the DO — a vanished DO
+ * with a live catalog row is worse than a retryable limbo.
+ */
+export async function DeleteEntityRow(
+    d1: D1Database,
+    entityId: string,
+): Promise<void> {
+    await d1
+        .prepare(`DELETE FROM workspace_entities WHERE id = ?;`)
+        .bind(entityId)
+        .run();
+}

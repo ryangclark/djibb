@@ -66,12 +66,17 @@ import type { Account } from '@djibb/protocol/account';
 import { tryCatch, tryCatchAsync, type Result } from '@djibb/protocol/trycatch';
 import {
     CountInvitesByInviterSince,
+    CountMembershipsForEntity,
     CountOutstandingInvitesByInviter,
+    DeleteEntityRow,
     EmitEntityMembershipsToCatalog,
     EmitEntitySnapshotToCatalog,
     EmitInvitationsSnapshot,
     GetEntityVersion,
     GetInvitationFromIndex,
+    GetWorkspaceSlug,
+    ListCascadeArchiveBatch,
+    ListCascadeRestoreBatch,
     MarkInvitationsAccepted,
     tryClaimSlug,
 } from '../derived-index/d1';
@@ -2074,14 +2079,10 @@ export class DjibbList extends DurableObject {
      */
     private async countD1Memberships(entityId: string): Promise<number> {
         try {
-            const row = await (
-                this.env as { DJIBB_AUTH: D1Database }
-            ).DJIBB_AUTH.prepare(
-                `SELECT COUNT(*) AS n FROM entity_memberships WHERE entity_id = ?`
-            )
-                .bind(entityId)
-                .first<{ n: number }>();
-            return row?.n ?? 0;
+            return await CountMembershipsForEntity(
+                (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+                entityId
+            );
         } catch (error) {
             console.warn(
                 `\`countD1Memberships()\` read failed for "${entityId}":`,
@@ -2228,15 +2229,9 @@ export class DjibbList extends DurableObject {
         let pathSegment = idSuffix;
         if (entityTypeLabel === 'workspace') {
             const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-            const row = await d1
-                .prepare(
-                    `SELECT slug FROM workspace_entities
-                      WHERE id = ? AND type = 'workspace' LIMIT 1;`
-                )
-                .bind(entityId)
-                .first<{ slug: string | null }>();
-            if (row?.slug) {
-                pathSegment = row.slug;
+            const slug = await GetWorkspaceSlug(d1, entityId);
+            if (slug) {
+                pathSegment = slug;
             } else {
                 console.warn(
                     `\`fireInvitationEmails()\` no slug for workspace "${entityId}"; using id suffix.`
@@ -2340,15 +2335,9 @@ export class DjibbList extends DurableObject {
         // the right DO.
         let pathSegment = idSuffix;
         if (entityTypeLabel === 'workspace') {
-            const row = await d1
-                .prepare(
-                    `SELECT slug FROM workspace_entities
-                      WHERE id = ? AND type = 'workspace' LIMIT 1;`
-                )
-                .bind(entityId)
-                .first<{ slug: string | null }>();
-            if (row?.slug) {
-                pathSegment = row.slug;
+            const slug = await GetWorkspaceSlug(d1, entityId);
+            if (slug) {
+                pathSegment = slug;
             } else {
                 console.warn(
                     `\`fireOwnershipTransferEmails()\` no slug for workspace "${entityId}"; using id suffix.`
@@ -2771,19 +2760,11 @@ export class DjibbList extends DurableObject {
         const deletionTsMs = ownTimeDeletedRaw * 1000;
 
         const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-        const batchResult = await d1
-            .prepare(
-                `SELECT id FROM workspace_entities
-                 WHERE workspace_id = ?
-                   AND time_deleted IS NULL
-                   AND cascade_source IS NULL
-                 ORDER BY id
-                 LIMIT ?`
-            )
-            .bind(entityId, DjibbList.CASCADE_ARCHIVE_BATCH_SIZE)
-            .all<{ id: string }>();
-
-        const rows = batchResult.results ?? [];
+        const rows = await ListCascadeArchiveBatch(
+            d1,
+            entityId,
+            DjibbList.CASCADE_ARCHIVE_BATCH_SIZE
+        );
         if (rows.length === 0) {
             // Drained. Per ADR 0008 the next workspace-side event is
             // the 30d hard-delete clock (10b); we don't set it here
@@ -2793,7 +2774,7 @@ export class DjibbList extends DurableObject {
             return;
         }
 
-        for (const { id: childId } of rows) {
+        for (const childId of rows) {
             try {
                 await this.cascadeArchiveChild(
                     childId,
@@ -2944,25 +2925,17 @@ export class DjibbList extends DurableObject {
         const restoreTsMs = (own.time_updated as number) * 1000;
 
         const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-        const batchResult = await d1
-            .prepare(
-                `SELECT id FROM workspace_entities
-                 WHERE workspace_id = ?
-                   AND cascade_source = ?
-                   AND time_deleted IS NOT NULL
-                 ORDER BY id
-                 LIMIT ?`
-            )
-            .bind(entityId, entityId, DjibbList.CASCADE_ARCHIVE_BATCH_SIZE)
-            .all<{ id: string }>();
-
-        const rows = batchResult.results ?? [];
+        const rows = await ListCascadeRestoreBatch(
+            d1,
+            entityId,
+            DjibbList.CASCADE_ARCHIVE_BATCH_SIZE
+        );
         if (rows.length === 0) {
             await this.cancelEvent('cascade-restore');
             return;
         }
 
-        for (const { id: childId } of rows) {
+        for (const childId of rows) {
             try {
                 await this.cascadeRestoreChild(
                     childId,
@@ -3106,10 +3079,7 @@ export class DjibbList extends DurableObject {
         // current limbo state.
         try {
             const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-            await d1
-                .prepare(`DELETE FROM workspace_entities WHERE id = ?;`)
-                .bind(entityId)
-                .run();
+            await DeleteEntityRow(d1, entityId);
         } catch (error) {
             console.error(
                 `\`handleHardDelete()\` D1 purge failed for "${entityId}":`,

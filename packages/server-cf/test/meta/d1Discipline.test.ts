@@ -40,7 +40,6 @@ const ALLOWLIST = new Map<string, number>([
     ['auth/credential.ts', 4],
     ['auth/magic.ts', 4],
     ['auth/session.ts', 8],
-    ['list/durable_object.ts', 6],
 ]);
 
 const D1_CALL = /\.(?:prepare|batch)\(/g;
