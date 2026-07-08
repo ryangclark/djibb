@@ -8,6 +8,11 @@
 		"module": "es2022",
 		"moduleResolution": "bundler",
 		"types": ["node"],
+		/* `@djibb/client` ships `.js` with JSDoc types (ADR 0014) — the CLI now
+		   consumes its transport + one-shot push/pull, so JS must be in the
+		   program. Mirrors the Worker tsconfig one directory up. */
+		"allowJs": true,
+		"checkJs": false,
 		"allowImportingTsExtensions": true,
 		"resolveJsonModule": true,
 		"isolatedModules": true,

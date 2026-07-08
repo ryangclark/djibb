@@ -104,8 +104,10 @@ you only choose how the credential *arrives*.
   mints today; a self-serve mint UX is a known TODO of ADR 0022).
   Give it an honest `label` — that label *is* the client's identity in
   the management surface.
-- [ ] Send `Authorization: Bearer <token>`; see `djibbRequestHeaders`
-  in `packages/server-cf/bin/djibb.ts`.
+- [ ] Send `Authorization: Bearer <token>` — build the transport with
+  `bearerToken(token, { origin })` from `@djibb/client/transport`, which
+  attaches it and the `Origin` header for you. (`anonymous({ origin })`
+  is the no-credential variant; `sessionCookie()` is the browser's.)
 - [ ] For entity-scoped clients (an email-reply token, a
   single-exchange bot), set `bound_entity_id` so a leaked token can't
   roam.
@@ -135,13 +137,20 @@ you only choose how the credential *arrives*.
   djibb-com's `src/lib/websocket.js` (30 lines, partysocket) is the
   only implementation. Second consumer ⇒ extract it, including the
   `entityPath` routing it duplicates.
-- [ ] **⚠ gap — the shared transport is cookie-only.**
-  `makePusher`/`makePuller` in `@djibb/client` hardcode
-  `credentials: 'include'` and can't send a Bearer header; the CLI
-  hand-rolls its own push/pull for this reason. A non-cookie
-  Replicache client is the second consumer that forces
-  auth-parameterizing the transport (tracked intent in ADR 0014's
-  extraction rule).
+- [ ] **Writing without a Replicache instance?** Use
+  `pushMutation`/`pullEntity` from `@djibb/client/oneshot`. The DO's mutator
+  pipeline is the only write door (ADR 0003), so a one-shot writer speaks the
+  push protocol too — these build the envelope for you. **Mint the identity
+  once per logical mutation** with `newOneShotClient()` and reuse it across
+  retries: `(clientID, mutationID)` *is* the idempotency key, and re-minting
+  per attempt makes a retried push apply twice. `djibb contribute`/`promote`
+  are the reference consumers.
+- [ ] **⚠ gap — `makePusher`/`makePuller` are still cookie-only.**
+  They hardcode `credentials: 'include'` and can't send a Bearer header, so a
+  *real* (long-lived, syncing) Replicache client can't authenticate off-domain
+  yet. `@djibb/client/transport` is now auth-parameterized (arch-review #5);
+  routing the Replicache pusher/puller through it is the remaining step, and
+  ADR 0024's off-domain client is the consumer that forces it.
 - [ ] Respect `schemaVersion` (currently `'1'` in
   `createReplicacheClient`). It's a **cross-client contract**: when
   stored value shapes change, every client must bump together.

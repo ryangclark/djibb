@@ -25,13 +25,20 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
 import { resolve } from 'node:path';
 
 import { parseMarkdown, encodeMarkdown } from '@djibb/protocol/list/markdown';
 import type { MarkdownGroup, MarkdownList } from '@djibb/protocol/list/markdown';
+import {
+    anonymous,
+    bearerToken,
+    createTransport,
+    DjibbHttpError,
+} from '@djibb/client/transport';
+import { newOneShotClient, pullEntity, pushMutation } from '@djibb/client/oneshot';
 
 /** Total items in a group, recursing through nested subgroups. */
 function groupItemCount(g: MarkdownGroup): number {
@@ -426,138 +433,47 @@ function buildBlankContent(slug: string, blankId: string, model: MarkdownList) {
     return { groups, items, childElementRefs };
 }
 
-/** An HTTP failure that carries the status code, so callers can branch on it. */
-class HttpError extends Error {
-    status: number;
-    constructor(status: number, detail: string) {
-        super(`HTTP ${status} ${detail}`.trim());
-        this.name = 'HttpError';
-        this.status = status;
-    }
-}
-
-async function httpDetail(res: Response): Promise<string> {
-    // Read the body exactly once (a Response body is a single-use stream —
-    // a `res.json()`-then-`res.text()` fallback would throw on the consumed
-    // stream and lose the detail). Take it as text, then re-stringify if it
-    // happens to be JSON so the message is normalized.
-    const text = await res.text().catch(() => '');
-    try {
-        return JSON.stringify(JSON.parse(text));
-    } catch {
-        return text;
-    }
-}
-
-/**
- * Build the headers every `djibb` worker request shares. `Origin` clears
- * the worker's CSRF gate (index.ts rejects non-GET requests whose `Origin`
- * isn't in AUTHORIZED_DOMAINS). A `bearerToken` is the caller's
- * *credential* — an `issued_credentials` API key (ADR 0022), sent as
- * `Authorization: Bearer`. It says who the caller is; the server's auth
- * layer (the bearer seam in `auth/middleware.ts` → `auth/resolver.ts` +
- * the DO) decides what that identity may do. Omit it to call anonymously.
- * This is the one place a request attaches the operator credential, so new
- * `djibb <verb>` commands authenticate consistently.
- */
-function djibbRequestHeaders(
-    origin: string,
-    bearerToken?: string
-): Record<string, string> {
-    const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        Origin: origin,
-    };
-    if (bearerToken) headers.Authorization = `Bearer ${bearerToken}`;
-    return headers;
-}
-
-/**
- * POST one mutation to a worker `/push`. A fresh `clientID` per call has
- * `lastMutationId: 0` server-side, so `id: 1` always validates.
- *
- * Two actors:
- *   - **operator** (`promote`): pass `bearerToken`. The token authenticates
- *     as the operator Account via `Authorization: Bearer` and
- *     `OPERATOR_ACCOUNT_ID` is stamped into the envelope — the DO's
- *     cross-account check verifies the two agree, then resolves the
- *     operator to `owner` (admitting privileged `initList` fields).
- *   - **anonymous** (`contribute`): omit `bearerToken`. No credential, a
- *     `null` envelope `accountId` — the DO resolves the caller to the
- *     list's `default_role` (`submitter` on the Contributed List, so
- *     `createListItem` is admitted while every other mutator 403s).
- */
-async function pushMutation(
-    base: string,
-    origin: string,
-    kind: 'list' | 'template',
-    entityId: string,
-    name: string,
-    args: Record<string, unknown>,
-    opts: { accountId: string | null; bearerToken?: string }
-): Promise<void> {
-    const url = `${base.replace(/\/$/, '')}/${kind}/push?id=${encodeURIComponent(entityId)}`;
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: djibbRequestHeaders(origin, opts.bearerToken),
-        body: JSON.stringify({
-            profileID: 'djibb-cli',
-            clientGroupID: randomUUID(),
-            pushVersion: 1,
-            schemaVersion: '',
-            mutations: [
-                {
-                    id: 1,
-                    clientID: randomUUID(),
-                    name,
-                    args: {
-                        ...args,
-                        accountId: opts.accountId,
-                        timestamp_client: nowIso(),
-                    },
-                    timestamp: Date.now(),
-                },
-            ],
-        }),
-    });
-    if (!res.ok) throw new HttpError(res.status, await httpDetail(res));
-}
-
 /** One element op from a `/pull` response patch. */
 type PullPut = { op: 'put'; key: string; value: Record<string, unknown> };
 
+/** Replicache `profileID` this CLI identifies itself with. Informational. */
+const CLI_PROFILE = 'djibb-cli';
+
 /**
- * POST a fresh (`cookie: null`) `/pull` for `listId` and return its
- * `put` ops. Pass `bearerToken` to read as the operator: since the
- * view-floor landed (#13), below-floor roles (the Contributed List is
- * `default_role: 'submitter'`) get an empty patch, so an anonymous pull
- * sees nothing. The operator owns the platform Lists, so its credential
- * resolves above the floor and reads the full tree. The Replicache
- * `cookie: null` in the body is the pull baseline (unrelated to auth).
+ * Build the transport for one `djibb` invocation (arch-review #5).
+ *
+ * `Origin` clears the worker's CSRF gate (index.ts rejects non-GET requests
+ * whose `Origin` isn't in AUTHORIZED_DOMAINS) — a browser sets it for free,
+ * a CLI must say it. A `bearerToken` is the caller's *credential*: an
+ * `issued_credentials` API key (ADR 0022). It says who the caller is; the
+ * server's auth layer (`auth/middleware.ts` → `auth/resolver.ts` + the DO)
+ * decides what that identity may do. Omit it to call anonymously — the DO
+ * then resolves the target's `default_role`.
  */
-async function pullList(
-    base: string,
-    origin: string,
-    listId: string,
-    bearerToken?: string
-): Promise<PullPut[]> {
-    const url = `${base.replace(/\/$/, '')}/list/pull?id=${encodeURIComponent(listId)}`;
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: djibbRequestHeaders(origin, bearerToken),
-        body: JSON.stringify({
-            pullVersion: 1,
-            profileID: 'djibb-cli',
-            clientGroupID: randomUUID(),
-            cookie: null,
-            schemaVersion: '',
-        }),
+function cliTransport(base: string, origin: string, bearerTokenValue?: string) {
+    return createTransport({
+        baseUrl: base,
+        credential: bearerTokenValue
+            ? bearerToken(bearerTokenValue, { origin })
+            : anonymous({ origin }),
     });
-    if (!res.ok) throw new HttpError(res.status, await httpDetail(res));
-    const body = (await res.json()) as { patch?: Array<Record<string, unknown>> };
-    return (body.patch ?? []).filter(
-        (p): p is PullPut => p.op === 'put' && typeof p.value === 'object'
-    );
+}
+
+/**
+ * Human-readable detail for a failed request. `DjibbHttpError.message` is just
+ * `"<status> <statusText>"` (the URL is deliberately kept out of it); the
+ * server's explanation is in the body, so surface that when there is one.
+ * Normalize JSON bodies so the message reads consistently.
+ */
+function errorDetail(err: unknown): string {
+    if (!(err instanceof DjibbHttpError)) return (err as Error).message;
+    const body = err.bodyText.trim();
+    if (!body) return err.message;
+    try {
+        return `${err.message} ${JSON.stringify(JSON.parse(body))}`;
+    } catch {
+        return `${err.message} ${body}`;
+    }
 }
 
 /** Retry a push a few times — the Seed Pool's D1 row lags its init push. */
@@ -750,33 +666,54 @@ async function cmdContribute(args: string[]): Promise<number> {
 
     // 6. Push the Blank (anon ⇒ ownerless), then append a reference to the
     //    Contributed List (anon ⇒ submitter ⇒ createListItem allowed).
+    const transport = cliTransport(base, origin);
+
     try {
-        await pushMutation(base, origin, 'template', blankId, 'initList', blankArgs, {
+        await pushMutation(transport, {
+            client: newOneShotClient(),
+            kind: 'template',
+            entityId: blankId,
+            name: 'initList',
+            args: blankArgs,
             accountId: null,
+            profileID: CLI_PROFILE,
         });
         console.log(`${PASS} blank ${c.bold(slug)} ${c.dim(blankId)}`);
     } catch (err) {
-        console.error(c.red(`✗ blank init failed: ${(err as Error).message}`));
+        console.error(c.red(`✗ blank init failed: ${errorDetail(err)}`));
         console.error(c.dim(`  (is the worker running at ${base}?)`));
         return 1;
     }
 
     try {
+        // Mint the client identity ONCE, outside the retry loop. The DO dedupes
+        // on `(clientID, mutationID)`: a resend of an already-applied mutation
+        // is acked without a second write. Minting per attempt — as this used
+        // to, inside the push helper — makes every retry a brand-new client
+        // with `lastMutationID: 0`, so a push that commits and then fails on
+        // the way back gets applied twice.
+        const client = newOneShotClient();
         await pushWithRetry(() =>
-            pushMutation(base, origin, 'list', CONTRIBUTED_LIST_ID, 'createListItem', {
-                item,
-            }, { accountId: null })
+            pushMutation(transport, {
+                client,
+                kind: 'list',
+                entityId: CONTRIBUTED_LIST_ID,
+                name: 'createListItem',
+                args: { item },
+                accountId: null,
+                profileID: CLI_PROFILE,
+            })
         );
         console.log(`${PASS} contributed ${c.bold(slug)}`);
     } catch (err) {
-        if (err instanceof HttpError && err.status === 404) {
+        if (err instanceof DjibbHttpError && err.status === 404) {
             console.error(
                 c.red('✗ the Contributed List does not exist yet.') +
                     ' Ask the operator to bootstrap it with `djibb promote`.'
             );
             return 1;
         }
-        console.error(c.red(`✗ contribute failed: ${(err as Error).message}`));
+        console.error(c.red(`✗ contribute failed: ${errorDetail(err)}`));
         return 1;
     }
 
@@ -910,33 +847,50 @@ async function cmdPromote(args: string[]): Promise<number> {
     //      · Contributed — operator-owned, default_role 'submitter' (ADR
     //        0021): anyone may append (anon `djibb contribute`), nobody but
     //        the operator may mutate existing entries (append-only).
+    const transport = cliTransport(base, origin, operatorBearer);
+
     if (!dryRun) {
-        const token = operatorBearer;
         try {
-            await pushMutation(base, origin, 'list', SEED_POOL_LIST_ID, 'initList', {
-                listId: SEED_POOL_LIST_ID,
-                workspaceId: null,
-                name: 'Seed Pool',
-                slot: 'seed_pool',
-                defaultRole: 'viewer',
-            }, { accountId: OPERATOR_ACCOUNT_ID, bearerToken: token });
+            await pushMutation(transport, {
+                client: newOneShotClient(),
+                kind: 'list',
+                entityId: SEED_POOL_LIST_ID,
+                name: 'initList',
+                args: {
+                    listId: SEED_POOL_LIST_ID,
+                    workspaceId: null,
+                    name: 'Seed Pool',
+                    slot: 'seed_pool',
+                    defaultRole: 'viewer',
+                },
+                accountId: OPERATOR_ACCOUNT_ID,
+                profileID: CLI_PROFILE,
+            });
             console.log(`\n${PASS} seed pool ready`);
         } catch (err) {
-            console.error(c.red(`seed pool init failed: ${(err as Error).message}`));
+            console.error(c.red(`seed pool init failed: ${errorDetail(err)}`));
             console.error(c.dim(`  (is the worker running at ${base}?)`));
             return 1;
         }
         try {
-            await pushMutation(base, origin, 'list', CONTRIBUTED_LIST_ID, 'initList', {
-                listId: CONTRIBUTED_LIST_ID,
-                workspaceId: null,
-                name: 'Contributed',
-                slot: 'contributed',
-                defaultRole: 'submitter',
-            }, { accountId: OPERATOR_ACCOUNT_ID, bearerToken: token });
+            await pushMutation(transport, {
+                client: newOneShotClient(),
+                kind: 'list',
+                entityId: CONTRIBUTED_LIST_ID,
+                name: 'initList',
+                args: {
+                    listId: CONTRIBUTED_LIST_ID,
+                    workspaceId: null,
+                    name: 'Contributed',
+                    slot: 'contributed',
+                    defaultRole: 'submitter',
+                },
+                accountId: OPERATOR_ACCOUNT_ID,
+                profileID: CLI_PROFILE,
+            });
             console.log(`${PASS} contributed list ready`);
         } catch (err) {
-            console.error(c.red(`contributed list init failed: ${(err as Error).message}`));
+            console.error(c.red(`contributed list init failed: ${errorDetail(err)}`));
             return 1;
         }
     } else {
@@ -946,9 +900,13 @@ async function cmdPromote(args: string[]): Promise<number> {
     // 2. Read the Contributed List and enumerate its referenced Blanks.
     let contributed: PullPut[];
     try {
-        contributed = await pullList(base, origin, CONTRIBUTED_LIST_ID, operatorBearer);
+        contributed = await pullEntity(transport, {
+            entityId: CONTRIBUTED_LIST_ID,
+            kind: 'list',
+            profileID: CLI_PROFILE,
+        });
     } catch (err) {
-        console.error(c.red(`could not read the Contributed List: ${(err as Error).message}`));
+        console.error(c.red(`could not read the Contributed List: ${errorDetail(err)}`));
         return 1;
     }
 
@@ -1060,20 +1018,28 @@ async function cmdPromote(args: string[]): Promise<number> {
     // to operator-owned `viewer` (immutability) is the optional sub-step
     // deferred with the read view-floor work (issue #13); for now promote
     // just adds the Seed Pool reference.
-    const token = operatorBearer;
-
     // 4. Add a referencing item to the Seed Pool (retry: D1 row lags init).
     let failed = 0;
     for (const p of plans) {
         try {
+            // One identity per logical mutation, reused across retries — see the
+            // note in `cmdContribute`. Each loop iteration is a *different*
+            // mutation, so each gets its own.
+            const client = newOneShotClient();
             await pushWithRetry(() =>
-                pushMutation(base, origin, 'list', SEED_POOL_LIST_ID, 'createListItem', {
-                    item: p.item,
-                }, { accountId: OPERATOR_ACCOUNT_ID, bearerToken: token })
+                pushMutation(transport, {
+                    client,
+                    kind: 'list',
+                    entityId: SEED_POOL_LIST_ID,
+                    name: 'createListItem',
+                    args: { item: p.item },
+                    accountId: OPERATOR_ACCOUNT_ID,
+                    profileID: CLI_PROFILE,
+                })
             );
             console.log(`${PASS} pooled ${c.bold(p.slug)}`);
         } catch (err) {
-            console.error(c.red(`✗ pool item ${p.slug} failed: ${(err as Error).message}`));
+            console.error(c.red(`✗ pool item ${p.slug} failed: ${errorDetail(err)}`));
             failed++;
         }
     }
