@@ -1,3 +1,4 @@
+// @ts-check
 // Connected-clients access surface (ADR 0022 §6, GH #24). Owner/admin-only
 // view of everything connected to a workspace — member Accounts with their
 // interactive sessions and issued tokens (the #23 union read). Served by the
@@ -11,9 +12,7 @@
 // revoke them here. Removing a member or bot's access is `removeMember`
 // (the existing roster mutator), not this module.
 
-const BASE = import.meta.env.VITE_API_BASE_URL;
-
-const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
+import { api, DjibbHttpError } from './client.js';
 
 /**
  * One connected principal, mirroring `ConnectedClient` on the server
@@ -48,14 +47,6 @@ const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
  * @property {ConnectedClient[]} history Revoked/expired tokens, expired sessions.
  */
 
-/** @param {string|null} accountId */
-function authHeaders(accountId) {
-	/** @type {Record<string, string>} */
-	const headers = {};
-	if (accountId) headers[ACTIVE_ACCOUNT_HEADER] = accountId;
-	return headers;
-}
-
 /**
  * Fetch the connected-clients surface for a workspace (owner/admin only).
  *
@@ -67,13 +58,16 @@ function authHeaders(accountId) {
  */
 export async function fetchConnectedClients({ workspaceId, accountId = null }) {
 	const params = new URLSearchParams({ l: workspaceId });
-	const res = await fetch(`${BASE}/workspace/connected?${params}`, {
-		credentials: 'include',
-		headers: authHeaders(accountId)
-	});
-	if (res.status === 403) throw new Error('forbidden');
-	if (!res.ok) throw new Error(`connected fetch failed: ${res.status}`);
-	return res.json();
+	try {
+		return /** @type {ConnectedSurface} */ (
+			await api.get(`/workspace/connected?${params}`, { activeAccount: accountId })
+		);
+	} catch (err) {
+		if (err instanceof DjibbHttpError && err.status === 403) {
+			throw new Error('forbidden');
+		}
+		throw err;
+	}
 }
 
 /**
@@ -93,11 +87,8 @@ export async function revokeConnectedCredential({
 	accountId = null
 }) {
 	const params = new URLSearchParams({ l: workspaceId });
-	const res = await fetch(`${BASE}/workspace/connected/revoke?${params}`, {
-		method: 'POST',
-		credentials: 'include',
-		headers: { 'Content-Type': 'application/json', ...authHeaders(accountId) },
-		body: JSON.stringify({ credentialId })
+	await api.post(`/workspace/connected/revoke?${params}`, {
+		activeAccount: accountId,
+		json: { credentialId }
 	});
-	if (!res.ok) throw new Error(`revoke failed: ${res.status}`);
 }

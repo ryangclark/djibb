@@ -8,7 +8,7 @@
  * never holds a raw token.
  */
 
-const BASE = import.meta.env.VITE_API_BASE_URL;
+import { api, DjibbHttpError } from './client.js';
 
 /**
  * @typedef {'cooldown'|'email_15min'|'email_24h'|'ip_hour'} RateLimitReason
@@ -53,46 +53,47 @@ export class MagicLinkRateLimitError extends Error {
  * @returns {Promise<void>}
  */
 export async function requestMagicLink({ email, next }) {
-    const res = await fetch(`${BASE}/auth/magic/request`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            email,
-            next: next ?? '/workspaces'
-        })
-    });
+    try {
+        // The server soft-200s with an empty body on success (and on a
+        // malformed/unknown address) so it never discloses whether the
+        // Account exists — there is nothing to parse.
+        await api.post('/auth/magic/request', {
+            json: { email, next: next ?? '/workspaces' },
+            parse: 'none'
+        });
+    } catch (err) {
+        if (err instanceof DjibbHttpError) {
+            if (err.status === 429) throw rateLimitFrom(err);
+            throw new Error(`Sign-in request failed (${err.status})`);
+        }
+        throw err; // network / other — surface as a retryable error.
+    }
+}
 
-    if (res.ok) return;
-
-    if (res.status === 429) {
-        let retryAfter = 60;
-        /** @type {RateLimitReason | null} */
-        let reason = null;
-        try {
-            const body = await res.json();
-            if (
-                body &&
-                typeof body === 'object' &&
-                typeof body.retry_after_seconds === 'number'
-            ) {
+/**
+ * Turn a 429 into a `MagicLinkRateLimitError`, reading the retry window from
+ * the JSON body (`retry_after_seconds` + `reason`) and falling back to the
+ * `Retry-After` header only when the body can't be parsed.
+ *
+ * @param {DjibbHttpError} err
+ * @returns {MagicLinkRateLimitError}
+ */
+function rateLimitFrom(err) {
+    let retryAfter = 60;
+    /** @type {RateLimitReason | null} */
+    let reason = null;
+    try {
+        const body = JSON.parse(err.bodyText);
+        if (body && typeof body === 'object') {
+            if (typeof body.retry_after_seconds === 'number') {
                 retryAfter = body.retry_after_seconds;
             }
-            if (
-                body &&
-                typeof body === 'object' &&
-                typeof body.reason === 'string'
-            ) {
-                reason = body.reason;
-            }
-        } catch {
-            // Fall back to Retry-After header if body parse failed.
-            const hdr = res.headers.get('Retry-After');
-            const parsed = hdr ? parseInt(hdr, 10) : NaN;
-            if (Number.isFinite(parsed)) retryAfter = parsed;
+            if (typeof body.reason === 'string') reason = body.reason;
         }
-        throw new MagicLinkRateLimitError(retryAfter, reason);
+    } catch {
+        const hdr = err.headers.get('Retry-After');
+        const parsed = hdr ? parseInt(hdr, 10) : NaN;
+        if (Number.isFinite(parsed)) retryAfter = parsed;
     }
-
-    throw new Error(`Sign-in request failed (${res.status})`);
+    return new MagicLinkRateLimitError(retryAfter, reason);
 }

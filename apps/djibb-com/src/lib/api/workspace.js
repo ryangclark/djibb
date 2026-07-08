@@ -1,4 +1,5 @@
-const BASE = import.meta.env.VITE_API_BASE_URL;
+// @ts-check
+import { api } from './client.js';
 
 /**
  * @typedef {object} Workspace
@@ -46,11 +47,9 @@ const BASE = import.meta.env.VITE_API_BASE_URL;
  * @returns {Promise<WorkspaceWithMembership[]>}
  */
 export async function fetchWorkspacesForAccount(accountId) {
-	const res = await fetch(`${BASE}/${accountId}/workspaces`, {
-		credentials: 'include'
-	});
-	if (!res.ok) throw new Error(`workspaces fetch failed: ${res.status}`);
-	return res.json();
+	return /** @type {WorkspaceWithMembership[]} */ (
+		await api.get(`/${accountId}/workspaces`)
+	);
 }
 
 /**
@@ -64,11 +63,9 @@ export async function fetchWorkspacesForAccount(accountId) {
  * @returns {Promise<{ id: string, name: string | null } | null>}
  */
 export async function resolveInvitedWorkspace(slug) {
-	const res = await fetch(
-		`${BASE}/workspace-invite/${encodeURIComponent(slug)}`,
-		{ credentials: 'include' }
+	return /** @type {{ id: string, name: string | null } | null} */ (
+		await api.get(`/workspace-invite/${encodeURIComponent(slug)}`, {
+			notFoundAsNull: true
+		})
 	);
-	if (res.status === 404) return null;
-	if (!res.ok) throw new Error(`resolve invite failed: ${res.status}`);
-	return res.json();
 }

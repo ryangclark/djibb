@@ -1,5 +1,5 @@
-import { dev } from '$app/environment';
 import { createReplicacheClient, wrapMutators } from '@djibb/client/replicache';
+import { replicacheHost, replicacheSecure } from '$lib/config';
 import { createUndoRuntime } from './withUndo.svelte.js';
 
 /**
@@ -137,7 +137,7 @@ export function InitReplicacheClient({ accountId, listId }) {
 	return createReplicacheClient({
 		accountId,
 		listId,
-		baseUrl: import.meta.env.VITE_REPLICACHE_BASE_URL,
-		secure: !dev
+		baseUrl: replicacheHost,
+		secure: replicacheSecure
 	});
 }

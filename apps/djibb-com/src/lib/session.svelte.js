@@ -1,5 +1,6 @@
 import { getContext, setContext } from 'svelte';
 import { fetchWorkspacesForAccount } from '$lib/api/workspace';
+import { api, DjibbHttpError } from '$lib/api/client';
 
 export const STATUSES = {
 	idle: 'idle',
@@ -58,12 +59,15 @@ class SessionState {
 		this.status = STATUSES.loading;
 
 		try {
-			const response = await fetch(
-				`${import.meta.env.VITE_API_BASE_URL}/auth/session`,
-				{ credentials: 'include' }
+			const session = /** @type {{ accounts: any[] }} */ (
+				await api.get('/auth/session')
 			);
-
-			if (response.status === 401) {
+			this.error = undefined;
+			this.accounts = session.accounts;
+			await this.refreshWorkspaces();
+		} catch (err) {
+			// 401 is "signed out" — a normal resting state, not an error.
+			if (err instanceof DjibbHttpError && err.status === 401) {
 				this.accounts = [];
 				this.workspaces = [];
 				this.error = undefined;
@@ -71,12 +75,6 @@ class SessionState {
 				this.hasLoaded = true;
 				return;
 			}
-
-			this.error = undefined;
-			const session = await response.json();
-			this.accounts = session.accounts;
-			await this.refreshWorkspaces();
-		} catch (err) {
 			this.error = err;
 			this.accounts = [];
 			this.workspaces = [];

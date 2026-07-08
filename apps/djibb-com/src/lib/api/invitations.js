@@ -1,4 +1,5 @@
-const BASE = import.meta.env.VITE_API_BASE_URL;
+// @ts-check
+import { api } from './client.js';
 
 /**
  * One pending invitation in the `/invitations` inbox. Mirrors
@@ -27,9 +28,7 @@ const BASE = import.meta.env.VITE_API_BASE_URL;
  * @returns {Promise<PendingInvitation[]>}
  */
 export async function fetchInvitationsForAccount(accountId) {
-	const res = await fetch(`${BASE}/${accountId}/invitations`, {
-		credentials: 'include'
-	});
-	if (!res.ok) throw new Error(`invitations fetch failed: ${res.status}`);
-	return res.json();
+	return /** @type {PendingInvitation[]} */ (
+		await api.get(`/${accountId}/invitations`)
+	);
 }

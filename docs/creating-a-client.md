@@ -122,8 +122,9 @@ you only choose how the credential *arrives*.
 - [ ] Construct the Replicache client with
   `createReplicacheClient({ accountId, listId, baseUrl, secure })`
   from `@djibb/client/replicache`. The package never reads env — your
-  app injects `baseUrl` (see `apps/djibb-com/.env.example` /
-  `VITE_API_BASE_URL` for the pattern).
+  app injects `baseUrl`. djibb-com resolves it in `src/lib/config.js` from
+  a single `VITE_DJIBB_ORIGIN` (see `apps/djibb-com/.env.example`), which
+  also feeds `@djibb/client/transport` for plain fetch.
 - [ ] Wrap mutations with `wrapMutators` so call sites pass body args
   only; the envelope (`accountId`, `timestamp_client`) is injected for
   you.

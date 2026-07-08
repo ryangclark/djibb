@@ -1,7 +1,7 @@
 import { WebSocket } from 'partysocket';
-import { dev } from '$app/environment';
 import { IdTypes } from '@djibb/protocol/id';
 import { WS_QUERY_CLIENT_ID } from '@djibb/protocol/websocket/constants';
+import { wsOrigin } from '$lib/config';
 
 /**
  * Initialize the websocket for an entity. Per ADR 0006 the URL
@@ -22,9 +22,7 @@ export function initialize(entity_id, client_id) {
 			: 'list';
 	const params = new URLSearchParams({ l: entity_id });
 	if (client_id) params.set(WS_QUERY_CLIENT_ID, client_id);
-	const url = `ws${dev ? '' : 's'}://${
-		import.meta.env.VITE_REPLICACHE_BASE_URL
-	}/${path}/websocket?${params.toString()}`;
+	const url = `${wsOrigin}/${path}/websocket?${params.toString()}`;
 
 	return new WebSocket(url);
 }

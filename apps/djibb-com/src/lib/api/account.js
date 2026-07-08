@@ -1,4 +1,5 @@
-const BASE = import.meta.env.VITE_API_BASE_URL;
+// @ts-check
+import { api, DjibbHttpError } from './client.js';
 
 /**
  * @param {string} accountId Full prefixed ID, e.g. "a/0Hb...".
@@ -6,17 +7,20 @@ const BASE = import.meta.env.VITE_API_BASE_URL;
  * @returns {Promise<{ id: string, user_name: string, detail: string }>}
  */
 export async function setAccountUsername(accountId, userName) {
-	const res = await fetch(`${BASE}/${accountId}`, {
-		method: 'PATCH',
-		credentials: 'include',
-		headers: {
-			'Content-Type': 'application/json',
-			'X-Djibb-Active-Account': accountId
-		},
-		body: JSON.stringify({ user_name: userName })
-	});
-	if (!res.ok) throw new Error(await res.text());
-	return res.json();
+	try {
+		return /** @type {{ id: string, user_name: string, detail: string }} */ (
+			await api.patch(`/${accountId}`, {
+				activeAccount: accountId,
+				json: { user_name: userName }
+			})
+		);
+	} catch (err) {
+		// The server sends a human-readable reason as the response body
+		// (e.g. "Username already taken") and AccountRow renders `err.message`
+		// directly — surface the body, not the transport's generic message.
+		if (err instanceof DjibbHttpError) throw new Error(err.bodyText);
+		throw err;
+	}
 }
 
 /**
@@ -24,10 +28,7 @@ export async function setAccountUsername(accountId, userName) {
  * @returns {Promise<{ id: string, display_name: string, image: string|null }|null>}
  */
 export async function lookupUsername(username) {
-	const res = await fetch(`${BASE}/u/${encodeURIComponent(username)}`, {
-		credentials: 'include'
-	});
-	if (res.status === 404) return null;
-	if (!res.ok) throw new Error(await res.text());
-	return res.json();
+	return /** @type {{ id: string, display_name: string, image: string|null }|null} */ (
+		await api.get(`/u/${encodeURIComponent(username)}`, { notFoundAsNull: true })
+	);
 }

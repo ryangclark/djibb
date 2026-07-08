@@ -2,6 +2,7 @@
 	import { OAUTH_PROVIDER_PRETTY } from '@djibb/protocol/auth/constants';
 	import { getSessionState, STATUSES } from '$lib/session.svelte';
 	import { setAccountUsername } from '$lib/api/account';
+	import { api, DjibbHttpError } from '$lib/api/client';
 
 	/**
 	 * @type {{account: import("@djibb/protocol/account").Account}}
@@ -25,27 +26,21 @@
 		signingOut = true;
 
 		try {
-			const response = await fetch(
-				`${import.meta.env.VITE_API_BASE_URL}/auth/session/accounts`,
-				{
-					method: 'DELETE',
-					credentials: 'include',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ account_id: account.id })
-				}
-			);
-
-			if (!response.ok) {
-				console.error('Sign-out failed:', response.status);
-				signingOut = false;
-				return;
-			}
+			// 204 when the account wasn't on the session; a re-minted session
+			// JSON otherwise. Either way there's nothing here to read.
+			await api.del('/auth/session/accounts', {
+				json: { account_id: account.id }
+			});
 
 			if (sessionState.status === STATUSES.idle) {
 				await sessionState.fetchSession();
 			}
 		} catch (err) {
-			console.error('Sign-out error:', err);
+			if (err instanceof DjibbHttpError) {
+				console.error('Sign-out failed:', err.status);
+			} else {
+				console.error('Sign-out error:', err);
+			}
 		}
 
 		signingOut = false;
