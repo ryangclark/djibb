@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 
 import { CreateAccount } from '../src/account/service';
-import { GetEntity, defaultSlugForId } from '../src/list/entity';
+import { GetEntity, defaultSlugForId } from '../src/derived-index/d1';
 import { GetWorkspacesByAccountId } from '../src/workspace/service';
 import type { Account } from '@djibb/protocol/account';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';

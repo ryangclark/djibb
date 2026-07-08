@@ -11,7 +11,7 @@ import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '@djibb/protocol/id';
-import { ResolveInvitedWorkspaceBySlug } from '../src/workspace/service';
+import { ResolveInvitedWorkspaceBySlug } from '../src/derived-index/d1';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 function getWorkspaceStub(suffix: string) {

@@ -6,7 +6,7 @@ import { CatalogApp } from './catalog/fetch';
 import { list_app, template_app, workspace_app } from './list/fetch';
 import { WorkspaceInviteApp } from './workspace/inviteResolver';
 import type { AuthorizationRole } from '@djibb/protocol/auth/rules';
-import type { EntityRow } from './list/entity';
+import type { EntityRow } from './derived-index/d1';
 import type { RequestPrincipal } from './auth/principal';
 import { Auth_App } from './auth/fetch';
 import { DjibbError } from '@djibb/protocol/errors';

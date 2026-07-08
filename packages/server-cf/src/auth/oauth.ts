@@ -6,12 +6,9 @@ import type { CookieOptions } from 'hono/utils/cookie';
 import { z } from 'zod';
 
 import { NotFoundError, UnexpectedError, ValidationError } from '@djibb/protocol/errors';
-import {
-    CreateAccount,
-    GetAccountByEmail,
-    GetAccountByGoogleId,
-} from '../account/service';
-import { CreateSession } from './session';
+import { CreateAccount } from '../account/service';
+import { GetAccountByEmail, GetAccountByGoogleId } from './d1';
+import { CreateSession } from './d1';
 import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
 import {
     BaseSessionCookieAttributes,

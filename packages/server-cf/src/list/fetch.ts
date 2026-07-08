@@ -8,14 +8,14 @@ import { HandleSession } from '../auth/middleware';
 import {
     tokenBindsToEntity,
     RevokeEntityBoundCredential,
-} from '../auth/credential';
+} from '../auth/d1';
 import { actingCredentialId, principalAccounts } from '../auth/principal';
 import {
     ListConnectedClients,
     ResolveAccountDisplays,
     ResolveCredentialLabels,
     partitionConnectedClients,
-} from '../auth/connected';
+} from '../auth/d1';
 import {
     type AuthorizationRole,
     AuthorizationRoleEnum,
@@ -36,7 +36,7 @@ import { z } from 'zod';
 import { IdTypes } from '@djibb/protocol/id';
 import { GetMembership } from '../workspace/service';
 import { canRead, resolveRole } from '../auth/resolver';
-import { GetEntity } from './entity';
+import { GetEntity } from '../derived-index/d1';
 import { asLocalList } from './durable_object';
 import { initListArgsSchema, mintFromBlankArgsSchema } from '@djibb/protocol/list/mutators/client';
 import { OWNER_ROLES } from '@djibb/protocol/list/mutators/_shared';

@@ -13,12 +13,14 @@ import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import {
     CountInvitesByInviterSince,
     CountOutstandingInvitesByInviter,
+} from '../src/derived-index/d1';
+import {
     INVITE_MAX_OUTSTANDING_PER_INVITER,
     INVITE_MAX_PER_INVITER_PER_HOUR,
     preflightInviteByIdentity,
     type InvitePreflightDeps,
 } from '../src/list/invitations';
-import { GetAccountByEmail } from '../src/account/service';
+import { GetAccountByEmail } from '../src/auth/d1';
 import type { AuthorizationRules } from '@djibb/protocol/auth/rules';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 

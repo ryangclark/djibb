@@ -4,7 +4,7 @@ import type { HonoEnv } from '..';
 
 import { HandleSession } from '../auth/middleware';
 import { NotFoundError, UnauthenticatedError } from '@djibb/protocol/errors';
-import { ResolveInvitedWorkspaceBySlug } from './service';
+import { ResolveInvitedWorkspaceBySlug } from '../derived-index/d1';
 
 /**
  * ADR 0011 §Step 10d.3: slug→id resolver for the pre-membership

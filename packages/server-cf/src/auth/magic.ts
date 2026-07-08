@@ -31,11 +31,15 @@ import { z } from 'zod';
 
 import type { HonoEnv } from '..';
 import { BadRequestError, UnexpectedError, ValidationError } from '@djibb/protocol/errors';
+import { CreateAccount } from '../account/service';
+import { GetAccountByEmail } from './d1';
 import {
-    CreateAccount,
-    GetAccountByEmail,
-} from '../account/service';
-import { CreateSession } from './session';
+    checkRateLimits,
+    consumeMagicTokenRow,
+    CreateSession,
+    InsertMagicLinkToken,
+    MAGIC_RATE_LIMITS,
+} from './d1';
 import { randomString } from '@djibb/protocol/id';
 import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
 import {
@@ -49,48 +53,6 @@ const TOKEN_LENGTH = 32; // ~192 bits over the 64-char URL-safe alphabet.
 const TOKEN_TTL_SECONDS = 15 * 60; // ADR 0010 policy default.
 const MAGIC_PURPOSE_SIGNIN = 'signin';
 
-/**
- * Rate-limit policy (ADR 0010).
- *
- * All limits apply to /request (token mint + email send). /consume
- * is not rate-limited here — a flood of consume attempts against a
- * harvested-but-unknown-hash space is bounded by the SHA-256 keyspace,
- * not by request volume.
- *
- * Limits are enforced by counting rows in `magic_link_tokens` over
- * a window. Rows are not purged on consume (the row's lifecycle is
- * its own — see the `time_consumed` column), so the count over a
- * window is a faithful "how many tokens did this target generate
- * recently?" regardless of how many were actually clicked.
- */
-export const MAGIC_RATE_LIMITS = {
-    /** Min seconds between successive /request calls for the same email. */
-    PER_EMAIL_COOLDOWN_SEC: 60,
-    /** Max /request calls per email in a 15-minute window. */
-    PER_EMAIL_15MIN: 3,
-    PER_EMAIL_15MIN_WINDOW_SEC: 15 * 60,
-    /** Max /request calls per email in a 24-hour window. */
-    PER_EMAIL_24H: 10,
-    PER_EMAIL_24H_WINDOW_SEC: 24 * 60 * 60,
-    /** Max /request calls per IP in a 1-hour window. */
-    PER_IP_HOUR: 20,
-    PER_IP_HOUR_WINDOW_SEC: 60 * 60,
-} as const;
-
-/**
- * Reason codes returned when a /request call is rate-limited. Surfaced
- * to clients (the sign-in UI maps these to user-visible messages) and
- * useful for log analysis.
- */
-export type RateLimitReason =
-    | 'cooldown' // 60-sec same-email cooldown
-    | 'email_15min' // per-email 15-min bucket
-    | 'email_24h' // per-email 24-hour bucket
-    | 'ip_hour'; // per-IP 1-hour bucket
-
-type RateLimitResult =
-    | { ok: true }
-    | { ok: false; reason: RateLimitReason; retryAfterSec: number };
 
 // Email matching — pragmatic shape check, not RFC 5321 compliant.
 // Verification of *deliverability* happens implicitly: an attacker
@@ -163,37 +125,6 @@ export function shouldExposeDevSeam(
     return String(envValue).toLowerCase() === 'dev';
 }
 
-/**
- * Atomically claim a magic-link token by its SHA-256 hash.
- *
- * Single UPDATE...RETURNING: if zero rows match, the token is
- * either unknown, already consumed, or expired — the caller treats
- * all three as the same "invalid token" failure (distinguishing
- * them would help attackers triangulate token state).
- *
- * Exported for unit tests that exercise the single-use and
- * expiry contracts directly against D1.
- *
- * @returns the row's `target_email` and `purpose` on success, or
- *          `null` if no eligible row was found.
- */
-export async function consumeMagicTokenRow(
-    d1: D1Database,
-    tokenHash: string,
-    now: number
-): Promise<{ target_email: string; purpose: string } | null> {
-    return d1
-        .prepare(
-            `UPDATE magic_link_tokens
-                SET time_consumed = ?
-                WHERE token_hash = ?
-                    AND time_consumed IS NULL
-                    AND time_expires > ?
-                RETURNING target_email, purpose;`
-        )
-        .bind(now, tokenHash, now)
-        .first<{ target_email: string; purpose: string }>();
-}
 
 /**
  * Sanitize an arbitrary `next` param to a local path.
@@ -230,120 +161,6 @@ function buildLandingUrl(c: Context<HonoEnv>, rawToken: string, next: string): s
     return u.toString();
 }
 
-/**
- * Run the four rate-limit checks against `magic_link_tokens` (ADR 0010).
- *
- * Strategy: one query fetches the per-email timestamps inside the
- * 24-hour window (the widest email-bucket); the three email-bucket
- * checks (cooldown, 15-min, 24-h) are derived from that single
- * result. A second query covers the per-IP bucket.
- *
- * Total: 1–2 D1 reads per /request, both indexed
- * (idx_magic__by_email_time, idx_magic__by_ip_time). Cheap.
- *
- * Returns the *first* limit hit; we don't continue past a block.
- * Retry-after values are the precise number of seconds until that
- * specific limit relaxes — `Math.ceil((oldest_in_window + window)
- * - now)` — so the UI can show an accurate countdown.
- */
-export async function checkRateLimits(
-    d1: D1Database,
-    args: { email: string; ip: string | null; now: number }
-): Promise<RateLimitResult> {
-    const { email, ip, now } = args;
-    const since24h = now - MAGIC_RATE_LIMITS.PER_EMAIL_24H_WINDOW_SEC;
-
-    // Pull all per-email timestamps inside the widest (24h) window.
-    // DESC ordering lets us check the cooldown (top row) and the
-    // 15-min bucket (top N rows) without re-querying.
-    const emailRows = await d1
-        .prepare(
-            `SELECT time_created
-                FROM magic_link_tokens
-                WHERE target_email = ?
-                    AND time_created >= ?
-                ORDER BY time_created DESC;`
-        )
-        .bind(email, since24h)
-        .all<{ time_created: number }>();
-
-    const emailTimes = emailRows.results.map(r => r.time_created);
-
-    // 1) 60-sec cooldown — only relevant to the single most recent token.
-    if (emailTimes.length > 0) {
-        const lastAge = now - emailTimes[0]!;
-        if (lastAge < MAGIC_RATE_LIMITS.PER_EMAIL_COOLDOWN_SEC) {
-            return {
-                ok: false,
-                reason: 'cooldown',
-                retryAfterSec: Math.max(
-                    1,
-                    MAGIC_RATE_LIMITS.PER_EMAIL_COOLDOWN_SEC - lastAge
-                ),
-            };
-        }
-    }
-
-    // 2) 15-min bucket — count entries inside the 15-min window.
-    const since15min = now - MAGIC_RATE_LIMITS.PER_EMAIL_15MIN_WINDOW_SEC;
-    const in15min = emailTimes.filter(t => t >= since15min);
-    if (in15min.length >= MAGIC_RATE_LIMITS.PER_EMAIL_15MIN) {
-        // Oldest of the in-window tokens is the one whose ageout
-        // would free up a slot. emailTimes is DESC, so the last
-        // element in in15min is the oldest in-window.
-        const oldest = in15min[in15min.length - 1]!;
-        const ageout =
-            oldest + MAGIC_RATE_LIMITS.PER_EMAIL_15MIN_WINDOW_SEC - now;
-        return {
-            ok: false,
-            reason: 'email_15min',
-            retryAfterSec: Math.max(1, ageout),
-        };
-    }
-
-    // 3) 24-h bucket — count is just emailTimes.length (already
-    //    filtered to the 24-h window in the query above).
-    if (emailTimes.length >= MAGIC_RATE_LIMITS.PER_EMAIL_24H) {
-        const oldest = emailTimes[emailTimes.length - 1]!;
-        const ageout =
-            oldest + MAGIC_RATE_LIMITS.PER_EMAIL_24H_WINDOW_SEC - now;
-        return {
-            ok: false,
-            reason: 'email_24h',
-            retryAfterSec: Math.max(1, ageout),
-        };
-    }
-
-    // 4) Per-IP bucket. Skipped when we couldn't capture an IP — the
-    //    other three limits still apply, so this isn't a bypass.
-    if (ip) {
-        const sinceIPHour = now - MAGIC_RATE_LIMITS.PER_IP_HOUR_WINDOW_SEC;
-        const ipRows = await d1
-            .prepare(
-                `SELECT time_created
-                    FROM magic_link_tokens
-                    WHERE request_ip = ?
-                        AND time_created >= ?
-                    ORDER BY time_created ASC
-                    LIMIT ?;`
-            )
-            .bind(ip, sinceIPHour, MAGIC_RATE_LIMITS.PER_IP_HOUR)
-            .all<{ time_created: number }>();
-
-        if (ipRows.results.length >= MAGIC_RATE_LIMITS.PER_IP_HOUR) {
-            const oldest = ipRows.results[0]!.time_created;
-            const ageout =
-                oldest + MAGIC_RATE_LIMITS.PER_IP_HOUR_WINDOW_SEC - now;
-            return {
-                ok: false,
-                reason: 'ip_hour',
-                retryAfterSec: Math.max(1, ageout),
-            };
-        }
-    }
-
-    return { ok: true };
-}
 
 /**
  * Pick the post-signin frontend origin to redirect to.
@@ -424,27 +241,15 @@ export async function handleMagicRequest(c: Context<HonoEnv>) {
     const expires = now + TOKEN_TTL_SECONDS;
 
     try {
-        await c.env.DJIBB_AUTH.prepare(
-            `INSERT INTO magic_link_tokens (
-                token_hash,
-                target_email,
-                purpose,
-                time_created,
-                time_expires,
-                request_ip,
-                user_agent
-            ) VALUES (?, ?, ?, ?, ?, ?, ?);`
-        )
-            .bind(
-                tokenHash,
-                email,
-                MAGIC_PURPOSE_SIGNIN,
-                now,
-                expires,
-                ip,
-                c.req.header('User-Agent') ?? null
-            )
-            .run();
+        await InsertMagicLinkToken(c.env.DJIBB_AUTH, {
+            tokenHash,
+            targetEmail: email,
+            purpose: MAGIC_PURPOSE_SIGNIN,
+            timeCreated: now,
+            timeExpires: expires,
+            requestIp: ip,
+            userAgent: c.req.header('User-Agent') ?? null,
+        });
     } catch (err) {
         // PK collision is astronomically unlikely with 32-char
         // urlAlphabet; if it happens, log and fall through to the

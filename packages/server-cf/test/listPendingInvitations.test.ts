@@ -9,7 +9,7 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 
-import { ListPendingInvitationsForIdentities } from '../src/catalog/service';
+import { ListPendingInvitationsForIdentities } from '../src/derived-index/d1';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 const NOW_SECONDS = 1_700_000_000; // fixed for stability

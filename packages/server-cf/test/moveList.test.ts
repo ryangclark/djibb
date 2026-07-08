@@ -22,7 +22,7 @@ import {
     type MovePreflightDeps,
 } from '@djibb/protocol/list/mutators/moveList';
 import { GetMembership } from '../src/workspace/service';
-import { GetEntityVersion } from '../src/list/entity';
+import { GetEntityVersion } from '../src/derived-index/d1';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
 const NOW_SECONDS = 1_700_000_000;

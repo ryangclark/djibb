@@ -15,8 +15,8 @@ import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '@djibb/protocol/id';
+import { GetInvitationFromIndex } from '../src/derived-index/d1';
 import {
-    GetInvitationFromIndex,
     preflightAcceptInvitation,
     type AcceptPreflightDeps,
 } from '../src/list/invitations';

@@ -20,7 +20,7 @@ import {
     handleMagicLand,
     handleMagicRequest,
 } from './magic';
-import { CreateSession, DeleteSession } from './session';
+import { CreateSession, DeleteSession } from './d1';
 import type { Account } from '@djibb/protocol/account';
 
 export const Auth_App = new Hono<HonoEnv>();
