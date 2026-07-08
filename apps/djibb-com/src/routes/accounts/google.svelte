@@ -1,6 +1,7 @@
 <script>
 	import { getSessionState, STATUSES } from '$lib/session.svelte';
 	import { goto } from '$app/navigation';
+	import { apiOrigin } from '$lib/config';
 
 	const sessionState = getSessionState();
 
@@ -16,7 +17,7 @@
 			'left=' + (window.innerWidth / 2 - width / 2)
 		].join();
 
-		const url = import.meta.env.VITE_API_BASE_URL + '/auth/google';
+		const url = apiOrigin + '/auth/google';
 		const result = window?.open(url, '_blank', windowOpenOptions);
 
 		if (!result || result.closed || typeof result.closed === 'undefined') {

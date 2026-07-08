@@ -1,4 +1,5 @@
-const BASE = import.meta.env.VITE_API_BASE_URL;
+// @ts-check
+import { api } from './client.js';
 
 /**
  * One row in the per-account Trash. Mirrors `TrashedEntity` on the
@@ -24,9 +25,5 @@ const BASE = import.meta.env.VITE_API_BASE_URL;
  * @returns {Promise<TrashedEntity[]>}
  */
 export async function fetchTrashForAccount(accountId) {
-	const res = await fetch(`${BASE}/${accountId}/trash`, {
-		credentials: 'include'
-	});
-	if (!res.ok) throw new Error(`trash fetch failed: ${res.status}`);
-	return res.json();
+	return /** @type {TrashedEntity[]} */ (await api.get(`/${accountId}/trash`));
 }

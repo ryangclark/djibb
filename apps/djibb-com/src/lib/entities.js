@@ -1,6 +1,5 @@
-import { dev } from '$app/environment';
-
-const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
+// @ts-check
+import { api } from './api/client.js';
 
 /**
  * Fetch owner-only entities (lists + templates) for the active account.
@@ -13,23 +12,8 @@ const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
  * @returns {Promise<{ id: string, type: 'list' | 'template', name: string | null }[]>}
  */
 export async function fetchOwnedEntities({ accountId }) {
-	const protocol = `http${dev ? '' : 's'}:`;
-	const url = `${protocol}//${import.meta.env.VITE_REPLICACHE_BASE_URL}/entities`;
-
-	/** @type {Record<string, string>} */
-	const headers = {};
-	if (accountId) headers[ACTIVE_ACCOUNT_HEADER] = accountId;
-
-	const response = await fetch(url, {
-		method: 'GET',
-		credentials: 'include',
-		headers
-	});
-	if (!response.ok) {
-		throw new Error(
-			`fetchOwnedEntities failed: ${response.status} ${await response.text()}`
-		);
-	}
-	const body = await response.json();
+	const body = /** @type {{ entities?: { id: string, type: 'list' | 'template', name: string | null }[] }} */ (
+		await api.get('/entities', { activeAccount: accountId })
+	);
 	return body.entities ?? [];
 }

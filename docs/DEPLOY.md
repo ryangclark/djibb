@@ -63,9 +63,10 @@ Worker must exist before Pages binds to its DO.**
 5. **Pages env vars** (Pages dashboard → Settings → Environment
    variables, Production) — these are the build-time `VITE_*` values:
    ```
-   VITE_API_BASE_URL        = https://api.djibb.com
-   VITE_REPLICACHE_BASE_URL = api.djibb.com           # host, no scheme
+   VITE_DJIBB_ORIGIN = https://api.djibb.com   # one origin: fetch, sync, ws
    ```
+   (`src/lib/config.js` derives the Replicache host and the `wss://` websocket
+   origin from this — https here means the socket becomes `wss://`.)
    (Replicache no longer needs a license key — it's open source now, so
    there's no `VITE_REPLICACHE_LICENSE_KEY`.)
 

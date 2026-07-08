@@ -1,5 +1,6 @@
 import { getContext, setContext } from 'svelte';
 import { fetchWorkspacesForAccount } from '$lib/api/workspace';
+import { apiOrigin } from '$lib/config';
 
 export const STATUSES = {
 	idle: 'idle',
@@ -58,10 +59,9 @@ class SessionState {
 		this.status = STATUSES.loading;
 
 		try {
-			const response = await fetch(
-				`${import.meta.env.VITE_API_BASE_URL}/auth/session`,
-				{ credentials: 'include' }
-			);
+			const response = await fetch(`${apiOrigin}/auth/session`, {
+				credentials: 'include'
+			});
 
 			if (response.status === 401) {
 				this.accounts = [];

@@ -1,4 +1,5 @@
-const BASE = import.meta.env.VITE_API_BASE_URL;
+// @ts-check
+import { api } from './client.js';
 
 /**
  * One entity shared with the actor. Mirrors `SharedEntity` on the server
@@ -22,9 +23,5 @@ const BASE = import.meta.env.VITE_API_BASE_URL;
  * @returns {Promise<SharedEntity[]>}
  */
 export async function fetchSharedForAccount(accountId) {
-	const res = await fetch(`${BASE}/${accountId}/shared`, {
-		credentials: 'include'
-	});
-	if (!res.ok) throw new Error(`shared fetch failed: ${res.status}`);
-	return res.json();
+	return /** @type {SharedEntity[]} */ (await api.get(`/${accountId}/shared`));
 }

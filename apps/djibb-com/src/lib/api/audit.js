@@ -1,6 +1,5 @@
-const BASE = import.meta.env.VITE_API_BASE_URL;
-
-const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
+// @ts-check
+import { api, DjibbHttpError } from './client.js';
 
 /**
  * One entry of an entity's audit log. Mirrors `MutationLogEntry` on the
@@ -59,19 +58,14 @@ export async function fetchWorkspaceAudit({
 	if (limit != null) params.set('limit', String(limit));
 	if (before != null) params.set('before', String(before));
 
-	/** @type {Record<string, string>} */
-	const headers = {};
-	if (accountId) headers[ACTIVE_ACCOUNT_HEADER] = accountId;
-
-	const res = await fetch(`${BASE}/workspace/audit?${params}`, {
-		credentials: 'include',
-		headers
-	});
-	if (res.status === 403) {
-		throw new Error('forbidden');
+	try {
+		return /** @type {AuditPage} */ (
+			await api.get(`/workspace/audit?${params}`, { activeAccount: accountId })
+		);
+	} catch (err) {
+		if (err instanceof DjibbHttpError && err.status === 403) {
+			throw new Error('forbidden');
+		}
+		throw err;
 	}
-	if (!res.ok) {
-		throw new Error(`audit fetch failed: ${res.status}`);
-	}
-	return res.json();
 }

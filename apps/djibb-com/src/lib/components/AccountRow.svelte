@@ -2,6 +2,7 @@
 	import { OAUTH_PROVIDER_PRETTY } from '@djibb/protocol/auth/constants';
 	import { getSessionState, STATUSES } from '$lib/session.svelte';
 	import { setAccountUsername } from '$lib/api/account';
+	import { apiOrigin } from '$lib/config';
 
 	/**
 	 * @type {{account: import("@djibb/protocol/account").Account}}
@@ -25,15 +26,12 @@
 		signingOut = true;
 
 		try {
-			const response = await fetch(
-				`${import.meta.env.VITE_API_BASE_URL}/auth/session/accounts`,
-				{
-					method: 'DELETE',
-					credentials: 'include',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ account_id: account.id })
-				}
-			);
+			const response = await fetch(`${apiOrigin}/auth/session/accounts`, {
+				method: 'DELETE',
+				credentials: 'include',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ account_id: account.id })
+			});
 
 			if (!response.ok) {
 				console.error('Sign-out failed:', response.status);
