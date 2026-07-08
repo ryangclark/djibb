@@ -1,3 +1,4 @@
+// @ts-check
 // Connected-clients access surface (ADR 0022 §6, GH #24). Owner/admin-only
 // view of everything connected to a workspace — member Accounts with their
 // interactive sessions and issued tokens (the #23 union read). Served by the
@@ -11,7 +12,6 @@
 // revoke them here. Removing a member or bot's access is `removeMember`
 // (the existing roster mutator), not this module.
 
-// @ts-check
 import { api, DjibbHttpError } from './client.js';
 
 /**

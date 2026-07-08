@@ -37,7 +37,10 @@ export class DjibbHttpError extends Error {
 	 * @param {string} url
 	 */
 	constructor(status, statusText, bodyText, headers, url) {
-		super(`${status} ${statusText || 'request failed'}: ${url}`);
+		// The URL stays a field for logs but is kept out of `message` — call
+		// sites render `err.message` straight into the page, and a full API
+		// URL with query params is not something to show a user.
+		super(`${status} ${statusText || 'request failed'}`);
 		this.name = 'DjibbHttpError';
 		this.status = status;
 		this.statusText = statusText;
@@ -70,7 +73,16 @@ function joinUrl(baseUrl, path) {
  * @property {boolean} [notFoundAsNull] Map a 404 to `null` instead of
  *   throwing — for lookups whose "not found" is a normal answer the server
  *   deliberately can't distinguish from "not authorized" (both 404).
- * @property {Record<string, string>} [headers] Extra headers, merged last.
+ * @property {'json'|'none'} [parse] What to do with a successful body.
+ *   Default `'json'`: parse it, and *throw* if it isn't JSON — a 200 that
+ *   should have carried a body but didn't is a bug we want loud, not a
+ *   silent `undefined` that explodes at the caller's `.map()`. Pass `'none'`
+ *   for the endpoints that deliberately answer 200 with an empty body
+ *   (`/auth/magic/request` soft-200s to avoid disclosing account existence).
+ *   A `204`/`205` is always empty and never parsed.
+ * @property {Record<string, string>} [headers] Extra headers. Merged *first*,
+ *   so they can't clobber `X-Djibb-Active-Account` — that header is an authz
+ *   input to server-side role resolution (ADR 0021), not a convenience knob.
  */
 
 /**
@@ -88,10 +100,14 @@ function joinUrl(baseUrl, path) {
  * @param {object} config
  * @param {string} config.baseUrl The API origin, e.g. `http://localhost:8787`.
  * @param {typeof fetch} [config.fetch] Injectable for tests; defaults to the
- *   global `fetch`.
+ *   global `fetch`, resolved *per call* so a later-installed interceptor
+ *   (MSW, instrumentation) isn't bypassed by an init-time snapshot.
  * @returns {Transport}
  */
-export function createTransport({ baseUrl, fetch: fetchImpl = globalThis.fetch }) {
+export function createTransport({
+	baseUrl,
+	fetch: fetchImpl = (...args) => globalThis.fetch(...args)
+}) {
 	/**
 	 * @param {string} method
 	 * @param {string} path
@@ -113,7 +129,9 @@ export function createTransport({ baseUrl, fetch: fetchImpl = globalThis.fetch }
 		const res = await fetchImpl(url, {
 			method,
 			credentials: 'include',
-			headers: { ...headers, ...opts.headers },
+			// Extras first: the active-account header is an authz input and
+			// must not be overridable by a caller's convenience headers.
+			headers: { ...opts.headers, ...headers },
 			body
 		});
 
@@ -124,10 +142,10 @@ export function createTransport({ baseUrl, fetch: fetchImpl = globalThis.fetch }
 			const text = await res.text().catch(() => '');
 			throw new DjibbHttpError(res.status, res.statusText, text, res.headers, url);
 		}
-		if (res.status === 204) return /** @type {any} */ (undefined);
-
-		const contentType = res.headers.get('Content-Type') || '';
-		if (!contentType.includes('application/json')) {
+		// 204/205 are defined to have no body; `parse: 'none'` is the caller
+		// declaring the same for a 200. Everything else must be JSON — let
+		// `res.json()` throw rather than silently hand back `undefined`.
+		if (opts.parse === 'none' || res.status === 204 || res.status === 205) {
 			return /** @type {any} */ (undefined);
 		}
 		return res.json();

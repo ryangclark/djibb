@@ -54,8 +54,12 @@ export class MagicLinkRateLimitError extends Error {
  */
 export async function requestMagicLink({ email, next }) {
     try {
+        // The server soft-200s with an empty body on success (and on a
+        // malformed/unknown address) so it never discloses whether the
+        // Account exists — there is nothing to parse.
         await api.post('/auth/magic/request', {
-            json: { email, next: next ?? '/workspaces' }
+            json: { email, next: next ?? '/workspaces' },
+            parse: 'none'
         });
     } catch (err) {
         if (err instanceof DjibbHttpError) {
