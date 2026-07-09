@@ -63,12 +63,26 @@ export function newOneShotClient() {
 }
 
 /**
+ * The logical mutation each client has been pushed with, keyed by identity.
+ * The DO's dedup makes *misuse* silent: reuse one client for a second,
+ * different mutation and the DO acks it as "from the past" without writing —
+ * data loss with a success exit code. This map turns that into a loud throw
+ * while still letting retries (same mutation, same client) through.
+ *
+ * @type {WeakMap<OneShotClient, string>}
+ */
+const pushedIntent = new WeakMap();
+
+/**
  * POST one mutation to an entity's `/push`.
  *
  * The caller's `accountId` is stamped into the mutation envelope. It is not a
  * claim of authority — the server's auth layer resolves the *credential* on
  * the transport to a role, and the DO cross-checks the two agree. Pass `null`
  * to write anonymously (the DO then resolves the entity's `default_role`).
+ *
+ * Retrying with the same `client` is the point; reusing a client for a
+ * *different* mutation throws (see `pushedIntent`).
  *
  * @param {import('./transport.js').Transport} transport
  * @param {object} input
@@ -85,6 +99,19 @@ export async function pushMutation(
 	transport,
 	{ client, kind, entityId, name, args, accountId, profileID = 'djibb-client' }
 ) {
+	// Record intent *before* the send, so a failed attempt still pins the
+	// client to this mutation and a retry of it passes.
+	const intent = JSON.stringify({ kind, entityId, name, args, accountId });
+	const prior = pushedIntent.get(client);
+	if (prior !== undefined && prior !== intent) {
+		throw new Error(
+			'OneShotClient reused for a different mutation. The DO dedupes on ' +
+				'(clientID, mutationID), so this push would be silently skipped — ' +
+				'mint a new identity per logical mutation with newOneShotClient().'
+		);
+	}
+	pushedIntent.set(client, intent);
+
 	await transport.post(`/${kind}/push?id=${encodeURIComponent(entityId)}`, {
 		json: {
 			profileID,

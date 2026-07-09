@@ -112,6 +112,65 @@ describe('pushMutation', () => {
 		expect(second.id).toBe(first.id);
 		expect(calls[0]?.opts.json.clientGroupID).toBe(calls[1]?.opts.json.clientGroupID);
 	});
+
+	it('throws on reuse for a DIFFERENT mutation — the DO would silently skip it', async () => {
+		// The failure mode this guards is nasty: the DO dedupes on
+		// (clientID, mutationID), so a second, different mutation pushed with
+		// a used identity is acked as "from the past" without writing —
+		// data loss with a success exit code.
+		const { transport } = stubTransport();
+		const client = newOneShotClient();
+		await pushMutation(transport, {
+			client,
+			kind: 'list',
+			entityId: 'l/abc',
+			name: 'createListItem',
+			args: { item: { id: 'i/1' } },
+			accountId: null
+		});
+		await expect(
+			pushMutation(transport, {
+				client,
+				kind: 'list',
+				entityId: 'l/abc',
+				name: 'createListItem',
+				args: { item: { id: 'i/2' } },
+				accountId: null
+			})
+		).rejects.toThrow(/reused for a different mutation/);
+	});
+
+	it('a failed first attempt still pins the client, so its retry is allowed', async () => {
+		// Intent is recorded before the send: a transport error on attempt 1
+		// must not leave the client unpinned or block the retry.
+		let fail = true;
+		/** @type {string[]} */
+		const sent = [];
+		const transport = /** @type {import('./transport.js').Transport} */ (
+			/** @type {unknown} */ ({
+				post: async (/** @type {string} */ path) => {
+					if (fail) {
+						fail = false;
+						throw new Error('boom');
+					}
+					sent.push(path);
+				}
+			})
+		);
+		const client = newOneShotClient();
+		const push = () =>
+			pushMutation(transport, {
+				client,
+				kind: 'list',
+				entityId: 'l/abc',
+				name: 'createListItem',
+				args: { item: { id: 'i/1' } },
+				accountId: null
+			});
+		await expect(push()).rejects.toThrow('boom');
+		await push(); // retry of the same mutation: allowed
+		expect(sent).toHaveLength(1);
+	});
 });
 
 describe('pullEntity', () => {

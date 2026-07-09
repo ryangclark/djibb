@@ -143,7 +143,9 @@ you only choose how the credential *arrives*.
   push protocol too — these build the envelope for you. **Mint the identity
   once per logical mutation** with `newOneShotClient()` and reuse it across
   retries: `(clientID, mutationID)` *is* the idempotency key, and re-minting
-  per attempt makes a retried push apply twice. `djibb contribute`/`promote`
+  per attempt makes a retried push apply twice. (The inverse misuse — reusing
+  one client for a *different* mutation — would be silently skip-and-acked by
+  the DO, so `pushMutation` throws on it.) `djibb contribute`/`promote`
   are the reference consumers.
 - [ ] **⚠ gap — `makePusher`/`makePuller` are still cookie-only.**
   They hardcode `credentials: 'include'` and can't send a Bearer header, so a

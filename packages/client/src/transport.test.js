@@ -237,4 +237,37 @@ describe('credential strategies', () => {
 		expect(sent.get('Authorization')).toBe('Bearer real');
 		expect(sent.get('Origin')).toBe('https://djibb.com');
 	});
+
+	it('clobber protection is case-insensitive — no combined header values', async () => {
+		// Header names are case-insensitive, and `Headers` *combines* two
+		// spellings of one name ("Bearer spoofed, Bearer real") instead of
+		// letting one win. A lowercase extra must be dropped, not merged.
+		const { fetch, calls } = stubFetch(json({}));
+		await createTransport({
+			baseUrl: 'http://h',
+			credential: bearerToken('real', { origin: 'https://djibb.com' }),
+			fetch
+		}).post('/x', {
+			activeAccount: 'a/real',
+			headers: {
+				authorization: 'Bearer spoofed',
+				origin: 'https://evil.example',
+				'x-djibb-active-account': 'a/spoofed'
+			}
+		});
+		const sent = new Headers(calls[0]?.init.headers);
+		expect(sent.get('Authorization')).toBe('Bearer real');
+		expect(sent.get('Origin')).toBe('https://djibb.com');
+		expect(sent.get('X-Djibb-Active-Account')).toBe('a/real');
+	});
+
+	it('benign extra headers still pass through the clobber filter', async () => {
+		const { fetch, calls } = stubFetch(json({}));
+		await createTransport({
+			baseUrl: 'http://h',
+			credential: anonymous({ origin: 'https://djibb.com' }),
+			fetch
+		}).get('/x', { headers: { 'X-Trace': '1' } });
+		expect(new Headers(calls[0]?.init.headers).get('X-Trace')).toBe('1');
+	});
 });

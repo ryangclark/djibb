@@ -136,9 +136,10 @@ function joinUrl(baseUrl, path) {
  *   for the endpoints that deliberately answer 200 with an empty body
  *   (`/auth/magic/request` soft-200s to avoid disclosing account existence).
  *   A `204`/`205` is always empty and never parsed.
- * @property {Record<string, string>} [headers] Extra headers. Merged *first*,
- *   so they can't clobber `X-Djibb-Active-Account` — that header is an authz
- *   input to server-side role resolution (ADR 0021), not a convenience knob.
+ * @property {Record<string, string>} [headers] Extra headers. Any entry whose
+ *   name collides (case-insensitively) with a credential header or
+ *   `X-Djibb-Active-Account` is dropped — those are authz inputs to
+ *   server-side role resolution (ADR 0021/0022), not convenience knobs.
  */
 
 /**
@@ -184,14 +185,24 @@ export function createTransport({
 			body = JSON.stringify(opts.json);
 		}
 
+		// The credential's headers (Authorization, Origin) and the transport's
+		// own (active-account, Content-Type) are authz/protocol inputs, and
+		// must not be overridable by a caller's convenience headers. HTTP
+		// header names are case-insensitive, and `Headers` *combines* two
+		// spellings of one name ("Bearer spoofed, Bearer real") rather than
+		// letting one win — so a plain spread only protects the exact-case
+		// match. Drop any extra whose name collides case-insensitively.
+		const reserved = { ...credential.headers, ...headers };
+		const reservedNames = new Set(Object.keys(reserved).map((k) => k.toLowerCase()));
+		const extras = Object.fromEntries(
+			Object.entries(opts.headers ?? {}).filter(([k]) => !reservedNames.has(k.toLowerCase()))
+		);
+
 		const url = joinUrl(baseUrl, path);
 		const res = await fetchImpl(url, {
 			method,
 			credentials: credential.credentials,
-			// Extras first: the credential's headers (Authorization, Origin) and
-			// the active-account header are authz inputs, and must not be
-			// overridable by a caller's convenience headers.
-			headers: { ...opts.headers, ...credential.headers, ...headers },
+			headers: { ...extras, ...reserved },
 			body
 		});
 
