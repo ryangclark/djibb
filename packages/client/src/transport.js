@@ -1,25 +1,81 @@
 // @ts-check
 /**
- * The one credentialed-fetch transport for the djibb webapp (arch-review #2).
+ * The one credentialed-fetch transport for every djibb client (arch-review
+ * #2, generalized in #5).
  *
  * Before this module, every `lib/api/*.js` file re-implemented the same
  * skeleton: read `VITE_API_BASE_URL`, set `credentials: 'include'`, hand-wire
- * the `X-Djibb-Active-Account` header, and improvise error handling. That
- * drift is what this centralizes.
+ * the `X-Djibb-Active-Account` header, and improvise error handling. The CLI
+ * hand-rolled a *second* copy for its own auth model. That drift is what this
+ * centralizes.
  *
  * `@djibb/client` is framework- and env-agnostic (ADR 0014: no Svelte, no
  * `import.meta.env`). So the base URL is *injected* — the app reads its env
- * once and calls `createTransport({ baseUrl })`; `fetch` is injectable too so
- * the transport is unit-testable with a stub.
+ * once and calls `createTransport({ baseUrl, credential })`; `fetch` is
+ * injectable too so the transport is unit-testable with a stub.
  *
- * This is the browser sibling of the CLI's `djibbRequestHeaders`/`push`/`pull`
- * primitive in `server-cf/bin/djibb.ts`. They are deliberately separate: the
- * CLI authenticates server-to-server (Bearer + `Origin` CSRF, no cookies),
- * the webapp with the interactive cookie session. Unifying them is a later
- * step (arch-review #5), not this one.
+ * **Credential presentation is the one axis that used to fork this code.**
+ * A browser presents the interactive cookie session and must *not* set
+ * `Origin` (a forbidden header — the browser sets it). A non-browser client
+ * (CLI, bot, integration) presents an `issued_credentials` Bearer token, or
+ * nothing at all, and *must* set `Origin` explicitly to clear the worker's
+ * CSRF gate (`index.ts` rejects non-GET requests whose `Origin` isn't in
+ * `AUTHORIZED_DOMAINS`). Pass the matching strategy below; everything else
+ * about a djibb request is identical.
  */
 
 const ACTIVE_ACCOUNT_HEADER = 'X-Djibb-Active-Account';
+
+/**
+ * How a client presents its identity on each request. A strategy contributes
+ * `credentials` and/or `headers` to every call.
+ *
+ * Spelled as a literal union rather than the DOM's `RequestCredentials` so
+ * this package's public types resolve under a Node `lib`/`types` too — the
+ * CLI consumes them without pulling in the whole DOM lib.
+ *
+ * @typedef {object} Credential
+ * @property {'omit'|'same-origin'|'include'} [credentials]
+ * @property {Record<string, string>} [headers]
+ */
+
+/**
+ * Browser clients: send the interactive session cookie. `Origin` is set by
+ * the browser and cannot be set here.
+ *
+ * @returns {Credential}
+ */
+export function sessionCookie() {
+	return { credentials: 'include' };
+}
+
+/**
+ * Non-browser clients authenticating as an Account via an `issued_credentials`
+ * API key (ADR 0022). The token says *who* the caller is; the server's auth
+ * layer decides what that identity may do.
+ *
+ * @param {string} token
+ * @param {{ origin: string }} opts `origin` must be an `AUTHORIZED_DOMAINS` entry.
+ * @returns {Credential}
+ */
+export function bearerToken(token, { origin }) {
+	return {
+		credentials: 'omit',
+		headers: { Authorization: `Bearer ${token}`, Origin: origin }
+	};
+}
+
+/**
+ * Non-browser clients calling with no credential at all. The server resolves
+ * them to the target entity's `default_role` (e.g. `submitter` on the
+ * Contributed List, which admits `createListItem` and nothing else).
+ *
+ * @param {{ origin: string }} opts `origin` must be an `AUTHORIZED_DOMAINS` entry.
+ * @returns {Credential}
+ */
+export function anonymous({ origin }) {
+	return { credentials: 'omit', headers: { Origin: origin } };
+}
 
 /**
  * A non-2xx (or otherwise failed) response from the djibb API. Carries
@@ -80,9 +136,10 @@ function joinUrl(baseUrl, path) {
  *   for the endpoints that deliberately answer 200 with an empty body
  *   (`/auth/magic/request` soft-200s to avoid disclosing account existence).
  *   A `204`/`205` is always empty and never parsed.
- * @property {Record<string, string>} [headers] Extra headers. Merged *first*,
- *   so they can't clobber `X-Djibb-Active-Account` — that header is an authz
- *   input to server-side role resolution (ADR 0021), not a convenience knob.
+ * @property {Record<string, string>} [headers] Extra headers. Any entry whose
+ *   name collides (case-insensitively) with a credential header or
+ *   `X-Djibb-Active-Account` is dropped — those are authz inputs to
+ *   server-side role resolution (ADR 0021/0022), not convenience knobs.
  */
 
 /**
@@ -99,6 +156,8 @@ function joinUrl(baseUrl, path) {
  *
  * @param {object} config
  * @param {string} config.baseUrl The API origin, e.g. `http://localhost:8787`.
+ * @param {Credential} config.credential How this client presents its identity —
+ *   `sessionCookie()`, `bearerToken(token, { origin })`, or `anonymous({ origin })`.
  * @param {typeof fetch} [config.fetch] Injectable for tests; defaults to the
  *   global `fetch`, resolved *per call* so a later-installed interceptor
  *   (MSW, instrumentation) isn't bypassed by an init-time snapshot.
@@ -106,6 +165,7 @@ function joinUrl(baseUrl, path) {
  */
 export function createTransport({
 	baseUrl,
+	credential,
 	fetch: fetchImpl = (...args) => globalThis.fetch(...args)
 }) {
 	/**
@@ -125,13 +185,24 @@ export function createTransport({
 			body = JSON.stringify(opts.json);
 		}
 
+		// The credential's headers (Authorization, Origin) and the transport's
+		// own (active-account, Content-Type) are authz/protocol inputs, and
+		// must not be overridable by a caller's convenience headers. HTTP
+		// header names are case-insensitive, and `Headers` *combines* two
+		// spellings of one name ("Bearer spoofed, Bearer real") rather than
+		// letting one win — so a plain spread only protects the exact-case
+		// match. Drop any extra whose name collides case-insensitively.
+		const reserved = { ...credential.headers, ...headers };
+		const reservedNames = new Set(Object.keys(reserved).map((k) => k.toLowerCase()));
+		const extras = Object.fromEntries(
+			Object.entries(opts.headers ?? {}).filter(([k]) => !reservedNames.has(k.toLowerCase()))
+		);
+
 		const url = joinUrl(baseUrl, path);
 		const res = await fetchImpl(url, {
 			method,
-			credentials: 'include',
-			// Extras first: the active-account header is an authz input and
-			// must not be overridable by a caller's convenience headers.
-			headers: { ...opts.headers, ...headers },
+			credentials: credential.credentials,
+			headers: { ...extras, ...reserved },
 			body
 		});
 

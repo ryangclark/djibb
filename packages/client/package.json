@@ -9,6 +9,7 @@
         "./undoStack": "./src/undoStack.js",
         "./replicache": "./src/replicache.js",
         "./transport": "./src/transport.js",
+        "./oneshot": "./src/oneshot.js",
         "./origins": "./src/origins.js",
         "./types": "./src/types.d.ts"
     },
