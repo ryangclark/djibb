@@ -77,11 +77,9 @@ import {
 import {
     InvitationIdentityKindEnum,
     ensurePendingInvitesTable,
-    normalizeIdentityValue,
     preflightAcceptInvitation,
     preflightInviteByIdentity,
     type AcceptPreflightFailureReason,
-    type InvitationIdentityKind,
     type InvitePreflightFailureReason,
 } from './invitations';
 import { preflightMoveList } from '@djibb/protocol/list/mutators/moveList';
@@ -100,55 +98,14 @@ import {
     cascadeArchiveSweep,
     cascadeRestoreSweep,
     hardDeleteSweep,
-    harddeleteTransition,
-    isCascadeArchiveTrigger,
-    isCascadeRestoreTrigger,
     type AlarmScheduler,
 } from '../workspace/cascade';
-
-/**
- * Mutator names that change entity-level metadata (the fields projected
- * to the D1 read index). Used by the push handler to decide whether to
- * emit an entity snapshot post-commit. Add entries here as new metadata
- * mutators land (renameList, setListAuthRules, archiveList, ...).
- */
-const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
-    'acceptInvitation',
-    'archiveList',
-    'cascadeArchiveList',
-    'cascadeRestoreList',
-    'changeMemberRole',
-    'claimEntity',
-    'createWorkspace',
-    'initFromTemplate',
-    'initList',
-    'leaveMember',
-    'mintFromBlank',
-    'moveList',
-    'removeMember',
-    'renameList',
-    'renameWorkspace',
-    'setDescription',
-    'setListAuthRules',
-    'setWorkspaceImage',
-    'setWorkspaceSlug',
-    'startFresh',
-    'transferOwnership',
-    'unarchiveList',
-]);
-
-/**
- * Mutator names that touch the DO's `pending_invites` table. Used by
- * the push handler to decide whether to reconcile invitations to the
- * D1 read index post-commit (ADR 0009). The reconciler runs once per
- * push regardless of how many invitation mutations were in the batch
- * — it's a full-snapshot diff, not per-row.
- */
-const INVITATION_MUTATORS: ReadonlySet<string> = new Set([
-    'acceptInvitation',
-    'inviteByIdentity',
-    'revokeInvitation',
-]);
+import {
+    emptyPostCommitIntent,
+    foldCommittedMutation,
+    invitationFlags,
+    workspaceFlags,
+} from './postCommit';
 
 /**
  * Mutators whose push-time semantics depend on cross-target / cross-
@@ -1114,89 +1071,14 @@ export class DjibbList extends DurableObject {
             `begin processing ${pushRequest.mutations.length} mutations`
         );
 
-        // Tracks whether any successful mutation in this push touched
-        // entity-level metadata fields. The DO emits a snapshot to the
-        // D1 read index post-commit per ADR 0003. For now the only
-        // entity-mutating mutator is `initList`; renameList / archive /
-        // setListAuthRules will join this list as they land.
-        let entityMetadataMutated = false;
-        // Tracks whether this push just soft-deleted a Workspace entity.
-        // ADR 0008: a workspace's own `archiveList` is the trigger for
-        // the cascade-archive sweep — the post-commit tail enqueues a
-        // `cascade-archive` alarm event, which the dispatcher then
-        // drives in N=10 batches against the workspace's children
-        // (lists + templates). The cascade fan-out is async by design
-        // so the user's click returns instantly regardless of how many
-        // children the workspace owns.
-        let cascadeArchiveTriggered = false;
-        // Tracks whether this push just restored a Workspace entity.
-        // ADR 0008 §"Restore" mirrors the archive path: an
-        // `unarchiveList` against the workspace's own id enqueues the
-        // `cascade-restore` event. The two triggers cancel each
-        // other's pending events so a mid-sweep flip (Delete then
-        // Restore inside seconds) doesn't leave the dispatcher
-        // chasing the older direction.
-        let cascadeRestoreTriggered = false;
-        // Tracks whether this push transitioned this DO's own entity row
-        // into (or out of) the soft-deleted state. ADR 0008's hard-delete
-        // clock (10b): when the row goes soft-deleted, arm a 30d
-        // `harddelete` alarm event; when it comes back, clear it. Last
-        // write wins across the push (a single push containing both an
-        // archive and an unarchive should reflect the final state).
-        //
-        // Both the user-driven (`archiveList` / `unarchiveList`) and
-        // system-driven cascade variants (`cascadeArchiveList` /
-        // `cascadeRestoreList`) flow through this tracker, so every
-        // DjibbList — workspaces, lists, templates — runs the same
-        // clock against its own row regardless of whether the user or a
-        // parent workspace's sweep is the proximate cause.
-        let harddeleteArmed: 'arm' | 'clear' | null = null;
-        // Tracks whether this push ran a `startFresh` on the DO's own
-        // personal workspace. Carries the display_name the actor
-        // wants for the freshly-minted personal workspace (so the
-        // post-commit mint can format `<display_name>'s space`).
-        // ADR 0008 §"Personal Workspace: 'Start Fresh,' not Delete",
-        // ADR 0011 §Step 10c. The mint runs in the post-commit tail
-        // because it requires a cross-DO synth push, which the
-        // synchronous server-mutator surface cannot do.
-        let startFreshDisplayName: {
-            accountId: string;
-            displayName: string | null;
-        } | null = null;
-        // Tracks whether any mutation in this push touched the DO's
-        // `pending_invites` table. Triggers the post-commit
-        // reconciliation emit to `entity_invitations_index` (ADR 0009).
-        let invitationsMutated = false;
-        // Tracks (identity_kind, identity_value) pairs whose
-        // pending_invite row was accepted in this push. Each gets a
-        // direct UPDATE to D1 (`status='accepted'`) BEFORE the
-        // reconciler runs, so the "missing in DO ⇒ revoked" diff
-        // doesn't downgrade the row.
-        const acceptedInvites: Array<{
-            identity_kind: InvitationIdentityKind;
-            identity_value: string;
-        }> = [];
-        // Tracks (identity_kind, identity_value, inviter_account_id)
-        // for every `inviteByIdentity` mutation that successfully
-        // committed in this push. Drained post-commit to fire
-        // notification emails per ADR 0009 §"Email send". Stored
-        // separately from the reconciler input so we never fire on a
-        // mutation that was skipped/rolled back.
-        const sentInvites: Array<{
-            identity_kind: InvitationIdentityKind;
-            identity_value: string;
-            inviter_account_id: string;
-        }> = [];
-        // Tracks (to_account_id, former_owner_account_id) for every
-        // `transferOwnership` mutation that committed AND actually moved
-        // the principal (to ≠ actor). Drained post-commit to email the
-        // new owner a confirmation (ADR 0011 §Decision C, Phase 5).
-        // Captured separately from any reconciler input so we never fire
-        // on a skipped/stale transfer or a same-owner no-op.
-        const transferredOwnerships: Array<{
-            to_account_id: string;
-            former_owner_account_id: string | null;
-        }> = [];
+        // What this push's committed mutations imply for the post-commit
+        // tail — the entity-snapshot emit (ADR 0003), the workspace
+        // cascade + hard-delete clock (ADR 0008), and the invitation /
+        // ownership notifications (ADR 0009, ADR 0011). Accumulated by a
+        // pure fold in `./postCommit` (ADR 0026 series 3) so the loop
+        // below keeps only its Replicache bookkeeping; the trigger rules
+        // themselves live next to the tails they feed.
+        let intent = emptyPostCommitIntent();
 
         for (let i = 0; i < pushRequest.mutations.length; i++) {
             const mutation = pushRequest.mutations[i];
@@ -1326,144 +1208,12 @@ export class DjibbList extends DurableObject {
 
             if (didMutate) {
                 listVersion = nextVersion;
-                if (ENTITY_METADATA_MUTATORS.has(mutation.name)) {
-                    entityMetadataMutated = true;
-                }
-                // ADR 0008 §"Trigger": a successful `archiveList`
-                // mutation against this DO's own workspace entity is
-                // the cascade-archive trigger. The ID-prefix check
-                // narrows to workspace entities — list and template
-                // archives stay self-contained. `listId` is the outer
-                // function param and matches this DO's entity id (the
-                // mutator's `args.listId` is required to equal it).
-                if (isCascadeArchiveTrigger(mutation.name, listId)) {
-                    cascadeArchiveTriggered = true;
-                }
-                // Capture startFresh args at trigger time so the
-                // post-commit tail can mint the new personal workspace
-                // with the actor's display name. We avoid re-reading
-                // args downstream — the mutation envelope is already
-                // parsed and validated here.
-                if (
-                    mutation.name === 'startFresh' &&
-                    listId.startsWith('w/')
-                ) {
-                    const rawArgs = (mutation.args ?? {}) as Record<
-                        string,
-                        unknown
-                    >;
-                    const dn = rawArgs.accountDisplayName;
-                    const actor = rawArgs.accountId;
-                    if (typeof actor === 'string') {
-                        startFreshDisplayName = {
-                            accountId: actor,
-                            displayName:
-                                typeof dn === 'string' ? dn : null,
-                        };
-                    }
-                }
-                // ADR 0008 §"Restore": symmetric trigger. An
-                // unarchive against the workspace's own id flips the
-                // dispatcher into restore mode. The cascade-archive
-                // event (if any pending from a prior delete) gets
-                // canceled in the post-commit tail, so the dispatcher
-                // doesn't keep archiving children that are about to
-                // be restored.
-                if (isCascadeRestoreTrigger(mutation.name, listId)) {
-                    cascadeRestoreTriggered = true;
-                }
-                // ADR 0008 hard-delete clock arm/clear. Mutator names
-                // are the signal: a successful archive of any flavor
-                // means this DO's entity row is now soft-deleted; a
-                // successful restore means it's live again. We don't
-                // re-read the row because the mutator's own SQL helper
-                // (`archiveEntity` / `unarchiveEntity`) already enforces
-                // the transition or throws — `didMutate` proves it
-                // landed. Last write wins across the push.
-                const transition = harddeleteTransition(mutation.name);
-                if (transition !== null) {
-                    harddeleteArmed = transition;
-                }
-                if (INVITATION_MUTATORS.has(mutation.name)) {
-                    invitationsMutated = true;
-                }
-                if (mutation.name === 'inviteByIdentity') {
-                    // Capture sent invites so the post-commit tail can
-                    // fire notification emails. Pull (kind, value,
-                    // inviter) directly off the wire args — the mutator
-                    // already parsed + role-gated, and the preflight
-                    // verified the inviter is in-session.
-                    const rawArgs = (mutation.args ?? {}) as Record<
-                        string,
-                        unknown
-                    >;
-                    const kindParse = InvitationIdentityKindEnum.safeParse(
-                        rawArgs.identity_kind
-                    );
-                    const valueRaw = rawArgs.identity_value;
-                    const inviterRaw = rawArgs.accountId;
-                    if (
-                        kindParse.success &&
-                        typeof valueRaw === 'string' &&
-                        typeof inviterRaw === 'string'
-                    ) {
-                        sentInvites.push({
-                            identity_kind: kindParse.data,
-                            identity_value: normalizeIdentityValue(
-                                kindParse.data,
-                                valueRaw
-                            ),
-                            inviter_account_id: inviterRaw,
-                        });
-                    }
-                }
-                if (mutation.name === 'transferOwnership') {
-                    // Capture the transfer so the post-commit tail can
-                    // email the new owner. `accountId` is the actor; the
-                    // mutator proved it equals the current owner (else
-                    // `stale`), so it's the former owner. Skip same-owner
-                    // no-ops (to === actor): the mutator returns without
-                    // writing, but `didMutate` is still true for a clean
-                    // succeed, so we filter here rather than fire a
-                    // "you're now the owner" note at the existing owner.
-                    const rawArgs = (mutation.args ?? {}) as Record<
-                        string,
-                        unknown
-                    >;
-                    const toRaw = rawArgs.toAccountId;
-                    const actorRaw = rawArgs.accountId;
-                    if (typeof toRaw === 'string' && toRaw !== actorRaw) {
-                        transferredOwnerships.push({
-                            to_account_id: toRaw,
-                            former_owner_account_id:
-                                typeof actorRaw === 'string' ? actorRaw : null,
-                        });
-                    }
-                }
-                if (mutation.name === 'acceptInvitation') {
-                    // Pull the (kind, value) directly off the wire
-                    // args. The mutator already parsed + role-gated
-                    // above, so we trust the args' shape here; a
-                    // belt-and-suspenders zod parse keeps the cast
-                    // honest.
-                    const rawArgs = (mutation.args ?? {}) as Record<
-                        string,
-                        unknown
-                    >;
-                    const kindParse = InvitationIdentityKindEnum.safeParse(
-                        rawArgs.identity_kind
-                    );
-                    const valueRaw = rawArgs.identity_value;
-                    if (kindParse.success && typeof valueRaw === 'string') {
-                        acceptedInvites.push({
-                            identity_kind: kindParse.data,
-                            identity_value: normalizeIdentityValue(
-                                kindParse.data,
-                                valueRaw
-                            ),
-                        });
-                    }
-                }
+                // Every trigger rule (which mutators dirty the snapshot,
+                // what arms the hard-delete clock, which args become an
+                // invite email) lives in the fold. `didMutate` is the gate:
+                // a skipped / stale / unauthorized mutation must never fire
+                // an email or arm a clock.
+                intent = foldCommittedMutation(intent, mutation, listId);
             }
             if (ackedMutationId !== null) {
                 replicacheClient.lastMutationId = ackedMutationId;
@@ -1486,7 +1236,7 @@ export class DjibbList extends DurableObject {
         // We catch here rather than letting the throw mark the push
         // failed, since a successful mutation should still ack to the
         // client even if its D1 projection lagged.
-        if (entityMetadataMutated) {
+        if (intent.entityMetadataMutated) {
             try {
                 await this.emitEntitySnapshot(listId);
             } catch (error) {
@@ -1513,13 +1263,7 @@ export class DjibbList extends DurableObject {
                 env: this.env as Bindings,
                 authorizedAccounts,
             },
-            {
-                entityId: listId,
-                acceptedInvites,
-                invitationsMutated,
-                sentInvites,
-                transferredOwnerships,
-            }
+            invitationFlags(intent, listId)
         );
 
         // ADR 0008 workspace post-commit tail (§Step 10a/10b/10c),
@@ -1545,13 +1289,7 @@ export class DjibbList extends DurableObject {
                     );
                 },
             },
-            {
-                cascadeArchiveTriggered,
-                cascadeRestoreTriggered,
-                harddelete: harddeleteArmed,
-                startFresh: startFreshDisplayName,
-                listId,
-            }
+            workspaceFlags(intent, listId)
         );
 
         // Bootstrap the reconciliation alarm per ADR 0007. Idempotent;
