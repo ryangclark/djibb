@@ -342,27 +342,37 @@ If `slot = 'personal_workspace' && name IS NULL`, render as "Your Space" (or sim
 
 ## Architecture: Workspace-as-DjibbList (current direction)
 
-> **Direction change from earlier in this doc's life.** An earlier
-> revision argued *against* a `DjibbWorkspace` DO on the grounds that
-> "membership is server-rule-y and rarely-read." That position has
-> been superseded — by CONTEXT.md's "djibb uses itself" principle,
-> by ADR 0008 (cascade delete via a per-DO alarm dispatcher), and
-> by ADR 0009 (tokenless DO-resident invitations). All three want a
-> Workspace DO. The sections below describe the target shape; the
-> §Migration plan section describes how we get there from the current
-> D1-rows-only world.
+> **Two direction changes, in sequence.** (1) An earlier revision
+> argued *against* a `DjibbWorkspace` DO on the grounds that
+> "membership is server-rule-y and rarely-read." That position was
+> superseded — by CONTEXT.md's "djibb uses itself" principle, by
+> ADR 0008 (cascade delete via a per-DO alarm dispatcher), and by
+> ADR 0009 (tokenless DO-resident invitations). All three want a
+> Workspace *on the DO substrate*. (2) But the follow-on assumption —
+> that this means a separate `DjibbWorkspace` DO **subclass** — was in
+> turn rejected by **ADR 0011** (no subclass-per-type) and settled by
+> **ADR 0026**: there is exactly one exported `DjibbList` DO class,
+> decomposed *internally* into modules. A single `DJIBB_LIST` namespace
+> addresses every entity by id, so a separate class would be a data
+> migration, not a refactor — per-id polymorphism is impossible. Where
+> the sections below say "`DjibbWorkspace` subclass," read "the
+> `DjibbList` DO serving a `workspace`-typed entity, delegating to an
+> internal workspace module." The cascade dispatcher's handlers now
+> live in `packages/server-cf/src/workspace/cascade.ts` (ADR 0026
+> series 1); the DO-side invitations module is series 2.
 
 A Workspace is **a djibb entity, same DO substrate as a List or
-Template.** `DjibbList` becomes the abstract base class (rename TBD —
-`DjibbEntity` is the candidate); `DjibbList`, `DjibbTemplate`, and
-`DjibbWorkspace` are the concrete subclasses. The top-level
-`type` discriminator (`list | template | workspace`) on the entity
-row names the variant. The base class owns: the mutation log, the
-push/pull machinery, the alarm dispatcher (ADR 0007 + ADR 0008),
-the keyspaces protocol (`workers/src/replicache/keyspaces.ts`),
-the in-DO invitation flow (ADR 0009). Subclasses override: the
-mutator registry, the keyspaces array, the entity-row schema
-extension, and any subclass-specific alarm events.
+Template.** There is one `DjibbList` DO class for all three kinds; the
+top-level `type` discriminator (`list | template | workspace`) on the
+entity row names the variant, and workspace-specific behavior
+(`is_personal`/Island bookkeeping, the cascade dispatcher from
+ADR 0008) lives in an internal workspace module the DO delegates to,
+gated on that `type` prefix (ADR 0026). The DO owns: the mutation log,
+the push/pull machinery, the alarm dispatcher (ADR 0007 + ADR 0008),
+the keyspaces protocol (`workers/src/replicache/keyspaces.ts`), the
+in-DO invitation flow (ADR 0009). The internal modules carry: the
+type-specific mutator behavior, keyspace entries, entity-row schema
+extension, and type-specific alarm events.
 
 **Membership lives in the workspace's own
 `authorization_rules.authorized_accounts`** — the same shape Lists
@@ -390,12 +400,13 @@ to Workspace at least as forcefully as to List.
 
 ## Sync model
 
-- **DjibbWorkspace DO (Replicache, authoritative):** the workspace
-  entity row, its members (`authorized_accounts`), its pending
-  invitations, and any workspace-level body content (Island hex
-  coords from ADR 0008's "Personal Workspace as Island," future
-  dashboard-like surfaces). Members and invitations live in
-  role-gated pull keyspaces; PII never leaks to non-admins
+- **The `DjibbList` DO for a workspace-typed entity (Replicache,
+  authoritative):** the workspace entity row, its members
+  (`authorized_accounts`), its pending invitations, and any
+  workspace-level body content (Island hex coords from ADR 0008's
+  "Personal Workspace as Island," future dashboard-like surfaces).
+  Members and invitations live in role-gated pull keyspaces; PII never
+  leaks to non-admins
   (`docs/handoffs/2026-05-25-invitation-flow-corners-cut.md` §6
   applies the same way it does for Lists).
 - **D1 derived indexes (read-fast-path):** `workspace_entities`
@@ -405,7 +416,7 @@ to Workspace at least as forcefully as to List.
   membership across List/Template/Workspace, enabling the "my
   workspaces" and "shared with me" queries without instantiating
   every DO.
-- **DjibbList / DjibbTemplate DOs:** unchanged. They carry
+- **`DjibbList` DOs for list/template entities:** unchanged. They carry
   `workspace_id` on the entity row; auth middleware resolves a
   workspace-grant for a list by consulting the workspace's
   derived index row (fast path) and falling back to the workspace
@@ -420,20 +431,32 @@ catalog views without paying a DO instantiation per row.
 The migration is a refactor of a small live surface, not a data
 migration against a real userbase. Order of operations:
 
-1. **Base-class extraction.** Rename `DjibbList` → `DjibbEntity` (or
-   keep `DjibbList` and have `DjibbWorkspace` extend it directly; TBD
-   when implementation starts). Pull mutator-registry plumbing,
-   push/pull machinery, alarm dispatcher, keyspaces orchestration,
-   in-DO invitation flow, and entity-row schema scaffolding up to the
-   base. The existing Template variant (`type: 'template'`) is the
-   first validation that the extraction is clean.
-2. **`DjibbWorkspace` skeleton.** New concrete subclass; mutator
-   registry includes `initWorkspace`, `renameWorkspace`,
-   `setWorkspaceSlug`, `setWorkspaceImage`, plus the invitation
-   mutators inherited from the base. Entity row carries
-   `slot`, `slug`. The `members` keyspace (role-gated:
-   admins+ see the full list; members see themselves only) is the
-   workspace-specific keyspace.
+> **Steps 1–2 shipped differently than written.** ADR 0011 chose a
+> single universal `DjibbList` substrate over subclass-per-type, and
+> ADR 0026 formalized the internal-module decomposition. So there was
+> no base-class rename and no `DjibbWorkspace` subclass — `type` on the
+> entity row selects behavior, and the type-specific logic lives in
+> internal modules (`workspace/cascade.ts`, and the coming DO-side
+> invitations module) that the one `DjibbList` class delegates to. The
+> mutators named below (`createWorkspace`, `renameWorkspace`, …) all
+> shipped on that single class.
+
+1. **~~Base-class extraction~~ → universal substrate.** Superseded by
+   ADR 0011: `DjibbList` stays the one exported class and directly
+   carries the mutation-log, push/pull, alarm-dispatcher, keyspaces,
+   and in-DO invitation machinery for every `type`. The Template
+   variant (`type: 'template'`) validated that a single class handles
+   multiple kinds cleanly, exactly as the "extraction is clean" test
+   intended.
+2. **~~`DjibbWorkspace` skeleton~~ → workspace mutators + module.** No
+   subclass. The workspace mutators (`createWorkspace`,
+   `renameWorkspace`, `setWorkspaceSlug`, `setWorkspaceImage`, plus the
+   inherited invitation mutators) register on the shared class; the
+   entity row carries `slot`, `slug`; the role-gated `members` keyspace
+   (admins+ see the full list, members see themselves only) is a
+   workspace-specific keyspace entry. Workspace-specific server logic
+   is being carved into an internal module per ADR 0026 (cascade =
+   series 1, invitations = series 2).
 3. **Role enum reconciliation.** ✅ Done (shipped across ADR 0011).
    The `admin`-vs-`owner` question is settled: distinct roles, `admin`
    unbounded co-admin, `owner` the single transferable principal
@@ -445,9 +468,9 @@ migration against a real userbase. Order of operations:
    invitable role set (`InvitableRoleEnum`) excludes `owner`, so an
    admin cannot mint an owner via the invite path.
 4. **Personal workspace on account creation.** Wire
-   `account/service.ts::CreateAccount` to instantiate a
-   `DjibbWorkspace` stub with `slot: 'personal_workspace'` and push the
-   `initWorkspace` mutator. Closes the existing TODO.
+   `account/service.ts::CreateAccount` to instantiate a `DjibbList` DO
+   stub for a `workspace`-typed entity with `slot: 'personal_workspace'`
+   and push the workspace-mint mutator. Closes the existing TODO.
 5. **Auth resolver rewrite.** `auth/rules.ts`'s workspace-grant
    resolution stops reading `AccountWorkspace`; it reads the
    `account_authorizations` derived index. Reconciliation sweeper
@@ -481,9 +504,12 @@ backfill — decide at apply time.
 ## Slicing
 
 **Phase 1 — Foundation.**
-- Base-class extraction (`DjibbList` → `DjibbEntity` + concrete
-  subclasses). Templates validate the extraction is clean.
-- `DjibbWorkspace` skeleton with `initWorkspace`, `renameWorkspace`.
+- Universal `DjibbList` substrate handles every `type` (ADR 0011);
+  Templates validated that one class serves multiple kinds cleanly. No
+  `DjibbEntity` rename, no subclasses (ADR 0026).
+- Workspace mutators (`createWorkspace`, `renameWorkspace`, …) on the
+  shared class; workspace-specific server logic carved into an internal
+  module (ADR 0026: cascade = series 1, invitations = series 2).
 - Personal workspace auto-created on account signup.
 - Role enum reconciliation ADR + migration.
 
