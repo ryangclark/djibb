@@ -68,15 +68,12 @@ import {
     CountInvitesByInviterSince,
     CountMembershipsForEntity,
     CountOutstandingInvitesByInviter,
-    DeleteEntityRow,
     EmitEntityMembershipsToCatalog,
     EmitEntitySnapshotToCatalog,
     EmitInvitationsSnapshot,
     GetEntityVersion,
     GetInvitationFromIndex,
     GetWorkspaceSlug,
-    ListCascadeArchiveBatch,
-    ListCascadeRestoreBatch,
     MarkInvitationsAccepted,
     tryClaimSlug,
 } from '../derived-index/d1';
@@ -106,6 +103,17 @@ import {
     parsePullCookie,
 } from '../replicache/keyspaces';
 import { newId } from '@djibb/protocol/id';
+import type { AlarmEventName } from './alarm-events';
+import {
+    applyWorkspacePostCommit,
+    cascadeArchiveSweep,
+    cascadeRestoreSweep,
+    hardDeleteSweep,
+    harddeleteTransition,
+    isCascadeArchiveTrigger,
+    isCascadeRestoreTrigger,
+    type AlarmScheduler,
+} from '../workspace/cascade';
 
 /**
  * Mutator names that change entity-level metadata (the fields projected
@@ -244,26 +252,9 @@ function acceptReasonToOutcomeStatus(
     }
 }
 
-/**
- * Multi-event alarm dispatcher event names (ADR 0011 §Step 10a.2 /
- * ADR 0008). One per kind of scheduled work the DO does:
- *
- *   - reconcile        : ADR 0007 D1 drift check (every DO, every day)
- *   - cascade-archive  : Workspace DO sweeps children on
- *                        `softDeleteWorkspace` (10a.4)
- *   - cascade-restore  : Workspace DO sweeps children on
- *                        `restoreWorkspace` (10a.5)
- *   - harddelete       : per-DO self-destruct 30d after soft delete
- *                        (10a.6 / 10b)
- *
- * Adding a new event: extend this union, register a case in
- * `runAlarmEvent`, schedule via `scheduleEvent(name, dueAt)`.
- */
-export type AlarmEventName =
-    | 'reconcile'
-    | 'cascade-archive'
-    | 'cascade-restore'
-    | 'harddelete';
+// `AlarmEventName` moved to `./alarm-events` (ADR 0026 series 1) so the
+// workspace cascade module (`workspace/cascade.ts`) and the DO import it
+// with no cycle. It's imported at the top of this file.
 
 /**
  * TODO:
@@ -1354,11 +1345,7 @@ export class DjibbList extends DurableObject {
                 // archives stay self-contained. `listId` is the outer
                 // function param and matches this DO's entity id (the
                 // mutator's `args.listId` is required to equal it).
-                if (
-                    (mutation.name === 'archiveList' ||
-                        mutation.name === 'startFresh') &&
-                    listId.startsWith('w/')
-                ) {
+                if (isCascadeArchiveTrigger(mutation.name, listId)) {
                     cascadeArchiveTriggered = true;
                 }
                 // Capture startFresh args at trigger time so the
@@ -1391,10 +1378,7 @@ export class DjibbList extends DurableObject {
                 // canceled in the post-commit tail, so the dispatcher
                 // doesn't keep archiving children that are about to
                 // be restored.
-                if (
-                    mutation.name === 'unarchiveList' &&
-                    listId.startsWith('w/')
-                ) {
+                if (isCascadeRestoreTrigger(mutation.name, listId)) {
                     cascadeRestoreTriggered = true;
                 }
                 // ADR 0008 hard-delete clock arm/clear. Mutator names
@@ -1404,19 +1388,10 @@ export class DjibbList extends DurableObject {
                 // re-read the row because the mutator's own SQL helper
                 // (`archiveEntity` / `unarchiveEntity`) already enforces
                 // the transition or throws — `didMutate` proves it
-                // landed.
-                if (
-                    mutation.name === 'archiveList' ||
-                    mutation.name === 'cascadeArchiveList' ||
-                    mutation.name === 'startFresh'
-                ) {
-                    harddeleteArmed = 'arm';
-                }
-                if (
-                    mutation.name === 'unarchiveList' ||
-                    mutation.name === 'cascadeRestoreList'
-                ) {
-                    harddeleteArmed = 'clear';
+                // landed. Last write wins across the push.
+                const transition = harddeleteTransition(mutation.name);
+                if (transition !== null) {
+                    harddeleteArmed = transition;
                 }
                 if (INVITATION_MUTATORS.has(mutation.name)) {
                     invitationsMutated = true;
@@ -1597,117 +1572,37 @@ export class DjibbList extends DurableObject {
             );
         }
 
-        // ADR 0008 §"Trigger": enqueue the cascade-archive event for
-        // immediate fire. The handler reads this workspace's child
-        // catalog and fans out `cascadeArchiveList` pushes in N=10
-        // batches; if more children remain after a batch it re-arms
-        // itself. Idempotent re-scheduling: scheduling the same event
-        // again (e.g. a retry archive on an already-deleted workspace)
-        // just resets the dueAt to "now," which is harmless. We
-        // schedule AFTER `emitEntitySnapshot` so the workspace's own
-        // `time_deleted` is already in the catalog before any child
-        // begins its sweep — useful for the read paths (Trash UI,
-        // future "this list is in a deleted workspace" hint) that
-        // consult both rows.
-        //
-        // Mid-restore re-archive: also cancel any pending
-        // cascade-restore event. The dispatcher would self-abort on
-        // the next tick (the handler checks the workspace's own
-        // `time_deleted`), but canceling here drops the storage key
-        // immediately and avoids a pointless alarm fire.
-        if (cascadeArchiveTriggered) {
-            try {
-                await this.cancelEvent('cascade-restore');
-                await this.scheduleEvent('cascade-archive', Date.now());
-            } catch (error) {
-                console.error(
-                    `\`scheduleEvent('cascade-archive')\` failed for "${listId}":`,
-                    error
-                );
+        // ADR 0008 workspace post-commit tail (§Step 10a/10b/10c),
+        // extracted to `workspace/cascade.ts` (ADR 0026 series 1). Folds
+        // the cascade-archive/restore triggers, the startFresh personal-
+        // workspace mint, and the hard-delete clock arm/clear. Runs AFTER
+        // `emitEntitySnapshot` so the workspace's own `time_deleted` is in
+        // the catalog before any child sweep begins. The mint is injected
+        // (the DO owns the DJIBB_LIST binding + Account shaping); every
+        // block swallows its own failure so a scheduling blip doesn't fail
+        // the already-committed push.
+        await applyWorkspacePostCommit(
+            {
+                scheduler: this.alarmScheduler,
+                hardDeleteDelayMs: DjibbList.HARD_DELETE_DELAY_MS,
+                mintPersonalWorkspace: async (actor) => {
+                    await mintPersonalWorkspaceEntity(
+                        (this.env as Bindings).DJIBB_LIST,
+                        {
+                            id: actor.accountId,
+                            display_name: actor.displayName,
+                        } as Account
+                    );
+                },
+            },
+            {
+                cascadeArchiveTriggered,
+                cascadeRestoreTriggered,
+                harddelete: harddeleteArmed,
+                startFresh: startFreshDisplayName,
+                listId,
             }
-        }
-
-        // ADR 0008 §"Restore": symmetric to the archive trigger.
-        // Cancels any pending cascade-archive (mid-sweep flip) and
-        // enqueues cascade-restore for immediate fire.
-        if (cascadeRestoreTriggered) {
-            try {
-                await this.cancelEvent('cascade-archive');
-                await this.scheduleEvent('cascade-restore', Date.now());
-            } catch (error) {
-                console.error(
-                    `\`scheduleEvent('cascade-restore')\` failed for "${listId}":`,
-                    error
-                );
-            }
-        }
-
-        // ADR 0008 §"Personal Workspace: 'Start Fresh,' not Delete" /
-        // ADR 0011 §Step 10c: mint a fresh personal workspace for the
-        // actor immediately after their old one got archived by
-        // `startFresh`. Cross-DO synth push, so it has to live in the
-        // post-commit tail (the mutator surface is synchronous).
-        //
-        // Failures here are logged-but-swallowed. The cascade-archive
-        // and harddelete clock on the old workspace have already been
-        // scheduled above; if the mint fails, the user lands in a
-        // weird zero-personal-workspaces state until the next signin
-        // (or until a manual recovery path is built). Worth
-        // reconsidering if this proves flaky in production.
-        if (startFreshDisplayName) {
-            try {
-                const env = this.env as Bindings;
-                await mintPersonalWorkspaceEntity(env.DJIBB_LIST, {
-                    id: startFreshDisplayName.accountId,
-                    display_name: startFreshDisplayName.displayName,
-                } as Account);
-            } catch (error) {
-                console.error(
-                    `\`startFresh\` mint failed for actor "${startFreshDisplayName.accountId}":`,
-                    error
-                );
-            }
-        }
-
-        // ADR 0008 hard-delete clock (10b). Armed when this push
-        // soft-deleted the DO's own entity row; cleared when restored.
-        // 30d from now (override via `HARD_DELETE_DELAY_MS` for tests).
-        //
-        // Scheduled here, AFTER any cascade-archive/restore trigger,
-        // so the clock arm is the last event-store write in the push.
-        // That ordering is unimportant for correctness (the dispatcher
-        // picks the minimum due time across all pending events), but
-        // keeps the test reading order predictable: by the time
-        // `_handlePush` returns, both events for an archive flow
-        // (cascade-archive at `now`, harddelete at `now + 30d`) are
-        // present in storage.
-        //
-        // The handler's safety net (re-reads `time_deleted` before
-        // destroying anything) means a missed `clear` won't hard-delete
-        // a restored entity — but we still clear here so the alarm
-        // doesn't fire pointlessly 30d later.
-        if (harddeleteArmed === 'arm') {
-            try {
-                await this.scheduleEvent(
-                    'harddelete',
-                    Date.now() + DjibbList.HARD_DELETE_DELAY_MS
-                );
-            } catch (error) {
-                console.error(
-                    `\`scheduleEvent('harddelete')\` failed for "${listId}":`,
-                    error
-                );
-            }
-        } else if (harddeleteArmed === 'clear') {
-            try {
-                await this.cancelEvent('harddelete');
-            } catch (error) {
-                console.error(
-                    `\`cancelEvent('harddelete')\` failed for "${listId}":`,
-                    error
-                );
-            }
-        }
+        );
 
         // Bootstrap the reconciliation alarm per ADR 0007. Idempotent;
         // ensureReconcileAlarm() no-ops when an alarm is already
@@ -2506,6 +2401,20 @@ export class DjibbList extends DurableObject {
     }
 
     /**
+     * Narrow view of this DO's multi-event scheduler, injected into the
+     * workspace cascade free functions (`workspace/cascade.ts`, ADR 0026
+     * series 1). `schedule`/`cancel` bind to `scheduleEvent`/
+     * `cancelEvent`; tests drive the free functions with a fake in-memory
+     * scheduler instead.
+     */
+    private get alarmScheduler(): AlarmScheduler {
+        return {
+            schedule: (name, dueAtMs) => this.scheduleEvent(name, dueAtMs),
+            cancel: (name) => this.cancelEvent(name),
+        };
+    }
+
+    /**
      * Read every pending event → due-time. Returns an empty Map when
      * nothing is scheduled (the legacy-fire fallback case in `alarm()`
      * relies on this).
@@ -2722,136 +2631,13 @@ export class DjibbList extends DurableObject {
     static readonly CASCADE_ARCHIVE_BATCH_SIZE = 10;
 
     async handleCascadeArchive(): Promise<void> {
-        const entityId = getEntityId(this.sql);
-        if (!entityId || !entityId.startsWith('w/')) {
-            // Not a workspace DO. Should never reach the handler given
-            // the trigger guard in `_handlePush`, but a misconfigured
-            // event key shouldn't loop forever.
-            console.warn(
-                `\`handleCascadeArchive()\` not a workspace entity (id="${entityId}"); canceling`
-            );
-            await this.cancelEvent('cascade-archive');
-            return;
-        }
-
-        // Read this workspace's own time_deleted to use as the
-        // deletion-timestamp portion of the synthetic clientID. Also
-        // doubles as the abort check: if the user restored the
-        // workspace before this tick, time_deleted is null and we
-        // bail (10a.5 turns this into the inverse sweep).
-        const own = this.sql
-            .exec(
-                `SELECT time_deleted FROM list_elements WHERE id = ?;`,
-                entityId
-            )
-            .one();
-        const ownTimeDeletedRaw = own?.time_deleted as number | null;
-        if (ownTimeDeletedRaw == null) {
-            console.log(
-                `\`handleCascadeArchive()\` workspace "${entityId}" not deleted; canceling`
-            );
-            await this.cancelEvent('cascade-archive');
-            return;
-        }
-        // time_deleted is unix seconds in the DO row (`getElementById`
-        // multiplies by 1000); raw column read is seconds. Convert to
-        // ms for the clientID — keeps the cascade campaign id stable
-        // across restarts even though the wall clock has moved.
-        const deletionTsMs = ownTimeDeletedRaw * 1000;
-
-        const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-        const rows = await ListCascadeArchiveBatch(
-            d1,
-            entityId,
-            DjibbList.CASCADE_ARCHIVE_BATCH_SIZE
-        );
-        if (rows.length === 0) {
-            // Drained. Per ADR 0008 the next workspace-side event is
-            // the 30d hard-delete clock (10b); we don't set it here
-            // because the trigger landed it at archive time. Just
-            // clear the cascade-archive key.
-            await this.cancelEvent('cascade-archive');
-            return;
-        }
-
-        for (const childId of rows) {
-            try {
-                await this.cascadeArchiveChild(
-                    childId,
-                    entityId,
-                    deletionTsMs
-                );
-            } catch (error) {
-                console.error(
-                    `\`handleCascadeArchive()\` child push failed for "${childId}":`,
-                    error
-                );
-                // Leave the child unarchived; next batch re-selects it
-                // (its time_deleted didn't get set). Retries are
-                // bounded by progress on the rest of the batch.
-            }
-        }
-
-        // Re-arm for "immediate" — the dispatcher will run us again
-        // when Cloudflare's alarm fires next. A batch < N children
-        // doesn't mean we're done (a write could have raced); keep
-        // looping until the SELECT comes back empty.
-        await this.scheduleEvent('cascade-archive', Date.now());
-    }
-
-    /**
-     * Cascade-archive a single child entity (List or Template) via
-     * a synthetic-client push to its DO. ADR 0008 §"Cascade-archive
-     * invocation":
-     *
-     *   - clientID = `cascade:<workspaceId>:<deletionTimestampMs>`
-     *     — campaign-scoped; a fresh deletion mints a fresh clientID,
-     *     so delete→restore→delete cycles never reuse one.
-     *   - mutationId = 1 — child DOs each maintain their own
-     *     `replicache_clients` table, so this clientID is new to every
-     *     child the first time we push to it; mutationId=1 works
-     *     uniformly across all children of one campaign. Retries on
-     *     the same child are idempotent: Replicache recognizes
-     *     mutationId=1 as already-processed and no-ops.
-     *   - authorizedRole = 'system' — gates on the cascade mutator's
-     *     SYSTEM_ROLES requiredRole (ADR 0011 §Step 10a.3).
-     */
-    private async cascadeArchiveChild(
-        childId: string,
-        workspaceId: string,
-        deletionTsMs: number
-    ): Promise<void> {
-        const env = this.env as { DJIBB_LIST: DurableObjectNamespace };
-        const stubId = env.DJIBB_LIST.idFromName(childId);
-        const stub = env.DJIBB_LIST.get(
-            stubId
-        ) as unknown as DurableObjectStub<DjibbList>;
-        const clientID = `cascade:${workspaceId}:${deletionTsMs}`;
-
-        await stub.handlePush({
-            authorizedAccounts: [],
-            authorizedRole: 'system',
-            listId: childId,
-            pushRequest: {
-                profileID: 'p_cascade',
-                clientGroupID: `cg_cascade:${workspaceId}`,
-                pushVersion: 1,
-                schemaVersion: '1',
-                mutations: [
-                    {
-                        clientID,
-                        id: 1,
-                        name: 'cascadeArchiveList',
-                        timestamp: Date.now(),
-                        args: {
-                            accountId: null,
-                            timestamp_client: new Date().toISOString(),
-                            listId: childId,
-                            cascade_source: workspaceId,
-                        },
-                    },
-                ],
-            },
+        return cascadeArchiveSweep({
+            sql: this.sql,
+            d1: (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+            listNs: (this.env as { DJIBB_LIST: DurableObjectNamespace })
+                .DJIBB_LIST,
+            scheduler: this.alarmScheduler,
+            batchSize: DjibbList.CASCADE_ARCHIVE_BATCH_SIZE,
         });
     }
 
@@ -2887,118 +2673,13 @@ export class DjibbList extends DurableObject {
      * empty.
      */
     async handleCascadeRestore(): Promise<void> {
-        const entityId = getEntityId(this.sql);
-        if (!entityId || !entityId.startsWith('w/')) {
-            console.warn(
-                `\`handleCascadeRestore()\` not a workspace entity (id="${entityId}"); canceling`
-            );
-            await this.cancelEvent('cascade-restore');
-            return;
-        }
-
-        const own = this.sql
-            .exec(
-                `SELECT time_deleted, time_updated FROM list_elements WHERE id = ?;`,
-                entityId
-            )
-            .one();
-        const ownTimeDeleted = own?.time_deleted as number | null;
-        if (ownTimeDeleted != null) {
-            // Workspace got re-archived between the user's restore and
-            // this alarm tick. The archive trigger has already
-            // enqueued cascade-archive; cancel restore to avoid
-            // chasing the older direction.
-            console.log(
-                `\`handleCascadeRestore()\` workspace "${entityId}" re-archived; canceling restore`
-            );
-            await this.cancelEvent('cascade-restore');
-            return;
-        }
-        // The workspace's `time_updated` was bumped by the
-        // unarchiveList that triggered this sweep, so it's a monotonic
-        // per-campaign timestamp — same epoch role the deletion
-        // timestamp plays for cascade-archive. Without it, a
-        // delete→restore→delete→restore cycle would re-use the same
-        // clientID across the two restore campaigns; Replicache's
-        // per-(DO, clientID) mutationID counter would then skip the
-        // second restore's push as already-processed.
-        const restoreTsMs = (own.time_updated as number) * 1000;
-
-        const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-        const rows = await ListCascadeRestoreBatch(
-            d1,
-            entityId,
-            DjibbList.CASCADE_ARCHIVE_BATCH_SIZE
-        );
-        if (rows.length === 0) {
-            await this.cancelEvent('cascade-restore');
-            return;
-        }
-
-        for (const childId of rows) {
-            try {
-                await this.cascadeRestoreChild(
-                    childId,
-                    entityId,
-                    restoreTsMs
-                );
-            } catch (error) {
-                console.error(
-                    `\`handleCascadeRestore()\` child push failed for "${childId}":`,
-                    error
-                );
-            }
-        }
-
-        await this.scheduleEvent('cascade-restore', Date.now());
-    }
-
-    /**
-     * Cascade-restore a single child entity via synthetic-client push.
-     * Symmetric with `cascadeArchiveChild`: clientID encodes the
-     * campaign epoch (here, the workspace's `time_updated` from when
-     * the unarchive ran), so delete→restore→delete→restore cycles
-     * never reuse a clientID. Without this, the second restore's
-     * mutationId=1 push would be rejected by Replicache as
-     * already-processed against the first restore's clientID, and the
-     * second restore would silently no-op.
-     */
-    private async cascadeRestoreChild(
-        childId: string,
-        workspaceId: string,
-        restoreTsMs: number
-    ): Promise<void> {
-        const env = this.env as { DJIBB_LIST: DurableObjectNamespace };
-        const stubId = env.DJIBB_LIST.idFromName(childId);
-        const stub = env.DJIBB_LIST.get(
-            stubId
-        ) as unknown as DurableObjectStub<DjibbList>;
-        const clientID = `cascade-restore:${workspaceId}:${restoreTsMs}`;
-
-        await stub.handlePush({
-            authorizedAccounts: [],
-            authorizedRole: 'system',
-            listId: childId,
-            pushRequest: {
-                profileID: 'p_cascade',
-                clientGroupID: `cg_cascade:${workspaceId}`,
-                pushVersion: 1,
-                schemaVersion: '1',
-                mutations: [
-                    {
-                        clientID,
-                        id: 1,
-                        name: 'cascadeRestoreList',
-                        timestamp: Date.now(),
-                        args: {
-                            accountId: null,
-                            timestamp_client: new Date().toISOString(),
-                            listId: childId,
-                            cascade_source: workspaceId,
-                        },
-                    },
-                ],
-            },
+        return cascadeRestoreSweep({
+            sql: this.sql,
+            d1: (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+            listNs: (this.env as { DJIBB_LIST: DurableObjectNamespace })
+                .DJIBB_LIST,
+            scheduler: this.alarmScheduler,
+            batchSize: DjibbList.CASCADE_ARCHIVE_BATCH_SIZE,
         });
     }
 
@@ -3044,72 +2725,12 @@ export class DjibbList extends DurableObject {
      * fan-out), so the whole tree drains together.
      */
     async handleHardDelete(): Promise<boolean> {
-        const entityId = getEntityId(this.sql);
-        if (!entityId) {
-            // No entity row in this DO — either never initialized, or
-            // already hard-deleted by a prior tick. Defensive cancel so
-            // a stuck alarm-event key doesn't loop.
-            console.warn(
-                '`handleHardDelete()` no entity row; canceling'
-            );
-            await this.cancelEvent('harddelete');
-            return false;
-        }
-
-        const own = this.sql
-            .exec(
-                `SELECT time_deleted FROM list_elements WHERE id = ?;`,
-                entityId
-            )
-            .one();
-        const ownTimeDeleted = own?.time_deleted as number | null;
-        if (ownTimeDeleted == null) {
-            // Restored mid-flight. The unarchive's `cancelEvent` should
-            // have dropped this event from storage, but races happen —
-            // the safety net catches them. Cancel and return.
-            console.log(
-                `\`handleHardDelete()\` entity "${entityId}" not deleted; canceling`
-            );
-            await this.cancelEvent('harddelete');
-            return false;
-        }
-
-        // Purge the catalog row first. If this fails the DO survives —
-        // a vanished DO with a live catalog row is worse than the
-        // current limbo state.
-        try {
-            const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-            await DeleteEntityRow(d1, entityId);
-        } catch (error) {
-            console.error(
-                `\`handleHardDelete()\` D1 purge failed for "${entityId}":`,
-                error
-            );
-            // Re-arm at a short backoff so the next tick retries the
-            // purge. The entity is still soft-deleted, so the safety
-            // net stays valid against an intervening restore.
-            await this.scheduleEvent(
-                'harddelete',
-                Date.now() + 60 * 1000
-            );
-            return false;
-        }
-
-        // DO storage gone. Per ADR 0008: no further alarm scheduling.
-        // `deleteAll()` removes the SQLite + KV state (including the
-        // `alarm:*:at` event keys) and clears the Cloudflare alarm.
-        // After this call the DO has nothing left to do; subsequent
-        // pushes (if any stale ones arrive) hit an uninitialized DO
-        // and either fail or re-bootstrap empty — both safe.
-        await this.ctx.storage.deleteAll();
-
-        // Terminal: signal the alarm dispatcher to stop. The `pending`
-        // map it's iterating was read before this `deleteAll()`, so any
-        // remaining due events (e.g. a co-scheduled `reconcile`) would
-        // otherwise run against a now-destroyed DO — querying a dropped
-        // `list_elements` table (harmless log noise) and, worse,
-        // re-arming themselves, resurrecting storage we just wiped.
-        return true;
+        return hardDeleteSweep({
+            sql: this.sql,
+            d1: (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+            scheduler: this.alarmScheduler,
+            deleteAllStorage: () => this.ctx.storage.deleteAll(),
+        });
     }
 
     async handleReconcile(): Promise<void> {
