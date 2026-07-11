@@ -6,7 +6,7 @@
 //      (DO sql `list_elements.authorization_rules`).
 
 import { env, runInDurableObject } from 'cloudflare:test';
-import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
+import { beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
 import type { PushRequestV1 } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
@@ -469,6 +469,31 @@ describe('transferOwnership confirmation email', () => {
         await resetWorkspaceData();
     });
 
+    /**
+     * Notification emails are handed to `ctx.waitUntil` and settle *after*
+     * the push acks, so a returned push no longer guarantees the spy ran.
+     * `expectSends` polls; `settleEmails` is its negative counterpart — for
+     * a `toHaveLength(0)` assertion the wait *is* the test, since otherwise
+     * a wrongly-fired email would land after the assertion and pass.
+     */
+    async function expectSends(sends: unknown[], count: number) {
+        await vi.waitFor(
+            () => {
+                if (sends.length < count) {
+                    throw new Error(
+                        `waiting for ${count} send(s), have ${sends.length}`
+                    );
+                }
+            },
+            { timeout: 2000, interval: 10 }
+        );
+        expect(sends).toHaveLength(count);
+    }
+
+    async function settleEmails() {
+        await new Promise(resolve => setTimeout(resolve, 250));
+    }
+
     /** Swap `env.EMAIL` for a capturing spy; returns the captured sends
      *  array and a restore fn. Mirrors entityInvitations.test.ts. */
     function spyOnEmail() {
@@ -575,7 +600,7 @@ describe('transferOwnership confirmation email', () => {
             });
             expect(result.error).toBeNull();
 
-            expect(sends).toHaveLength(1);
+            await expectSends(sends, 1);
             const sent = sends[0]!;
             expect(sent.to).toBe(newOwner.email);
             expect(String(sent.subject).toLowerCase()).toContain('owner');
@@ -601,6 +626,9 @@ describe('transferOwnership confirmation email', () => {
                 toAccountId: ownerA, // same as current owner → no-op
             });
             expect(result.error).toBeNull();
+            // Sends are detached now — settle before asserting none fired,
+            // or a wrongly-fired email would just land after the assertion.
+            await settleEmails();
             expect(sends).toHaveLength(0);
         } finally {
             restore();
@@ -622,6 +650,7 @@ describe('transferOwnership confirmation email', () => {
             });
             // Transfer still committed; only the notification is skipped.
             expect(result.error).toBeNull();
+            await settleEmails();
             expect(sends).toHaveLength(0);
         } finally {
             restore();
@@ -639,7 +668,7 @@ describe('transferOwnership confirmation email', () => {
                 ownerName: undefined,
                 toAccountId: newOwner.id,
             });
-            expect(sends).toHaveLength(1);
+            await expectSends(sends, 1);
             expect(String(sends[0]!.text)).toContain('Someone');
         } finally {
             restore();
@@ -665,7 +694,7 @@ describe('transferOwnership confirmation email', () => {
 
             // Two sends: notification to the new owner + receipt to the
             // former owner.
-            expect(sends).toHaveLength(2);
+            await expectSends(sends, 2);
             const notification = sends.find(s => s.to === newOwner.email)!;
             const receipt = sends.find(s => s.to === ownerEmail)!;
             expect(notification).toBeDefined();

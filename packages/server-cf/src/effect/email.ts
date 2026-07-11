@@ -94,9 +94,27 @@ export const EmailSenderCapture = (
  * log; they already treat sends as best-effort.
  */
 export function runEmailSend(
-    binding: SendEmail,
+    binding: SendEmail | undefined,
     message: OutboundEmail,
 ): Promise<void> {
+    // Fail fast on an unconfigured binding. Without this, `binding.send`
+    // throws a TypeError *inside* `Effect.tryPromise`, which the retry
+    // schedule below cannot tell apart from a flaky provider — so a
+    // config error would burn the full jittered backoff before failing,
+    // on every send. A missing binding is the normal local-dev state
+    // (see docs: local dev env files), and no amount of retrying will
+    // conjure it. Not transient; don't treat it as such.
+    if (!binding) {
+        return Promise.reject(
+            new EmailSendError({
+                to: message.to,
+                cause: new Error(
+                    'EMAIL binding is not configured; refusing to retry a config error',
+                ),
+            }),
+        );
+    }
+
     const program = Effect.flatMap(EmailSender, sender =>
         sender.send(message),
     ).pipe(

@@ -363,16 +363,29 @@ current one.
 > `MarkInvitationsAccepted` before the reconciler's diff). Recorded as **ADR
 > 0015 Amendment 7**; Decision D is complete with steps 3 and 4 not taken.
 >
-> **Finding, logged not fixed — notification emails are on the push's
-> critical path.** `fireInvitationEmails` / `fireOwnershipTransferEmails`
-> are awaited inside `_handlePush`, so a user's push ack waits on outbound
-> email network calls. These are best-effort notifications; nothing about
-> the DO's consistency needs them awaited. The fix is `ctx.waitUntil()` (the
-> CF-native primitive for exactly this), **not** Effect fibers — and it is a
-> real behavior change (tests may assume the sends have happened by the time
-> the push returns, and a DO can hibernate after the response), so it wants
-> its own change with its own test pass rather than riding in on a refactor.
-> Deliberately left alone.
+> **Follow-up, now FIXED (2026-07-11, on PR review) — notification emails
+> were on the push's critical path.** `fireInvitationEmails` /
+> `fireOwnershipTransferEmails` were awaited inside `_handlePush`, so a
+> user's push ack waited on outbound email network calls. This was
+> originally logged as pre-existing and left alone — but review surfaced the
+> sharper point: **Phase 2's `transientEmailRetry` sits *behind* that block**,
+> so a flaky provider now burned the full jittered backoff on the ack. The
+> retry turned a pre-existing wart into a regression this series introduced,
+> which is a different thing from a flaw it merely inherited.
+>
+> Fixed with `ctx.waitUntil()`, as predicted — not Effect fibers.
+> `applyInvitationPostCommit` takes an optional `waitUntil` dep: the two D1
+> steps stay awaited (the next request's auth middleware reads D1, so the
+> index must be caught up before the ack), and only the email fan-out
+> detaches. Absent the dep, sends are awaited inline, so direct callers and
+> unit tests keep deterministic behavior.
+>
+> The behavior change was real and the tests caught it: four pool tests
+> asserted the `env.EMAIL` spy immediately after a push. They now poll
+> (`expectSends`). Note the subtler half — the `toHaveLength(0)` *negative*
+> assertions would have started passing **for the wrong reason** (a wrongly
+> fired email simply lands after the assertion), so those settle first via
+> `settleEmails()` before asserting none fired.
 
 ## ADR bookkeeping
 

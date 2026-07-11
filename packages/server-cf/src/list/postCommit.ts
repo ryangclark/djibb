@@ -23,12 +23,17 @@
  */
 
 import type { InvitationPostCommitFlags } from './notifications';
+import type { WorkspacePostCommitFlags } from '../workspace/cascade';
+// Value-imported from the leaf `workspace/triggers`, never from
+// `workspace/cascade` — importing the predicates from `cascade` would drag
+// its `derived-index/d1` → `effect/d1` → `@effect/sql-d1` graph in behind
+// them, and this module's purity claim (below) would be a comment rather
+// than a fact. The two flag types above are `import type`, so they erase.
 import {
     harddeleteTransition,
     isCascadeArchiveTrigger,
     isCascadeRestoreTrigger,
-    type WorkspacePostCommitFlags,
-} from '../workspace/cascade';
+} from '../workspace/triggers';
 import {
     InvitationIdentityKindEnum,
     normalizeIdentityValue,

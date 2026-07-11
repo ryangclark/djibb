@@ -1262,6 +1262,11 @@ export class DjibbList extends DurableObject {
                 d1: (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
                 env: this.env as Bindings,
                 authorizedAccounts,
+                // Keep the notification emails off the push's critical path
+                // — the ack should not wait on an outbound send (plus its
+                // retry backoff). `waitUntil` keeps the DO alive until they
+                // settle after the response.
+                waitUntil: promise => this.ctx.waitUntil(promise),
             },
             invitationFlags(intent, listId)
         );

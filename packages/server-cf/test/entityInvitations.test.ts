@@ -13,12 +13,40 @@
 // E2E surface) see `docs/testing.md`.
 
 import { env, runInDurableObject } from 'cloudflare:test';
-import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
+import { beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
 import type { PushRequestV1, ReadonlyJSONObject } from 'replicache';
 
 import { DjibbList } from '../src/list/durable_object';
 import { IdTypes, newId } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
+
+/**
+ * Notification emails are handed to `ctx.waitUntil` and settle *after* the
+ * push acks (they must not stall the user's click on an outbound send), so a
+ * push no longer guarantees the spy has been called by the time it returns.
+ *
+ * `expectSends` polls for the expected count. `settleEmails` is its negative
+ * counterpart: for `toHaveLength(0)` assertions, waiting is the whole point —
+ * without it a wrongly-fired email would simply land after the assertion and
+ * the test would pass for the wrong reason.
+ */
+async function expectSends(sends: unknown[], count: number) {
+    await vi.waitFor(
+        () => {
+            if (sends.length < count) {
+                throw new Error(
+                    `waiting for ${count} send(s), have ${sends.length}`
+                );
+            }
+        },
+        { timeout: 2000, interval: 10 }
+    );
+    expect(sends).toHaveLength(count);
+}
+
+async function settleEmails() {
+    await new Promise(resolve => setTimeout(resolve, 250));
+}
 
 function getListStub(suffix: string) {
     const prefixed = `${IdTypes.list}/${suffix.padEnd(21, 'a').slice(0, 21)}`;
@@ -489,7 +517,7 @@ describe('inviteByIdentity', () => {
 
             // One send, addressed to the normalized (lower-cased) email
             // the DO stored — matches the D1 index row.
-            expect(sends).toHaveLength(1);
+            await expectSends(sends, 1);
             const sent = sends[0]!;
             expect(sent.to).toBe('recipient@example.com');
             // Subject mentions the inviter's display_name (taken from
@@ -587,7 +615,7 @@ describe('inviteByIdentity', () => {
             });
             expect(result.error).toBeNull();
 
-            expect(sends).toHaveLength(1);
+            await expectSends(sends, 1);
             const html = String(sends[0]!.html);
             expect(html).toContain('/w/invite-team?from_invite=1');
             // Crucially NOT the id-suffix form, which would 404.
@@ -681,7 +709,9 @@ describe('inviteByIdentity', () => {
             expect(result.error).toBeNull();
             // Preflight blocked the mutation; no email should have
             // fired. (Counted alongside the existing test that asserts
-            // no DO/D1 row was created.)
+            // no DO/D1 row was created.) Settle first: sends are detached
+            // now, so asserting immediately would pass even if one fired.
+            await settleEmails();
             expect(sends).toHaveLength(0);
         } finally {
             (env as { EMAIL: unknown }).EMAIL = originalEmail;

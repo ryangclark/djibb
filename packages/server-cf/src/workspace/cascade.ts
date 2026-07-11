@@ -58,60 +58,15 @@ export interface HardDeleteDeps {
 // scheduling + handlers — behind one module seam.
 // ---------------------------------------------------------------------------
 
-/**
- * ADR 0008 §"Trigger": a successful `archiveList` (or `startFresh`)
- * against this DO's own workspace entity is the cascade-archive trigger.
- * The id-prefix check narrows to workspace entities — list and template
- * archives stay self-contained.
- */
-export function isCascadeArchiveTrigger(
-    mutationName: string,
-    entityId: string
-): boolean {
-    return (
-        (mutationName === 'archiveList' || mutationName === 'startFresh') &&
-        entityId.startsWith('w/')
-    );
-}
-
-/**
- * ADR 0008 §"Restore": symmetric trigger. An `unarchiveList` against the
- * workspace's own id flips the dispatcher into restore mode.
- */
-export function isCascadeRestoreTrigger(
-    mutationName: string,
-    entityId: string
-): boolean {
-    return mutationName === 'unarchiveList' && entityId.startsWith('w/');
-}
-
-/**
- * ADR 0008 hard-delete clock arm/clear. Mutator names are the signal: a
- * successful archive of any flavor means this DO's entity row is now
- * soft-deleted (`arm` the 30d clock); a successful restore means it's
- * live again (`clear` it). Applies to every DjibbList — workspaces,
- * lists, templates — not just workspace entities, so there is no id
- * prefix guard here. Returns `null` for mutations that don't transition
- * the soft-delete state.
- */
-export function harddeleteTransition(
-    mutationName: string
-): 'arm' | 'clear' | null {
-    if (
-        mutationName === 'archiveList' ||
-        mutationName === 'cascadeArchiveList' ||
-        mutationName === 'startFresh'
-    ) {
-        return 'arm';
-    }
-    if (
-        mutationName === 'unarchiveList' ||
-        mutationName === 'cascadeRestoreList'
-    ) {
-        return 'clear';
-    }
-    return null;
-}
+// The push-path trigger predicates live in the leaf `./triggers` module so
+// `list/postCommit.ts` (a pure fold, tested in plain node) can use them
+// without transitively importing this module's D1/Effect graph. Re-exported
+// here so existing importers of `workspace/cascade` are unaffected.
+export {
+    harddeleteTransition,
+    isCascadeArchiveTrigger,
+    isCascadeRestoreTrigger,
+} from './triggers';
 
 export interface WorkspacePostCommitDeps {
     scheduler: AlarmScheduler;

@@ -332,6 +332,13 @@ export interface InvitationPostCommitDeps {
     d1: D1Database; // env.DJIBB_AUTH
     env: Bindings; // EMAIL + AUTHORIZED_DOMAINS + senders, for the email fires
     authorizedAccounts: Readonly<Account[]>;
+    /**
+     * Hand the notification emails to the runtime (`ctx.waitUntil`) so they
+     * settle *after* the push response goes out, instead of stalling the
+     * user's ack on an outbound network call. The DO injects this; unit
+     * tests and direct callers omit it and get inline `await` semantics.
+     */
+    waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 export interface InvitationPostCommitFlags {
@@ -405,23 +412,55 @@ export async function applyInvitationPostCommit(
         }
     }
 
+    // The two D1 steps above stay on the request: the worker's middleware
+    // reads D1 for auth on the *next* round-trip, so the push must not ack
+    // until the index is caught up.
+    //
+    // The emails below are the opposite. Nothing about the DO's consistency
+    // depends on them — they are best-effort notifications, and the sends
+    // carry a bounded retry (`transientEmailRetry`). Awaiting them here put
+    // an outbound network call, backoff and all, on the user's push ack:
+    // a flaky provider stalled the click. Hand them to the runtime instead
+    // (`ctx.waitUntil`), which keeps the isolate alive until they settle
+    // *after* the response goes out.
+    //
+    // `waitUntil` is optional so direct callers and unit tests still get
+    // deterministic inline behavior — absent it, the sends are awaited.
+    const emailFires: Promise<unknown>[] = [];
+
     if (flags.sentInvites.length > 0) {
-        await fireInvitationEmails(
-            sql,
-            env,
-            entityId,
-            flags.sentInvites,
-            authorizedAccounts
+        emailFires.push(
+            fireInvitationEmails(
+                sql,
+                env,
+                entityId,
+                flags.sentInvites,
+                authorizedAccounts
+            )
         );
     }
 
     if (flags.transferredOwnerships.length > 0) {
-        await fireOwnershipTransferEmails(
-            sql,
-            env,
-            entityId,
-            flags.transferredOwnerships,
-            authorizedAccounts
+        emailFires.push(
+            fireOwnershipTransferEmails(
+                sql,
+                env,
+                entityId,
+                flags.transferredOwnerships,
+                authorizedAccounts
+            )
         );
+    }
+
+    if (emailFires.length > 0) {
+        // Both fire* helpers already swallow per-recipient failures via
+        // `Promise.allSettled`; this outer settle is belt-and-braces so an
+        // unexpected throw can never reject a detached promise.
+        const settled = Promise.allSettled(emailFires);
+        if (deps.waitUntil) {
+            deps.waitUntil(settled);
+        } else {
+            await settled;
+        }
     }
 }

@@ -409,10 +409,15 @@ true; the decisions themselves (A–D) all stand unchanged.
    is unavailable where it matters: the tail's ordering is load-bearing
    (entity snapshot **before** the cascade so the workspace's `time_deleted`
    is in the catalog before any child sweep; `MarkInvitationsAccepted`
-   **before** the reconciler's diff). See the separate latency finding in
-   `docs/plans/effect-adoption.md` §Phase 4 — the notification emails do sit
-   on the push's critical path, but `ctx.waitUntil()` is the CF-native fix,
-   not Effect fibers.
+   **before** the reconciler's diff).
+
+   The one genuine latency problem in the tail — the notification emails sat
+   on the push's critical path, with Phase 2's `transientEmailRetry` backoff
+   *behind* the block — was fixed with **`ctx.waitUntil()`**, the CF-native
+   primitive, not Effect fibers. That is the amendment's point in miniature:
+   the tail's real defect was a *host lifecycle* concern, and the host's own
+   API answered it. Reaching for Effect there would have dressed up the
+   problem without solving it. See `docs/plans/effect-adoption.md` §Phase 4.
 
    **Decision D is therefore complete with steps 3 and 4 not taken.**
    Effect's final scope is the D1 owner modules (`derived-index/d1.ts`,

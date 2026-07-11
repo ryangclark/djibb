@@ -36,6 +36,19 @@ export class OAuthExchangeError extends Data.TaggedError('OAuthExchangeError')<{
     readonly cause: unknown;
 }> {}
 
+/**
+ * Google's userinfo endpoint answered with a non-2xx status. Distinct from
+ * {@link OAuthClaimsError} on purpose: a 401/503 returns a *well-formed JSON
+ * error body*, so without a status check the failure would surface as "the
+ * claims didn't parse" — which points the on-call at our schema during what
+ * is actually a Google outage or a revoked token. Carries the status so the
+ * log says what happened.
+ */
+export class OAuthUserinfoError extends Data.TaggedError('OAuthUserinfoError')<{
+    readonly status: number;
+    readonly cause: unknown;
+}> {}
+
 /** The userinfo fetch failed or returned claims we couldn't parse. */
 export class OAuthClaimsError extends Data.TaggedError('OAuthClaimsError')<{
     readonly cause: unknown;
@@ -49,7 +62,7 @@ export class GoogleIdentity extends Context.Tag('server-cf/GoogleIdentity')<
             codeVerifier: string,
         ) => Effect.Effect<
             GoogleUserClaims,
-            OAuthExchangeError | OAuthClaimsError
+            OAuthExchangeError | OAuthUserinfoError | OAuthClaimsError
         >;
     }
 >() {}
@@ -77,18 +90,37 @@ export const GoogleIdentityLive = (
                         google.validateAuthorizationCode(code, codeVerifier),
                     catch: cause => new OAuthExchangeError({ cause }),
                 });
-                const claims = yield* Effect.tryPromise({
-                    try: async () => {
-                        const response = await fetch(
+                const response = yield* Effect.tryPromise({
+                    try: () =>
+                        fetch(
                             'https://openidconnect.googleapis.com/v1/userinfo',
                             {
                                 headers: {
                                     Authorization: `Bearer ${tokens.accessToken()}`,
                                 },
                             },
-                        );
-                        return (await response.json()) as unknown;
-                    },
+                        ),
+                    catch: cause => new OAuthClaimsError({ cause }),
+                });
+
+                // Check the status before reading the body. Google answers a
+                // 401/503 with a perfectly parseable JSON error object, so
+                // `response.json()` would succeed and the failure would only
+                // show up downstream as a zod mismatch — blaming our schema
+                // for their outage.
+                if (!response.ok) {
+                    return yield* Effect.fail(
+                        new OAuthUserinfoError({
+                            status: response.status,
+                            cause: new Error(
+                                `Google userinfo responded ${response.status} ${response.statusText}`,
+                            ),
+                        }),
+                    );
+                }
+
+                const claims = yield* Effect.tryPromise({
+                    try: () => response.json() as Promise<unknown>,
                     catch: cause => new OAuthClaimsError({ cause }),
                 });
                 const parsed = GoogleUserClaimsSchema.safeParse(claims);
