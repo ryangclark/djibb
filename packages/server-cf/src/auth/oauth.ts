@@ -1,12 +1,12 @@
-import { Google, OAuth2Tokens } from 'arctic';
+import { Google } from 'arctic';
 import { generateCodeVerifier, generateState } from 'arctic';
 import type { Context } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { CookieOptions } from 'hono/utils/cookie';
-import { z } from 'zod';
 
 import { NotFoundError, UnexpectedError, ValidationError } from '@djibb/protocol/errors';
 import { CreateAccount } from '../account/service';
+import { exchangeGoogleCode, type GoogleUserClaims } from '../effect/oauth';
 import { GetAccountByEmail, GetAccountByGoogleId } from './d1';
 import { CreateSession } from './d1';
 import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
@@ -174,44 +174,24 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
         throw new ValidationError('Invalid Request!');
     }
 
-    let tokens: OAuth2Tokens;
-
+    // Code-for-tokens exchange + userinfo claims fetch, as one named
+    // operation on the GoogleIdentity service (`effect/oauth.ts`). The
+    // typed error channel (`OAuthExchangeError` / `OAuthClaimsError`)
+    // ends here: log the tagged cause, map to the HTTP-boundary
+    // DjibbError — same 500 the old ad-hoc throws produced.
+    let googleUserClaims: GoogleUserClaims;
     try {
-        const google = new Google(
-            c.env.OAUTH_GOOGLE_CLIENT_ID,
-            c.env.OAUTH_GOOGLE_CLIENT_SECRET,
-            OAUTH_REDIRECT_URI.base(c) + OAUTH_REDIRECT_URI.google
-        );
-
-        tokens = await google.validateAuthorizationCode(
+        googleUserClaims = await exchangeGoogleCode(
+            {
+                clientId: c.env.OAUTH_GOOGLE_CLIENT_ID,
+                clientSecret: c.env.OAUTH_GOOGLE_CLIENT_SECRET,
+                redirectUri: OAUTH_REDIRECT_URI.base(c) + OAUTH_REDIRECT_URI.google,
+            },
             code,
             storedCodeVerifier
         );
     } catch (err) {
-        console.error(
-            '`/google/verify` unexpected error validating auth code:',
-            err
-        );
-
-        throw new UnexpectedError();
-    }
-
-    // Get user info using the token.
-    const response = await fetch(
-        'https://openidconnect.googleapis.com/v1/userinfo',
-        {
-            headers: {
-                Authorization: `Bearer ${tokens.accessToken()}`,
-            },
-        }
-    );
-
-    const googleUserClaims: GoogleUserClaims = await response.json();
-
-    const parseResult = GoogleUserClaimsSchema.safeParse(googleUserClaims);
-
-    if (!parseResult.success) {
-        console.error('`/google/verify` parse error:', parseResult.error);
+        console.error('`/google/verify` identity exchange failed:', err);
         throw new UnexpectedError();
     }
 
@@ -320,16 +300,3 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
         throw new UnexpectedError();
     }
 }
-
-/**
- * Google User Info as provided from Identity Platform.
- * @see: https://cloud.google.com/identity-platform/docs/reference/rest/v1/UserInfo
- */
-const GoogleUserClaimsSchema = z.object({
-    name: z.string(),
-    email: z.string(),
-    picture: z.string(),
-    sub: z.string(),
-});
-
-type GoogleUserClaims = z.TypeOf<typeof GoogleUserClaimsSchema>;

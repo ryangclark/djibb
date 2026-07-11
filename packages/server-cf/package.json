@@ -22,9 +22,12 @@
     "dependencies": {
         "@djibb/client": "*",
         "@djibb/protocol": "*",
+        "@effect/sql": "^0.51.1",
+        "@effect/sql-d1": "^0.49.0",
         "@simplewebauthn/server": "^13.3.0",
         "arctic": "^3.7.0",
         "cookie": "^1.1.1",
+        "effect": "^3.21.4",
         "hono": "^4.3.11",
         "lucia": "^3.2.0",
         "oslo": "^1.2.0",

@@ -1,6 +1,7 @@
 # ADR 0015: Effect as the backend spine; Zod stays the protocol schema
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-07-09, on Phase 1 of
+  `docs/plans/effect-adoption.md` landing — see Amendments)
 - **Date:** 2026-06-14
 - **Layer:** server-cf
 
@@ -270,7 +271,10 @@ revert target, not the plan.
   synchronous `SqlStorage`.** djibb's mutators run synchronously inside the
   DO's single-threaded turn; confirm the Effect SQL driver preserves that
   atomicity model (one mutation = one transaction = one log row) rather than
-  introducing async interleaving across the turn boundary.
+  introducing async interleaving across the turn boundary. *Answered:
+  Amendment 2 (the spike — sync `runSync` works, `withTransaction` is
+  rejected, atomicity must be host-owned) and Amendment 6 (Phase 3 declined
+  on the strength of that finding plus the sync-contract analysis).*
 - **How much of the host fan-out (poke, alarm, sibling-RPC) becomes
   `Layer`s vs stays raw DO API.** Decision B says "orchestration is
   Effect," but the CF-native calls (`acceptWebSocket`, `ctx.storage.setAlarm`,
@@ -279,7 +283,99 @@ revert target, not the plan.
 - **Testing topology.** Effect's `Layer`-mocking could let much of the
   backend test under plain vitest; how much still genuinely needs
   `@cloudflare/vitest-pool-workers` (and a wrangler login) is worth
-  re-measuring once step 1–2 land.
+  re-measuring once step 1–2 land. *Answered on Phase 2 landing — see
+  Amendments item 5.*
+
+## Amendments (2026-07-09, accepted on Phase 1 landing)
+
+The adoption plan (`docs/plans/effect-adoption.md`) re-plotted Decision D
+onto the post-ADR-0014/0025 codebase and ran the Phase 0 gates. Four
+corrections to this ADR's expectations, recorded here so the ADR reads
+true; the decisions themselves (A–D) all stand unchanged.
+
+1. **`Schedule` does not replace the reconcile alarm (plan correction
+   (a)).** The sweeper's day-cadence retry with exponential backoff is
+   durable DO-storage state (`RECONCILE_RETRY_KEY` + the multi-event
+   alarm dispatcher) — a DO can't hold an in-process `Schedule` across
+   hibernation. Effect `Schedule` applies only to short, *in-request*
+   transient retries (it landed as `transientD1Retry` on the emit
+   operations); the alarm dispatcher stays exactly as is.
+
+2. **Step 3's sync-contract collision, resolved by spike (plan
+   correction (b)).** `@effect/sql-sqlite-do` under `Effect.runSync`
+   works for plain queries, but the driver's `withTransaction` is
+   incompatible with DO SQLite (the runtime rejects literal
+   `BEGIN`/`SAVEPOINT`). The viable composition is host-owned
+   `storage.transactionSync(() => Effect.runSync(program))`. Phase 3
+   remains gated on whether that ceremony beats raw `SqlStorage`;
+   declining it is an acceptable outcome.
+
+3. **`Result` is an RPC envelope, not sprawl to eliminate.** The
+   remaining backend `tryCatch`/`Result` uses are the DO RPC boundaries,
+   where returns must be structured-clone-serializable. Every Effect
+   program ends in `Effect.runPromise*` *before* the RPC return;
+   `tryCatch(Async)` stays as the envelope. "Replaces the
+   tryCatch/Result sprawl" should read "replaces hand-rolled
+   orchestration/retry."
+
+4. **ADR 0025 reshaped step 1.** D1 SQL already lived in two owner
+   modules with fixed named-operation signatures, so "convert the D1
+   emit + sweeper" became "re-implement the owner modules' internals
+   over `@effect/sql-d1`, invisible to callers" — which is exactly how
+   Phase 1 landed (`derived-index/d1.ts` + the `effect/d1` support
+   module). One driver finding from that convert: `@effect/sql-d1` has
+   no D1 batch support and discards `meta`, so batch-atomic writes and
+   `meta.changes` checks stay on the raw D1 API, lifted into the Effect
+   error channel via `d1Try`.
+
+5. **Testing topology, measured on Phase 2 landing (2026-07-10).** Of
+   60 test files: **48 genuinely need the workers pool** (they import
+   `cloudflare:test` for real bindings — miniflare D1 behind the owner
+   modules' named operations, `runInDurableObject`, Worker fetch
+   integration); **3 run plain-node** in the `meta` project (the two
+   guard tests + the Phase 2 email-service test); and **9 sit in the
+   pool without touching any binding** (pure protocol/client/keymap
+   logic) — they could move to plain vitest today, no Layers required,
+   but gain nothing by moving. The honest conclusion: Layer-mocking
+   shifts the *new-seam* tests (email copy/retry are now assertable
+   without the pool, where previously they needed the pool's `EMAIL`
+   spy), but the bulk of the suite tests D1/DO behavior through real
+   storage — exactly what the port discipline wants — and that keeps
+   needing the pool. No migration planned; revisit only if wrangler
+   login friction starts hurting CI.
+
+6. **Phase 3 declined (2026-07-10).** The gated `EntityStore`/`list/sql.ts`
+   convert to `@effect/sql-sqlite-do` was evaluated against the actual
+   module and **declined** — the plan pre-authorized "never do it" as an
+   acceptable outcome, and the analysis makes it the right one. Every one
+   of Effect's value propositions is unusable or unneeded in `list/sql.ts`:
+   (i) the ~50 named operations are **synchronous by contract** (Decision B
+   — one mutation = one DO turn = one implicit transaction), so Effect
+   reduces to `runSync` ceremony over sync code; (ii) the composable
+   transaction win is **unavailable** — Amendment 2's spike proved
+   `sql.withTransaction` is rejected by DO SQLite, and atomicity must stay
+   host-owned via `transactionSync`; (iii) **no in-request retry applies**
+   — the DO is single-threaded and one-turn, so `transientD1Retry` (the
+   Phase 1 win) has no analog; (iv) **no Layer-mockability win** —
+   Amendment 5 measured that these paths test against *real* DO storage in
+   the pool, not mocked layers; (v) the error surface is **already
+   `DjibbError`** and the operations are **already named**, so the ADR 0014
+   port discipline this convert would "buy" already exists. The only
+   residual claim is "one SQL API across backends," which a future portable
+   *backend package* serves more cleanly than wrapping DO SQLite in
+   `runSync` — while the convert would pull the `sql-sqlite-do` driver into
+   the DO bundle and seat a second idiom in the hottest path in the system.
+   `list/sql.ts` stays raw `SqlStorage` behind its named operations. The
+   unused `@effect/sql-sqlite-do` dependency (added for the Phase 0 spike,
+   now with no importer) was removed from `packages/server-cf`. Decision D's
+   step 3 is therefore **not taken**; Decision A/B still stand, and Effect
+   remains the spine for the D1 owner modules and the outward edges. The
+   remaining unrealized step is Decision D's step 4 (push-handler
+   orchestration = plan Phase 4), still gated on the ADR 0026 DO carve.
+
+Phase 0 gate results (bundle delta, workerd runtime proof, `runSync`
+spike detail, runtime topology decision) are recorded inline in
+`docs/plans/effect-adoption.md`.
 
 ## References
 

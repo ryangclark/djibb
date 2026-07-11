@@ -1,8 +1,16 @@
 import type { Bindings } from '..';
+import { runEmailSend, type OutboundEmail } from '../effect/email';
 
 // ADR 0011 §7b.3: `sendInvitationEmail` (the workspace token flow) is
 // gone with the rest of the legacy invitation system. `sendEntityInvitationEmail`
 // below is the only invitation email path now.
+
+// Message *construction* is pure (`build*Email` below, exported so the
+// copy/escaping is assertable in plain vitest); the *send* runs through
+// the EmailSender Effect service (`effect/email.ts`) with a bounded
+// transient retry and a typed `EmailSendError` rejection. The exported
+// send functions keep their `(env, params) => Promise<void>` shape —
+// Effect never escapes to callers (ADR 0015).
 
 /**
  * Resolve the `from` address for outbound mail. Single source of truth
@@ -11,7 +19,7 @@ import type { Bindings } from '..';
  * only reached if that var is somehow unset, and it stays on the domain
  * we actually control (djibb.com) — never the old, unowned djibb.app.
  */
-function resolveEmailFrom(env: Bindings): string {
+export function resolveEmailFrom(env: Pick<Bindings, 'EMAIL_FROM'>): string {
     return env.EMAIL_FROM?.trim() || 'no-reply@djibb.com';
 }
 
@@ -31,20 +39,17 @@ export interface EntityInvitationEmailParams {
 }
 
 /**
- * Invitation email for ADR 0009 entity invites (List / Template).
+ * Message body for ADR 0009 entity invites (List / Template).
  * Tokenless — the URL is just the entity page, which the invitee
- * loads, signs in if needed, and accepts from. Sibling of
- * `sendInvitationEmail` (workspace token flow); kept separate so the
- * upcoming Accounts-as-DjibbList refactor can evolve the entity path
- * without touching the workspace branch.
+ * loads, signs in if needed, and accepts from.
  */
-export async function sendEntityInvitationEmail(
-    env: Bindings,
-    params: EntityInvitationEmailParams
-): Promise<void> {
-    const from = resolveEmailFrom(env);
+export function buildEntityInvitationEmail(
+    from: string,
+    params: EntityInvitationEmailParams,
+): OutboundEmail {
     const inviter = params.inviterName?.trim() || 'Someone';
-    const entityName = params.entityName?.trim() || `a ${params.entityTypeLabel}`;
+    const entityName =
+        params.entityName?.trim() || `a ${params.entityTypeLabel}`;
     const subject = `${sanitizeHeader(inviter)} shared ${sanitizeHeader(entityName)} with you on djibb`;
 
     const text =
@@ -58,13 +63,29 @@ export async function sendEntityInvitationEmail(
         `<p><a href="${escapeAttr(params.acceptUrl)}">Open the ${escapeHtml(params.entityTypeLabel)}</a></p>` +
         `<p style="color:#888;font-size:12px">If you weren't expecting this, you can ignore this email.</p>`;
 
-    await env.EMAIL.send({
+    return {
         from: { email: from, name: 'djibb invites' },
         to: params.to,
         subject,
         html,
         text,
-    });
+    };
+}
+
+/**
+ * Invitation email for ADR 0009 entity invites (List / Template).
+ * Sibling of the ownership-transfer senders below; kept separate so the
+ * upcoming Accounts-as-DjibbList refactor can evolve the entity path
+ * without touching the workspace branch.
+ */
+export async function sendEntityInvitationEmail(
+    env: Bindings,
+    params: EntityInvitationEmailParams
+): Promise<void> {
+    await runEmailSend(
+        env.EMAIL,
+        buildEntityInvitationEmail(resolveEmailFrom(env), params),
+    );
 }
 
 export interface OwnershipTransferEmailParams {
@@ -84,20 +105,10 @@ export interface OwnershipTransferEmailParams {
     entityUrl: string;
 }
 
-/**
- * Confirmation email for an ownership transfer (ADR 0011 §Decision C,
- * Phase 5 polish). Sent to the *new* owner once `transferOwnership`
- * commits: ownership is transferred immediately and is not an
- * accept-gated invite (the former owner is demoted to `admin` in the
- * same mutation), so this is a heads-up receipt rather than a call to
- * action. Sibling of `sendEntityInvitationEmail`; kept separate so the
- * copy and (future) former-owner receipt can evolve independently.
- */
-export async function sendOwnershipTransferEmail(
-    env: Bindings,
-    params: OwnershipTransferEmailParams
-): Promise<void> {
-    const from = resolveEmailFrom(env);
+export function buildOwnershipTransferEmail(
+    from: string,
+    params: OwnershipTransferEmailParams,
+): OutboundEmail {
     const formerOwner = params.formerOwnerName?.trim() || 'Someone';
     const entityName =
         params.entityName?.trim() || `a ${params.entityTypeLabel}`;
@@ -116,13 +127,32 @@ export async function sendOwnershipTransferEmail(
         `<p><a href="${escapeAttr(params.entityUrl)}">Open the ${escapeHtml(params.entityTypeLabel)}</a></p>` +
         `<p style="color:#888;font-size:12px">If you weren't expecting this, reach out to ${escapeHtml(formerOwner)}.</p>`;
 
-    await env.EMAIL.send({
+    return {
         from: { email: from, name: 'djibb' },
         to: params.to,
         subject,
         html,
         text,
-    });
+    };
+}
+
+/**
+ * Confirmation email for an ownership transfer (ADR 0011 §Decision C,
+ * Phase 5 polish). Sent to the *new* owner once `transferOwnership`
+ * commits: ownership is transferred immediately and is not an
+ * accept-gated invite (the former owner is demoted to `admin` in the
+ * same mutation), so this is a heads-up receipt rather than a call to
+ * action. Sibling of `sendEntityInvitationEmail`; kept separate so the
+ * copy and (future) former-owner receipt can evolve independently.
+ */
+export async function sendOwnershipTransferEmail(
+    env: Bindings,
+    params: OwnershipTransferEmailParams
+): Promise<void> {
+    await runEmailSend(
+        env.EMAIL,
+        buildOwnershipTransferEmail(resolveEmailFrom(env), params),
+    );
 }
 
 export interface OwnershipTransferReceiptEmailParams {
@@ -140,20 +170,10 @@ export interface OwnershipTransferReceiptEmailParams {
     entityUrl: string;
 }
 
-/**
- * Receipt email for the *former* owner after a transfer (ADR 0011
- * §Decision C, Phase 5). Sibling of `sendOwnershipTransferEmail` (which
- * notifies the new owner). Its primary value is accountability /
- * compromise detection — the same rationale as a "new sign-in" email:
- * if the former owner didn't make this change, the receipt is how they
- * find out. The recipient-must-be-a-member guard already prevents
- * transfer to a stranger, so this is hygiene, not the abuse boundary.
- */
-export async function sendOwnershipTransferReceiptEmail(
-    env: Bindings,
-    params: OwnershipTransferReceiptEmailParams
-): Promise<void> {
-    const from = resolveEmailFrom(env);
+export function buildOwnershipTransferReceiptEmail(
+    from: string,
+    params: OwnershipTransferReceiptEmailParams,
+): OutboundEmail {
     const newOwner = params.newOwnerName?.trim() || 'another member';
     const entityName =
         params.entityName?.trim() || `your ${params.entityTypeLabel}`;
@@ -174,13 +194,32 @@ export async function sendOwnershipTransferReceiptEmail(
         `<p><a href="${escapeAttr(params.entityUrl)}">Open the ${escapeHtml(params.entityTypeLabel)}</a></p>` +
         `<p style="color:#888;font-size:12px">If you didn't make this change, your account may be compromised — secure it and contact support.</p>`;
 
-    await env.EMAIL.send({
+    return {
         from: { email: from, name: 'djibb' },
         to: params.to,
         subject,
         html,
         text,
-    });
+    };
+}
+
+/**
+ * Receipt email for the *former* owner after a transfer (ADR 0011
+ * §Decision C, Phase 5). Sibling of `sendOwnershipTransferEmail` (which
+ * notifies the new owner). Its primary value is accountability /
+ * compromise detection — the same rationale as a "new sign-in" email:
+ * if the former owner didn't make this change, the receipt is how they
+ * find out. The recipient-must-be-a-member guard already prevents
+ * transfer to a stranger, so this is hygiene, not the abuse boundary.
+ */
+export async function sendOwnershipTransferReceiptEmail(
+    env: Bindings,
+    params: OwnershipTransferReceiptEmailParams
+): Promise<void> {
+    await runEmailSend(
+        env.EMAIL,
+        buildOwnershipTransferReceiptEmail(resolveEmailFrom(env), params),
+    );
 }
 
 export interface MagicLinkEmailParams {
@@ -202,11 +241,10 @@ export interface MagicLinkEmailParams {
  * 200 unconditionally to avoid disclosing whether an Account exists,
  * and the email body must not undo that.
  */
-export async function sendMagicLinkEmail(
-    env: Bindings,
-    params: MagicLinkEmailParams
-): Promise<void> {
-    const from = resolveEmailFrom(env);
+export function buildMagicLinkEmail(
+    from: string,
+    params: MagicLinkEmailParams,
+): OutboundEmail {
     const subject = 'Sign in to djibb';
 
     const text =
@@ -221,13 +259,23 @@ export async function sendMagicLinkEmail(
         `<p style="color:#666;font-size:13px">This link expires in ${params.ttlMinutes} minutes and can be used once.</p>` +
         `<p style="color:#888;font-size:12px">If you didn't request this, you can safely ignore this email.</p>`;
 
-    await env.EMAIL.send({
-        from: {email: from, name: 'djibb sign-in'},
+    return {
+        from: { email: from, name: 'djibb sign-in' },
         to: params.to,
         subject,
         html,
         text,
-    });
+    };
+}
+
+export async function sendMagicLinkEmail(
+    env: Bindings,
+    params: MagicLinkEmailParams
+): Promise<void> {
+    await runEmailSend(
+        env.EMAIL,
+        buildMagicLinkEmail(resolveEmailFrom(env), params),
+    );
 }
 
 function sanitizeHeader(s: string): string {

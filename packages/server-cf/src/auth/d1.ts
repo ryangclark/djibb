@@ -5,8 +5,21 @@
  * for these tables (unlike the Derived Index, which is a projection).
  * Callers use the named operations; SQL and multi-statement atomicity
  * stay inside.
+ *
+ * Internals are Effect programs over `@effect/sql-d1` (ADR 0015,
+ * docs/plans/effect-adoption.md Phase 2), run through `runD1` in
+ * `../effect/d1` — which owns the layer build and the SqlError →
+ * DjibbError mapping. Exported signatures are plain
+ * `(db, ...) => Promise<T>`; Effect never escapes this module. Same
+ * carve-outs as the Phase 1 convert of `derived-index/d1.ts`: the
+ * sql-d1 driver has no D1 batch support and discards `meta`, so
+ * batch-atomic writes and `meta`-inspecting statements stay on the raw
+ * D1 API, lifted into the same programs via `d1Try`. No transient
+ * retry here — nothing in the auth substrate is an idempotent emit;
+ * failures surface to the user, who is the retry loop.
  */
 
+import * as Effect from 'effect/Effect';
 import { z } from 'zod';
 import { createDate, isWithinExpirationDate } from 'oslo';
 import { SESSION_EXPIRATION } from './constants';
@@ -20,6 +33,7 @@ import { DatelikeToDateSchema } from '@djibb/protocol/schema';
 import { AccountSchema, type Account } from '@djibb/protocol/account';
 import { newId, randomString } from '@djibb/protocol/id';
 import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
+import { d1Try, runD1 } from '../effect/d1';
 import { accountFromRow } from './account-row';
 
 // ═══ from auth/session.ts ═══
@@ -146,17 +160,13 @@ export async function CreateSession(
 
     preparedStatements.push(relationshipInsert);
 
-    try {
-        // Batched statements are SQL transactions: if any statement
-        // fails, the whole sequence aborts and rolls back.
-        await d1.batch(preparedStatements);
-    } catch (error: any) {
-        console.error(
-            '`CreateSession()` batch query error:',
-            error?.message || error
-        );
-        throw new UnexpectedError();
-    }
+    // Batched statements are SQL transactions: if any statement
+    // fails, the whole sequence aborts and rolls back. Batch atomicity
+    // needs the raw D1 API (the sql-d1 driver has no batch support) —
+    // lifted via d1Try so the SqlError → DjibbError mapping is shared.
+    await runD1(d1, 'CreateSession', () =>
+        d1Try(() => d1.batch(preparedStatements)),
+    );
 
     return session;
 }
@@ -190,15 +200,15 @@ export function DeleteSession(d1: D1Database, sessionId: string) {
         prep_DeleteSession(d1, sessionId),
     ];
 
-    return d1
-        .batch(stmts)
-        .then(batchQueryResults => {
-            return batchQueryResults.every(queryResult => queryResult.success);
-        })
-        .catch(err => {
-            console.error('`DeleteSession()` query error:', err);
-            throw new UnexpectedError();
-        });
+    // Raw batch for the same reason as CreateSession: FK ordering must
+    // land atomically, and the sql-d1 driver has no batch support.
+    return runD1(d1, 'DeleteSession', () =>
+        Effect.map(
+            d1Try(() => d1.batch(stmts)),
+            batchQueryResults =>
+                batchQueryResults.every(queryResult => queryResult.success),
+        ),
+    );
 }
 
 // TODO: change this function to not use a `batch` of querires, and
@@ -210,12 +220,11 @@ export async function GetSessionById(
     d1: D1Database,
     sessionId: string
 ): Promise<Session | null> {
-    let queryResults;
-
-    try {
-        queryResults = await d1
-            .prepare(
-                `SELECT
+    const rows = await runD1(
+        d1,
+        'GetSessionById',
+        sql =>
+            sql`SELECT
                     accounts.id AS account_id,
                     accounts.display_name,
                     accounts.email,
@@ -237,27 +246,19 @@ export async function GetSessionById(
                     ON AccountSession.account_id = accounts.id
                 JOIN sessions
                     ON sessions.id = AccountSession.session_id
-                WHERE AccountSession.session_id = ?;`
-            )
-            .bind(sessionId)
-            .all();
-    } catch (error: any) {
-        console.error(
-            '`GetSessionById()` query error:',
-            error?.message || error
-        );
-        throw new UnexpectedError();
-    }
+                WHERE AccountSession.session_id = ${sessionId}`,
+    );
 
-    if (!queryResults.results.length) {
+    if (!rows.length) {
         return null;
     }
 
-    // Process query results.
+    // Process query results. Zod parse stays at the seam, outside the
+    // Effect program, so ParseError keeps its own failure surface.
     const accounts: Array<Account> = [];
     let session: any = { accounts: accounts, fresh: false };
 
-    for (const row of queryResults.results as any) {
+    for (const row of rows as any) {
         if (row.account_id) {
             // Single accounts-join-row → Account mapper, shared with the
             // bearer-credential path (`accountFromRow`). One place to map
@@ -296,15 +297,19 @@ function updateSessionExpiration(
     d1: D1Database,
     { sessionId, time_expires }: { sessionId: string; time_expires: Date }
 ) {
-    return d1
-        .prepare('UPDATE sessions SET time_expires = ? WHERE id = ?')
-        .bind(Math.floor(time_expires.getTime() / 1000), sessionId)
-        .run()
-        .then(result => result.meta.changed_db)
-        .catch(err => {
-            console.error('`updateSessionExpiration()` query error:', err);
-            throw err;
-        });
+    // Inspects `meta.changed_db`, which the sql-d1 driver discards —
+    // raw API via d1Try.
+    return runD1(d1, 'updateSessionExpiration', () =>
+        Effect.map(
+            d1Try(() =>
+                d1
+                    .prepare('UPDATE sessions SET time_expires = ? WHERE id = ?')
+                    .bind(Math.floor(time_expires.getTime() / 1000), sessionId)
+                    .run(),
+            ),
+            result => result.meta.changed_db,
+        ),
+    );
 }
 
 export async function ValidateSession(d1: D1Database, sessionId: string) {
@@ -497,10 +502,11 @@ export async function CreateCredential(
     const secretHash = await hashSecret(secret);
     const now = args.now ?? Math.floor(Date.now() / 1000);
 
-    try {
-        await d1
-            .prepare(
-                `INSERT INTO issued_credentials (
+    await runD1(
+        d1,
+        'CreateCredential',
+        sql =>
+            sql`INSERT INTO issued_credentials (
                     credential_id,
                     secret_hash,
                     account_id,
@@ -508,25 +514,10 @@ export async function CreateCredential(
                     bound_entity_id,
                     time_created,
                     time_expires
-                ) VALUES (?, ?, ?, ?, ?, ?, ?);`,
-            )
-            .bind(
-                credentialId,
-                secretHash,
-                args.accountId,
-                args.label ?? null,
-                args.boundEntityId ?? null,
-                now,
-                args.timeExpires ?? null,
-            )
-            .run();
-    } catch (error: any) {
-        console.error(
-            '`CreateCredential()` insert error:',
-            error?.message || error,
-        );
-        throw new UnexpectedError();
-    }
+                ) VALUES (${credentialId}, ${secretHash}, ${args.accountId},
+                    ${args.label ?? null}, ${args.boundEntityId ?? null},
+                    ${now}, ${args.timeExpires ?? null})`,
+    );
 
     return { credentialId, token: `${credentialId}.${secret}` };
 }
@@ -559,11 +550,11 @@ export async function VerifyBearerCredential(
     const presentedHash = await hashSecret(parsed.secret);
     const now = options?.now ?? Math.floor(Date.now() / 1000);
 
-    let row: Record<string, any> | null;
-    try {
-        row = await d1
-            .prepare(
-                `SELECT
+    const rows = await runD1(
+        d1,
+        'VerifyBearerCredential',
+        sql =>
+            sql`SELECT
                     ic.secret_hash AS secret_hash,
                     ic.bound_entity_id AS bound_entity_id,
                     ic.time_expires AS time_expires,
@@ -583,17 +574,10 @@ export async function VerifyBearerCredential(
                     accounts.user_name AS user_name
                 FROM issued_credentials ic
                 JOIN accounts ON accounts.id = ic.account_id
-                WHERE ic.credential_id = ?;`,
-            )
-            .bind(parsed.credentialId)
-            .first();
-    } catch (error: any) {
-        console.error(
-            '`VerifyBearerCredential()` query error:',
-            error?.message || error,
-        );
-        throw new UnexpectedError();
-    }
+                WHERE ic.credential_id = ${parsed.credentialId}
+                LIMIT 1`,
+    );
+    const row: Record<string, any> | undefined = rows[0];
 
     if (!row) return null;
 
@@ -698,35 +682,36 @@ export async function RevokeEntityBoundCredential(
     args: { credentialId: string; entityId: string; now?: number },
 ): Promise<boolean> {
     const now = args.now ?? Math.floor(Date.now() / 1000);
-    try {
-        const cursor = await d1
-            .prepare(
-                `UPDATE issued_credentials
-                 SET time_revoked = ?
-                 WHERE credential_id = ?
-                   AND bound_entity_id = ?
-                   AND time_revoked IS NULL;`,
-            )
-            .bind(now, args.credentialId, args.entityId)
-            .run();
-        return (cursor.meta.changes ?? 0) > 0;
-    } catch (error: any) {
-        console.error(
-            '`RevokeEntityBoundCredential()` update error:',
-            error?.message || error,
-        );
-        throw new UnexpectedError();
-    }
+    // Inspects `meta.changes` (the driver discards meta) — raw API via
+    // d1Try.
+    return runD1(d1, 'RevokeEntityBoundCredential', () =>
+        Effect.map(
+            d1Try(() =>
+                d1
+                    .prepare(
+                        `UPDATE issued_credentials
+                         SET time_revoked = ?
+                         WHERE credential_id = ?
+                           AND bound_entity_id = ?
+                           AND time_revoked IS NULL;`,
+                    )
+                    .bind(now, args.credentialId, args.entityId)
+                    .run(),
+            ),
+            cursor => (cursor.meta.changes ?? 0) > 0,
+        ),
+    );
 }
 
 /** Records `time_last_used` for an authenticated credential. */
 function touchLastUsed(d1: D1Database, credentialId: string, now: number) {
-    return d1
-        .prepare(
-            'UPDATE issued_credentials SET time_last_used = ? WHERE credential_id = ?',
-        )
-        .bind(now, credentialId)
-        .run();
+    return runD1(
+        d1,
+        'touchLastUsed',
+        sql =>
+            sql`UPDATE issued_credentials SET time_last_used = ${now}
+                WHERE credential_id = ${credentialId}`,
+    );
 }
 
 
@@ -804,11 +789,6 @@ type CredentialRow = {
     time_revoked: number | null;
 };
 
-/** `?,?,?` for an IN-list of `n` bound params. */
-function placeholders(n: number): string {
-    return Array.from({ length: n }, () => '?').join(', ');
-}
-
 /**
  * The unioned connected view for one or more Accounts, optionally narrowed
  * to a single entity.
@@ -840,35 +820,29 @@ export async function ListConnectedClients(
     if (accountIds.length === 0) return [];
 
     const now = args.now ?? Math.floor(Date.now() / 1000);
-    const ph = placeholders(accountIds.length);
 
-    const [sessions, credentials] = await Promise.all([
-        d1
-            .prepare(
-                `SELECT s.id AS id,
+    const [sessions, credentials] = await runD1(d1, 'ListConnectedClients', sql =>
+        Effect.all(
+            [
+                sql<SessionRow>`SELECT s.id AS id,
                         a.account_id AS account_id,
                         s.time_created AS time_created,
                         s.time_expires AS time_expires
                  FROM sessions s
                  JOIN AccountSession a ON a.session_id = s.id
-                 WHERE a.account_id IN (${ph});`,
-            )
-            .bind(...accountIds)
-            .all<SessionRow>(),
-        d1
-            .prepare(
-                `SELECT credential_id, account_id, label, bound_entity_id,
+                 WHERE a.account_id IN ${sql.in(accountIds)}`,
+                sql<CredentialRow>`SELECT credential_id, account_id, label, bound_entity_id,
                         time_created, time_last_used, time_expires, time_revoked
                  FROM issued_credentials
-                 WHERE account_id IN (${ph});`,
-            )
-            .bind(...accountIds)
-            .all<CredentialRow>(),
-    ]);
+                 WHERE account_id IN ${sql.in(accountIds)}`,
+            ],
+            { concurrency: 2 },
+        ),
+    );
 
     const out: ConnectedClient[] = [];
 
-    for (const s of sessions.results ?? []) {
+    for (const s of sessions) {
         out.push({
             kind: 'session',
             id: s.id,
@@ -882,7 +856,7 @@ export async function ListConnectedClients(
         });
     }
 
-    for (const c of credentials.results ?? []) {
+    for (const c of credentials) {
         // Entity narrowing via the *same* binding leaf the authz gate
         // enforces (`tokenBindsToEntity`): a token that can't act here
         // isn't "connected" here, by construction — visibility and
@@ -933,16 +907,16 @@ export async function ResolveAccountDisplays(
     const out = new Map<string, AccountDisplay>();
     if (ids.length === 0) return out;
 
-    const rows = await d1
-        .prepare(
-            `SELECT id AS account_id, display_name, email
+    const rows = await runD1(
+        d1,
+        'ResolveAccountDisplays',
+        sql =>
+            sql<AccountDisplay>`SELECT id AS account_id, display_name, email
              FROM accounts
-             WHERE id IN (${placeholders(ids.length)});`,
-        )
-        .bind(...ids)
-        .all<AccountDisplay>();
+             WHERE id IN ${sql.in(ids)}`,
+    );
 
-    for (const r of rows.results ?? []) out.set(r.account_id, r);
+    for (const r of rows) out.set(r.account_id, r);
     return out;
 }
 
@@ -962,16 +936,19 @@ export async function ResolveCredentialLabels(
     const out = new Map<string, string | null>();
     if (ids.length === 0) return out;
 
-    const rows = await d1
-        .prepare(
-            `SELECT credential_id, label
+    const rows = await runD1(
+        d1,
+        'ResolveCredentialLabels',
+        sql =>
+            sql<{
+                credential_id: string;
+                label: string | null;
+            }>`SELECT credential_id, label
              FROM issued_credentials
-             WHERE credential_id IN (${placeholders(ids.length)});`,
-        )
-        .bind(...ids)
-        .all<{ credential_id: string; label: string | null }>();
+             WHERE credential_id IN ${sql.in(ids)}`,
+    );
 
-    for (const r of rows.results ?? []) out.set(r.credential_id, r.label);
+    for (const r of rows) out.set(r.credential_id, r.label);
     return out;
 }
 
@@ -1057,17 +1034,18 @@ export async function consumeMagicTokenRow(
     tokenHash: string,
     now: number
 ): Promise<{ target_email: string; purpose: string } | null> {
-    return d1
-        .prepare(
-            `UPDATE magic_link_tokens
-                SET time_consumed = ?
-                WHERE token_hash = ?
+    const rows = await runD1(
+        d1,
+        'consumeMagicTokenRow',
+        sql =>
+            sql<{ target_email: string; purpose: string }>`UPDATE magic_link_tokens
+                SET time_consumed = ${now}
+                WHERE token_hash = ${tokenHash}
                     AND time_consumed IS NULL
-                    AND time_expires > ?
-                RETURNING target_email, purpose;`
-        )
-        .bind(now, tokenHash, now)
-        .first<{ target_email: string; purpose: string }>();
+                    AND time_expires > ${now}
+                RETURNING target_email, purpose`,
+    );
+    return rows[0] ?? null;
 }
 
 /**
@@ -1086,9 +1064,11 @@ export async function InsertMagicLinkToken(
         userAgent: string | null;
     },
 ): Promise<void> {
-    await d1
-        .prepare(
-            `INSERT INTO magic_link_tokens (
+    await runD1(
+        d1,
+        'InsertMagicLinkToken',
+        sql =>
+            sql`INSERT INTO magic_link_tokens (
                 token_hash,
                 target_email,
                 purpose,
@@ -1096,18 +1076,10 @@ export async function InsertMagicLinkToken(
                 time_expires,
                 request_ip,
                 user_agent
-            ) VALUES (?, ?, ?, ?, ?, ?, ?);`,
-        )
-        .bind(
-            args.tokenHash,
-            args.targetEmail,
-            args.purpose,
-            args.timeCreated,
-            args.timeExpires,
-            args.requestIp,
-            args.userAgent,
-        )
-        .run();
+            ) VALUES (${args.tokenHash}, ${args.targetEmail}, ${args.purpose},
+                ${args.timeCreated}, ${args.timeExpires}, ${args.requestIp},
+                ${args.userAgent})`,
+    );
 }
 
 /**
@@ -1133,96 +1105,102 @@ export async function checkRateLimits(
     const { email, ip, now } = args;
     const since24h = now - MAGIC_RATE_LIMITS.PER_EMAIL_24H_WINDOW_SEC;
 
-    // Pull all per-email timestamps inside the widest (24h) window.
-    // DESC ordering lets us check the cooldown (top row) and the
-    // 15-min bucket (top N rows) without re-querying.
-    const emailRows = await d1
-        .prepare(
-            `SELECT time_created
+    // Both reads and the pure bucket checks run as one Effect program:
+    // the per-IP read only fires when every email bucket passed, same
+    // control flow as before.
+    return runD1(d1, 'checkRateLimits', sql =>
+        Effect.gen(function* () {
+            // Pull all per-email timestamps inside the widest (24h)
+            // window. DESC ordering lets us check the cooldown (top
+            // row) and the 15-min bucket (top N rows) without
+            // re-querying.
+            const emailRows = yield* sql<{
+                time_created: number;
+            }>`SELECT time_created
                 FROM magic_link_tokens
-                WHERE target_email = ?
-                    AND time_created >= ?
-                ORDER BY time_created DESC;`
-        )
-        .bind(email, since24h)
-        .all<{ time_created: number }>();
+                WHERE target_email = ${email}
+                    AND time_created >= ${since24h}
+                ORDER BY time_created DESC`;
 
-    const emailTimes = emailRows.results.map(r => r.time_created);
+            const emailTimes = emailRows.map(r => r.time_created);
 
-    // 1) 60-sec cooldown — only relevant to the single most recent token.
-    if (emailTimes.length > 0) {
-        const lastAge = now - emailTimes[0]!;
-        if (lastAge < MAGIC_RATE_LIMITS.PER_EMAIL_COOLDOWN_SEC) {
-            return {
-                ok: false,
-                reason: 'cooldown',
-                retryAfterSec: Math.max(
-                    1,
-                    MAGIC_RATE_LIMITS.PER_EMAIL_COOLDOWN_SEC - lastAge
-                ),
-            };
-        }
-    }
+            // 1) 60-sec cooldown — only relevant to the single most
+            //    recent token.
+            if (emailTimes.length > 0) {
+                const lastAge = now - emailTimes[0]!;
+                if (lastAge < MAGIC_RATE_LIMITS.PER_EMAIL_COOLDOWN_SEC) {
+                    return {
+                        ok: false,
+                        reason: 'cooldown',
+                        retryAfterSec: Math.max(
+                            1,
+                            MAGIC_RATE_LIMITS.PER_EMAIL_COOLDOWN_SEC - lastAge
+                        ),
+                    } satisfies RateLimitResult;
+                }
+            }
 
-    // 2) 15-min bucket — count entries inside the 15-min window.
-    const since15min = now - MAGIC_RATE_LIMITS.PER_EMAIL_15MIN_WINDOW_SEC;
-    const in15min = emailTimes.filter(t => t >= since15min);
-    if (in15min.length >= MAGIC_RATE_LIMITS.PER_EMAIL_15MIN) {
-        // Oldest of the in-window tokens is the one whose ageout
-        // would free up a slot. emailTimes is DESC, so the last
-        // element in in15min is the oldest in-window.
-        const oldest = in15min[in15min.length - 1]!;
-        const ageout =
-            oldest + MAGIC_RATE_LIMITS.PER_EMAIL_15MIN_WINDOW_SEC - now;
-        return {
-            ok: false,
-            reason: 'email_15min',
-            retryAfterSec: Math.max(1, ageout),
-        };
-    }
+            // 2) 15-min bucket — count entries inside the 15-min window.
+            const since15min =
+                now - MAGIC_RATE_LIMITS.PER_EMAIL_15MIN_WINDOW_SEC;
+            const in15min = emailTimes.filter(t => t >= since15min);
+            if (in15min.length >= MAGIC_RATE_LIMITS.PER_EMAIL_15MIN) {
+                // Oldest of the in-window tokens is the one whose ageout
+                // would free up a slot. emailTimes is DESC, so the last
+                // element in in15min is the oldest in-window.
+                const oldest = in15min[in15min.length - 1]!;
+                const ageout =
+                    oldest + MAGIC_RATE_LIMITS.PER_EMAIL_15MIN_WINDOW_SEC - now;
+                return {
+                    ok: false,
+                    reason: 'email_15min',
+                    retryAfterSec: Math.max(1, ageout),
+                } satisfies RateLimitResult;
+            }
 
-    // 3) 24-h bucket — count is just emailTimes.length (already
-    //    filtered to the 24-h window in the query above).
-    if (emailTimes.length >= MAGIC_RATE_LIMITS.PER_EMAIL_24H) {
-        const oldest = emailTimes[emailTimes.length - 1]!;
-        const ageout =
-            oldest + MAGIC_RATE_LIMITS.PER_EMAIL_24H_WINDOW_SEC - now;
-        return {
-            ok: false,
-            reason: 'email_24h',
-            retryAfterSec: Math.max(1, ageout),
-        };
-    }
+            // 3) 24-h bucket — count is just emailTimes.length (already
+            //    filtered to the 24-h window in the query above).
+            if (emailTimes.length >= MAGIC_RATE_LIMITS.PER_EMAIL_24H) {
+                const oldest = emailTimes[emailTimes.length - 1]!;
+                const ageout =
+                    oldest + MAGIC_RATE_LIMITS.PER_EMAIL_24H_WINDOW_SEC - now;
+                return {
+                    ok: false,
+                    reason: 'email_24h',
+                    retryAfterSec: Math.max(1, ageout),
+                } satisfies RateLimitResult;
+            }
 
-    // 4) Per-IP bucket. Skipped when we couldn't capture an IP — the
-    //    other three limits still apply, so this isn't a bypass.
-    if (ip) {
-        const sinceIPHour = now - MAGIC_RATE_LIMITS.PER_IP_HOUR_WINDOW_SEC;
-        const ipRows = await d1
-            .prepare(
-                `SELECT time_created
+            // 4) Per-IP bucket. Skipped when we couldn't capture an IP —
+            //    the other three limits still apply, so this isn't a
+            //    bypass.
+            if (ip) {
+                const sinceIPHour =
+                    now - MAGIC_RATE_LIMITS.PER_IP_HOUR_WINDOW_SEC;
+                const ipRows = yield* sql<{
+                    time_created: number;
+                }>`SELECT time_created
                     FROM magic_link_tokens
-                    WHERE request_ip = ?
-                        AND time_created >= ?
+                    WHERE request_ip = ${ip}
+                        AND time_created >= ${sinceIPHour}
                     ORDER BY time_created ASC
-                    LIMIT ?;`
-            )
-            .bind(ip, sinceIPHour, MAGIC_RATE_LIMITS.PER_IP_HOUR)
-            .all<{ time_created: number }>();
+                    LIMIT ${MAGIC_RATE_LIMITS.PER_IP_HOUR}`;
 
-        if (ipRows.results.length >= MAGIC_RATE_LIMITS.PER_IP_HOUR) {
-            const oldest = ipRows.results[0]!.time_created;
-            const ageout =
-                oldest + MAGIC_RATE_LIMITS.PER_IP_HOUR_WINDOW_SEC - now;
-            return {
-                ok: false,
-                reason: 'ip_hour',
-                retryAfterSec: Math.max(1, ageout),
-            };
-        }
-    }
+                if (ipRows.length >= MAGIC_RATE_LIMITS.PER_IP_HOUR) {
+                    const oldest = ipRows[0]!.time_created;
+                    const ageout =
+                        oldest + MAGIC_RATE_LIMITS.PER_IP_HOUR_WINDOW_SEC - now;
+                    return {
+                        ok: false,
+                        reason: 'ip_hour',
+                        retryAfterSec: Math.max(1, ageout),
+                    } satisfies RateLimitResult;
+                }
+            }
 
-    return { ok: true };
+            return { ok: true } satisfies RateLimitResult;
+        }),
+    );
 }
 
 
@@ -1237,9 +1215,13 @@ export async function InsertAccountRow(
     d1: D1Database,
     account: Account,
 ): Promise<void> {
-    const stmt = d1
-        .prepare(
-            `INSERT INTO accounts (
+    // Was a single-statement `d1.batch()` — batching one INSERT bought
+    // nothing, so this is a plain statement now.
+    await runD1(
+        d1,
+        'InsertAccountRow',
+        sql =>
+            sql`INSERT INTO accounts (
                 id,
                 display_name,
                 email,
@@ -1251,39 +1233,22 @@ export async function InsertAccountRow(
                 time_created,
                 time_updated,
                 user_name
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .bind(
-            account.id,
-            account.display_name,
-            account.email,
-            account.email_verified,
-            account.flags,
-            account.image,
-            account.provider_name,
-            account.provider_client_id,
-            Math.floor(account.time_created.getTime() / 1000),
-            Math.floor(account.time_updated.getTime() / 1000),
-            account.user_name
-        );
-    try {
-        await d1.batch([stmt]);
-    } catch (err) {
-        console.error('`InsertAccountRow()` batch error:', err);
-        throw new UnexpectedError();
-    }
+            ) VALUES (${account.id}, ${account.display_name}, ${account.email},
+                ${account.email_verified}, ${account.flags}, ${account.image},
+                ${account.provider_name}, ${account.provider_client_id},
+                ${Math.floor(account.time_created.getTime() / 1000)},
+                ${Math.floor(account.time_updated.getTime() / 1000)},
+                ${account.user_name})`,
+    );
 }
 
 export async function GetAccountById(d1: D1Database, id: string) {
-    return d1
-        .prepare(`SELECT * FROM accounts WHERE id = ? LIMIT 1;`)
-        .bind(id)
-        .first()
-        .catch(err => {
-            console.error('`GetAccountByID()` query error:', err);
-            throw new UnexpectedError();
-        })
-        .then(shape_AccountRow);
+    const rows = await runD1(
+        d1,
+        'GetAccountById',
+        sql => sql`SELECT * FROM accounts WHERE id = ${id} LIMIT 1`,
+    );
+    return shape_AccountRow(rows[0] ?? null);
 }
 
 /**
@@ -1308,21 +1273,17 @@ export async function GetAccountByEmail(
         throw new Error('`GetAccountByEmail()` error: empty email!');
     }
 
-    return d1
-        .prepare(
-            `SELECT *
+    const rows = await runD1(
+        d1,
+        'GetAccountByEmail',
+        sql =>
+            sql`SELECT *
             FROM accounts
-            WHERE LOWER(email) = LOWER(?)
+            WHERE LOWER(email) = LOWER(${email})
                 AND time_deleted IS NULL
-            LIMIT 1;`
-        )
-        .bind(email)
-        .first()
-        .catch(err => {
-            console.error('`GetAccountByEmail()` query error:', err);
-            throw err;
-        })
-        .then(shape_AccountRow);
+            LIMIT 1`,
+    );
+    return shape_AccountRow(rows[0] ?? null);
 }
 
 export async function GetAccountByGoogleId(
@@ -1335,21 +1296,17 @@ export async function GetAccountByGoogleId(
         );
     }
 
-    return d1
-        .prepare(
-            `SELECT *
+    const rows = await runD1(
+        d1,
+        'GetAccountByGoogleId',
+        sql =>
+            sql`SELECT *
             FROM accounts
-            WHERE provider_name = ?
-                AND provider_client_id = ?
-            LIMIT 1;`
-        )
-        .bind(OAUTH_PROVIDER.enum.google, providerClientId)
-        .first()
-        .catch(err => {
-            console.error('`GetAccountByGoogleId()` query error:', err);
-            throw err;
-        })
-        .then(shape_AccountRow);
+            WHERE provider_name = ${OAUTH_PROVIDER.enum.google}
+                AND provider_client_id = ${providerClientId}
+            LIMIT 1`,
+    );
+    return shape_AccountRow(rows[0] ?? null);
 }
 
 function shape_AccountRow(row: any): Account | null {
@@ -1399,22 +1356,37 @@ export async function UpdateAccountUsername(
     accountId: string,
     username: string,
 ): Promise<void> {
-    try {
-        const result = await d1
-            .prepare(
-                `UPDATE accounts SET user_name = ?, time_updated = ?
-                 WHERE id = ?`,
-            )
-            .bind(username, Math.floor(Date.now() / 1000), accountId)
-            .run();
-        if (!result.meta.changes) throw new NotFoundError('Account not found.');
-    } catch (err: any) {
-        if (err instanceof NotFoundError) throw err;
-        if (String(err?.message ?? '').includes('UNIQUE')) {
-            throw new FailedPreconditionError('Username already taken.');
-        }
-        console.error('UpdateAccountUsername error:', err);
-        throw new UnexpectedError();
+    // Needs `meta.changes` (driver discards meta) — raw API via d1Try.
+    // The domain outcomes are returned as a discriminant and thrown
+    // *outside* runD1, so its everything-else → UnexpectedError mapping
+    // can't swallow them (same pattern as `tryClaimSlug`).
+    const outcome = await runD1(d1, 'UpdateAccountUsername', () =>
+        d1Try(() =>
+            d1
+                .prepare(
+                    `UPDATE accounts SET user_name = ?, time_updated = ?
+                     WHERE id = ?`,
+                )
+                .bind(username, Math.floor(Date.now() / 1000), accountId)
+                .run(),
+        ).pipe(
+            Effect.map(result =>
+                result.meta.changes ? ('updated' as const) : ('missing' as const),
+            ),
+            Effect.catchAll(error => {
+                const cause = error.cause;
+                const msg =
+                    cause instanceof Error ? cause.message : String(cause);
+                if (msg.includes('UNIQUE')) {
+                    return Effect.succeed('taken' as const);
+                }
+                return Effect.fail(error);
+            }),
+        ),
+    );
+    if (outcome === 'missing') throw new NotFoundError('Account not found.');
+    if (outcome === 'taken') {
+        throw new FailedPreconditionError('Username already taken.');
     }
 }
 
@@ -1426,14 +1398,18 @@ export async function GetAccountRowByUsername(
     d1: D1Database,
     username: string,
 ): Promise<{ id: string; display_name: string; image: string | null } | null> {
-    const row = await d1
-        .prepare(
-            `SELECT id, display_name, image FROM accounts
-             WHERE user_name = ? COLLATE NOCASE
+    const rows = await runD1(
+        d1,
+        'GetAccountRowByUsername',
+        sql =>
+            sql<{
+                id: string;
+                display_name: string;
+                image: string | null;
+            }>`SELECT id, display_name, image FROM accounts
+             WHERE user_name = ${username} COLLATE NOCASE
                 AND time_deleted IS NULL
              LIMIT 1`,
-        )
-        .bind(username)
-        .first<{ id: string; display_name: string; image: string | null }>();
-    return row ?? null;
+    );
+    return rows[0] ?? null;
 }
