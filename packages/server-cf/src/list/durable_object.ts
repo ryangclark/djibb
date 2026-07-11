@@ -70,17 +70,13 @@ import {
     CountOutstandingInvitesByInviter,
     EmitEntityMembershipsToCatalog,
     EmitEntitySnapshotToCatalog,
-    EmitInvitationsSnapshot,
     GetEntityVersion,
     GetInvitationFromIndex,
-    GetWorkspaceSlug,
-    MarkInvitationsAccepted,
     tryClaimSlug,
 } from '../derived-index/d1';
 import {
     InvitationIdentityKindEnum,
     ensurePendingInvitesTable,
-    listPendingInvites,
     normalizeIdentityValue,
     preflightAcceptInvitation,
     preflightInviteByIdentity,
@@ -89,20 +85,15 @@ import {
     type InvitePreflightFailureReason,
 } from './invitations';
 import { preflightMoveList } from '@djibb/protocol/list/mutators/moveList';
-import { GetAccountByEmail, GetAccountById } from '../auth/d1';
+import { GetAccountByEmail } from '../auth/d1';
 import { GetMembership, mintPersonalWorkspaceEntity } from '../workspace/service';
-import {
-    sendEntityInvitationEmail,
-    sendOwnershipTransferEmail,
-    sendOwnershipTransferReceiptEmail,
-} from '../email';
 import { LIST_PULL_KEYSPACES } from './pull';
+import { applyInvitationPostCommit } from './notifications';
 import {
     appendKeyspacePatches,
     encodePullCookie,
     parsePullCookie,
 } from '../replicache/keyspaces';
-import { newId } from '@djibb/protocol/id';
 import type { AlarmEventName } from './alarm-events';
 import {
     applyWorkspacePostCommit,
@@ -1506,71 +1497,30 @@ export class DjibbList extends DurableObject {
             }
         }
 
-        // Flip D1 index rows to `status='accepted'` for each accepted
-        // invite BEFORE the reconciler's snapshot diff runs (ADR 0009
-        // Slice 3). Order matters: the reconciler converts D1 'pending'
-        // rows that have no DO counterpart to 'revoked'; the accepted
-        // rows have been tombstoned in the DO, so without this update
-        // they'd be misclassified as revoked. Fire-and-pray on D1
-        // failure — same posture as the snapshot below.
-        if (acceptedInvites.length > 0) {
-            try {
-                await MarkInvitationsAccepted(
-                    (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
-                    listId,
-                    acceptedInvites
-                );
-            } catch (error) {
-                console.error(
-                    `\`MarkInvitationsAccepted()\` D1 emit failed for "${listId}":`,
-                    error
-                );
-            }
-        }
-
-        // Reconcile invitation index post-commit (ADR 0009). Full-snapshot
-        // diff: DO rows become D1 'pending', any D1 'pending' rows
-        // absent from the DO become 'revoked'. Same fire-and-pray
-        // posture as the entity-metadata emit — DO is authoritative
-        // and the reconciliation alarm is the eventual repair.
-        if (invitationsMutated) {
-            try {
-                await this.emitInvitationsSnapshot(listId);
-            } catch (error) {
-                console.error(
-                    `\`emitInvitationsSnapshot()\` D1 emit failed for "${listId}":`,
-                    error
-                );
-            }
-        }
-
-        // Fire invitation notification emails for any inviteByIdentity
-        // mutations that committed in this push (ADR 0009 §"Email
-        // send"). Best-effort: a delivery failure is logged but doesn't
-        // affect the push response — the invite still exists in the DO
-        // + D1 index and the invitee can be re-notified by another
-        // surface (resend button, future inbox). Email lookup is keyed
-        // by the entity row + the inviter's display_name on the session
-        // we already have in scope, so no extra D1 reads.
-        if (sentInvites.length > 0) {
-            await this.fireInvitationEmails(
-                listId,
+        // Post-commit invitation/ownership tail (ADR 0009, ADR 0011
+        // §Decision C), extracted to `./notifications` (ADR 0026 series
+        // 2). Folds, in order: MarkInvitationsAccepted (BEFORE the
+        // reconciler's diff so accepted rows aren't misread as revoked),
+        // the invitations-index reconcile, the invite emails, and the
+        // ownership-transfer emails. Runs AFTER `emitEntitySnapshot`
+        // above. All effects are fire-and-pray / best-effort — the DO is
+        // authoritative and the reconciliation alarm (ADR 0007) repairs
+        // drift.
+        await applyInvitationPostCommit(
+            {
+                sql: this.sql,
+                d1: (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+                env: this.env as Bindings,
+                authorizedAccounts,
+            },
+            {
+                entityId: listId,
+                acceptedInvites,
+                invitationsMutated,
                 sentInvites,
-                authorizedAccounts
-            );
-        }
-
-        // Email the new owner a confirmation for any transferOwnership
-        // that committed in this push (ADR 0011 §Decision C, Phase 5).
-        // Best-effort, same posture as the invite emails: a delivery
-        // failure is logged but never blocks the push.
-        if (transferredOwnerships.length > 0) {
-            await this.fireOwnershipTransferEmails(
-                listId,
                 transferredOwnerships,
-                authorizedAccounts
-            );
-        }
+            }
+        );
 
         // ADR 0008 workspace post-commit tail (§Step 10a/10b/10c),
         // extracted to `workspace/cascade.ts` (ADR 0026 series 1). Folds
@@ -2037,304 +1987,6 @@ export class DjibbList extends DurableObject {
             authorizedAccounts: entity.authorization_rules.authorized_accounts,
             timeUpdated,
         });
-    }
-
-    /**
-     * Reconcile this DO's pending_invites into D1's
-     * `entity_invitations_index` (ADR 0009). Called post-commit when a
-     * push touched any INVITATION_MUTATORS. Full-snapshot pattern:
-     * DO rows are UPSERTed as 'pending'; D1 'pending' rows that no
-     * longer correspond to a DO row become 'revoked'.
-     *
-     * The entity-not-found branch (DO ran an invitation mutator but
-     * its own list_elements row is missing) is an invariant violation
-     * — logged and skipped, not thrown, mirroring `emitEntitySnapshot`.
-     */
-    /**
-     * Send notification emails for invitations that committed in this
-     * push (ADR 0009 §"Email send"). One email per recipient. The
-     * `acceptUrl` points directly to the entity page with
-     * `?from_invite=1`; the entity route handles its own redirect-to-
-     * login for unauthenticated invitees and a future banner picks up
-     * the flag to surface an explicit "accept" affordance.
-     *
-     * Best-effort: failures are logged, never thrown. Concurrent sends
-     * are awaited via `Promise.allSettled` so one slow recipient
-     * doesn't serialize the rest, and the push response isn't blocked
-     * on aggregate latency beyond the slowest send. The DO's input
-     * gate keeps the object alive while these promises resolve, so we
-     * don't need `executionCtx.waitUntil` here (which isn't available
-     * inside the DO anyway).
-     */
-    private async fireInvitationEmails(
-        entityId: string,
-        invites: ReadonlyArray<{
-            identity_kind: InvitationIdentityKind;
-            identity_value: string;
-            inviter_account_id: string;
-        }>,
-        authorizedAccounts: Readonly<Account[]>
-    ): Promise<void> {
-        const entity = getElementById(this.sql, entityId);
-        if (!entity || !isEntityRow(entity)) {
-            console.warn(
-                `\`fireInvitationEmails()\` no entity row for "${entityId}"`
-            );
-            return;
-        }
-        const entityName = (entity as { name?: string }).name ?? '';
-        const entityTypeLabel = entity.type;
-
-        const env = this.env as Bindings;
-        if (!env.EMAIL) {
-            console.warn(
-                '`fireInvitationEmails()` no EMAIL binding; skipping send.'
-            );
-            return;
-        }
-
-        // First domain in the semicolon-separated list is treated as
-        // canonical for outbound links (matches the workspace-invite
-        // pattern in `workspace/fetch.ts`).
-        const origin = (env.AUTHORIZED_DOMAINS ?? '').split(';')[0] ?? '';
-        if (!origin) {
-            console.warn(
-                '`fireInvitationEmails()` no AUTHORIZED_DOMAINS; using relative URL.'
-            );
-        }
-        // URL prefix mirrors the entity ID's type prefix (`l/`, `t/`, `w/`)
-        // — see user memory note "URLs mirror ID type prefixes".
-        const pathPrefix =
-            entityTypeLabel === 'list'
-                ? '/l/'
-                : entityTypeLabel === 'workspace'
-                  ? '/w/'
-                  : '/t/';
-        // ID prefix lives in the entity id (`l/<suffix>` / `t/<suffix>`)
-        // but the URL form strips the prefix segment (see user memory:
-        // URLs mirror ID type prefixes — `/l/<suffix>` not `/l/l/<suffix>`).
-        const idSuffix = entityId.includes('/')
-            ? entityId.split('/')[1]
-            : entityId;
-        // Workspace pages route by slug (`/w/<slug>`), not by id suffix,
-        // so resolve the slug from the D1 catalog (the DO's local sql
-        // doesn't carry it — ADR 0011 §7b.5). Lists/Templates route by
-        // their id suffix directly. Fall back to the id suffix if the
-        // slug is somehow missing so the link still names the right DO.
-        let pathSegment = idSuffix;
-        if (entityTypeLabel === 'workspace') {
-            const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-            const slug = await GetWorkspaceSlug(d1, entityId);
-            if (slug) {
-                pathSegment = slug;
-            } else {
-                console.warn(
-                    `\`fireInvitationEmails()\` no slug for workspace "${entityId}"; using id suffix.`
-                );
-            }
-        }
-        const acceptUrl = `${origin}${pathPrefix}${pathSegment}?from_invite=1`;
-
-        const sends = invites.map(async invite => {
-            // v1 only supports email-kind identities.
-            if (invite.identity_kind !== 'email') return;
-            const inviter = authorizedAccounts.find(
-                a => a.id === invite.inviter_account_id
-            );
-            const inviterName = inviter?.display_name ?? '';
-            try {
-                await sendEntityInvitationEmail(env, {
-                    to: invite.identity_value,
-                    entityTypeLabel,
-                    entityName,
-                    inviterName,
-                    acceptUrl,
-                });
-            } catch (error) {
-                console.error(
-                    `\`sendEntityInvitationEmail()\` failed for "${entityId}" -> "${invite.identity_value}":`,
-                    error
-                );
-            }
-        });
-        await Promise.allSettled(sends);
-    }
-
-    /**
-     * Email both parties of each `transferOwnership` that committed in
-     * this push (ADR 0011 §Decision C, Phase 5): a notification to the
-     * new owner ("you're now the owner") and a receipt to the former
-     * owner ("you transferred X" — an accountability / compromise
-     * signal). Mirrors `fireInvitationEmails`' best-effort posture:
-     * per-send failures are logged via `Promise.allSettled`, never
-     * thrown, so the push response isn't blocked. The two sends are
-     * independent — a missing new-owner email doesn't suppress the
-     * former owner's receipt.
-     *
-     * Unlike the invite path the new owner is identified by account id,
-     * not an email literal, so we resolve it from D1 (`GetAccountById`);
-     * that one lookup feeds both emails (their email for the
-     * notification, their name for the receipt). The former owner is the
-     * actor, read straight from the session's `authorizedAccounts`
-     * (name + email, no D1 read). The link carries no `?from_invite=1`:
-     * the transfer already granted `owner` access, so there's nothing to
-     * accept.
-     */
-    private async fireOwnershipTransferEmails(
-        entityId: string,
-        transfers: ReadonlyArray<{
-            to_account_id: string;
-            former_owner_account_id: string | null;
-        }>,
-        authorizedAccounts: Readonly<Account[]>
-    ): Promise<void> {
-        const entity = getElementById(this.sql, entityId);
-        if (!entity || !isEntityRow(entity)) {
-            console.warn(
-                `\`fireOwnershipTransferEmails()\` no entity row for "${entityId}"`
-            );
-            return;
-        }
-        const entityName = (entity as { name?: string }).name ?? '';
-        const entityTypeLabel = entity.type;
-
-        const env = this.env as Bindings;
-        if (!env.EMAIL) {
-            console.warn(
-                '`fireOwnershipTransferEmails()` no EMAIL binding; skipping send.'
-            );
-            return;
-        }
-        const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-
-        const origin = (env.AUTHORIZED_DOMAINS ?? '').split(';')[0] ?? '';
-        if (!origin) {
-            console.warn(
-                '`fireOwnershipTransferEmails()` no AUTHORIZED_DOMAINS; using relative URL.'
-            );
-        }
-        // URL prefix mirrors the entity ID's type prefix (`l/`, `t/`,
-        // `w/`) — see user memory "URLs mirror ID type prefixes".
-        const pathPrefix =
-            entityTypeLabel === 'list'
-                ? '/l/'
-                : entityTypeLabel === 'workspace'
-                  ? '/w/'
-                  : '/t/';
-        const idSuffix = entityId.includes('/')
-            ? entityId.split('/')[1]
-            : entityId;
-        // Workspaces route by slug, not id suffix (ADR 0011 §7b.5); the
-        // DO's local sql doesn't carry the slug, so resolve it from the
-        // D1 catalog. Fall back to the id suffix so the link still names
-        // the right DO.
-        let pathSegment = idSuffix;
-        if (entityTypeLabel === 'workspace') {
-            const slug = await GetWorkspaceSlug(d1, entityId);
-            if (slug) {
-                pathSegment = slug;
-            } else {
-                console.warn(
-                    `\`fireOwnershipTransferEmails()\` no slug for workspace "${entityId}"; using id suffix.`
-                );
-            }
-        }
-        const entityUrl = `${origin}${pathPrefix}${pathSegment}`;
-
-        const sends = transfers.map(async transfer => {
-            // Former owner = the actor, resolved from the in-session
-            // accounts (carries both display_name and email; no D1 read).
-            const formerOwner = transfer.former_owner_account_id
-                ? authorizedAccounts.find(
-                      a => a.id === transfer.former_owner_account_id
-                  )
-                : undefined;
-            const formerOwnerName = formerOwner?.display_name ?? '';
-
-            // New owner needs a D1 lookup — they're identified by id, and
-            // (unlike the actor) aren't in the session. One lookup feeds
-            // both emails: their email for the notification, their name
-            // for the former owner's receipt.
-            const recipient = await GetAccountById(
-                d1,
-                transfer.to_account_id
-            ).catch(err => {
-                console.error(
-                    `\`fireOwnershipTransferEmails()\` GetAccountById failed for "${transfer.to_account_id}":`,
-                    err
-                );
-                return null;
-            });
-
-            // 1. Notify the new owner.
-            const newOwnerEmail = recipient?.email;
-            if (newOwnerEmail) {
-                try {
-                    await sendOwnershipTransferEmail(env, {
-                        to: newOwnerEmail,
-                        entityTypeLabel,
-                        entityName,
-                        formerOwnerName,
-                        entityUrl,
-                    });
-                } catch (error) {
-                    console.error(
-                        `\`sendOwnershipTransferEmail()\` failed for "${entityId}" -> "${transfer.to_account_id}":`,
-                        error
-                    );
-                }
-            } else {
-                console.warn(
-                    `\`fireOwnershipTransferEmails()\` no email for new owner "${transfer.to_account_id}" of "${entityId}"; skipping notification.`
-                );
-            }
-
-            // 2. Receipt to the former owner (accountability / account-
-            // compromise signal). Independent of (1): a missing
-            // new-owner email shouldn't suppress the former owner's
-            // record of the change.
-            const formerOwnerEmail = formerOwner?.email;
-            if (formerOwnerEmail) {
-                const newOwnerName =
-                    recipient?.display_name || recipient?.email || '';
-                try {
-                    await sendOwnershipTransferReceiptEmail(env, {
-                        to: formerOwnerEmail,
-                        entityTypeLabel,
-                        entityName,
-                        newOwnerName,
-                        entityUrl,
-                    });
-                } catch (error) {
-                    console.error(
-                        `\`sendOwnershipTransferReceiptEmail()\` failed for "${entityId}" -> former owner "${transfer.former_owner_account_id}":`,
-                        error
-                    );
-                }
-            }
-        });
-        await Promise.allSettled(sends);
-    }
-
-    private async emitInvitationsSnapshot(entityId: string): Promise<void> {
-        const entity = getElementById(this.sql, entityId);
-        if (!entity || !isEntityRow(entity)) {
-            console.warn(
-                `\`emitInvitationsSnapshot()\` no entity row for "${entityId}"`
-            );
-            return;
-        }
-
-        const doInvites = listPendingInvites(this.sql);
-        await EmitInvitationsSnapshot(
-            (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
-            {
-                targetId: entityId,
-                targetType: entity.type,
-                doInvites,
-                newIdForRow: () => newId('invitation'),
-            }
-        );
     }
 
     /**
