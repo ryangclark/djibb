@@ -1,3 +1,4 @@
+import * as Effect from 'effect/Effect';
 import { z } from 'zod';
 
 import {
@@ -19,10 +20,22 @@ import {
     type SlugClaimResult,
 } from '@djibb/protocol/list/slug';
 
+import { d1Try, runD1 } from '../effect/d1';
+
 // Re-export the pure default-slug derivation (now owned by
 // `@djibb/protocol/list/slug`) so existing `../entity` importers — the
 // snapshot projector below and a couple of test fixtures — keep resolving.
 export { defaultSlugForId };
+
+// Internals are Effect programs over `@effect/sql-d1` (ADR 0015,
+// docs/plans/effect-adoption.md Phase 1), run through `runD1` in
+// `../effect/d1` — which owns the layer build, the SqlError →
+// DjibbError mapping, and the bounded transient retry the emit
+// operations opt into. Exported signatures are plain
+// `(db, ...) => Promise<T>`; Effect never escapes this module.
+// Batch-atomic writes stay on raw `d1.batch()` via `d1Try` — the
+// sql-d1 driver has no batch support, and D1's single-batch atomicity
+// is load-bearing for the delete-then-insert projections below.
 
 /**
  * Snapshot of entity metadata as it lives in the D1 `workspace_entities`
@@ -111,26 +124,30 @@ export async function GetEntityVersion(
     d1: D1Database,
     id: string,
 ): Promise<number | null> {
-    const row = await d1
-        .prepare(`SELECT version FROM workspace_entities WHERE id = ? LIMIT 1`)
-        .bind(id)
-        .first<{ version: number }>();
-    return row?.version ?? null;
+    const rows = await runD1(
+        d1,
+        'GetEntityVersion',
+        sql => sql<{
+            version: number;
+        }>`SELECT version FROM workspace_entities WHERE id = ${id} LIMIT 1`,
+    );
+    return rows[0]?.version ?? null;
 }
 
 export async function GetEntity(
     d1: D1Database,
     id: string,
 ): Promise<EntityRow | null> {
-    const row = await d1
-        .prepare(
-            `SELECT id, workspace_id, type, name, description, forked_from_id,
+    const rows = await runD1(
+        d1,
+        'GetEntity',
+        sql =>
+            sql`SELECT id, workspace_id, type, name, description, forked_from_id,
                     meta, slug, slot, cascade_source, authorization_rules,
                     time_created, time_updated, time_deleted, version
-             FROM workspace_entities WHERE id = ? LIMIT 1`,
-        )
-        .bind(id)
-        .first();
+             FROM workspace_entities WHERE id = ${id} LIMIT 1`,
+    );
+    const row = rows[0];
     if (!row) return null;
     return parseRow(row);
 }
@@ -232,25 +249,40 @@ export async function EmitEntityMembershipsToCatalog(
         timeUpdated: number;
     },
 ): Promise<void> {
-    const statements: D1PreparedStatement[] = [
-        d1
-            .prepare(`DELETE FROM entity_memberships WHERE entity_id = ?`)
-            .bind(args.entityId),
-    ];
-    for (const [accountId, { role }] of Object.entries(
-        args.authorizedAccounts
-    )) {
-        statements.push(
-            d1
-                .prepare(
-                    `INSERT INTO entity_memberships
-                        (account_id, entity_id, role, time_updated)
-                     VALUES (?, ?, ?, ?)`
-                )
-                .bind(accountId, args.entityId, role, args.timeUpdated)
-        );
-    }
-    await d1.batch(statements);
+    await runD1(
+        d1,
+        'EmitEntityMembershipsToCatalog',
+        () =>
+            d1Try(() => {
+                const statements: D1PreparedStatement[] = [
+                    d1
+                        .prepare(
+                            `DELETE FROM entity_memberships WHERE entity_id = ?`,
+                        )
+                        .bind(args.entityId),
+                ];
+                for (const [accountId, { role }] of Object.entries(
+                    args.authorizedAccounts,
+                )) {
+                    statements.push(
+                        d1
+                            .prepare(
+                                `INSERT INTO entity_memberships
+                                    (account_id, entity_id, role, time_updated)
+                                 VALUES (?, ?, ?, ?)`,
+                            )
+                            .bind(
+                                accountId,
+                                args.entityId,
+                                role,
+                                args.timeUpdated,
+                            ),
+                    );
+                }
+                return d1.batch(statements);
+            }),
+        { retry: true },
+    );
 }
 
 /**
@@ -291,14 +323,15 @@ export async function GetMembershipRow(
     accountId: string,
     entityId: string,
 ): Promise<MembershipIndexRow | null> {
-    const row = await d1
-        .prepare(
-            `SELECT account_id, role, time_updated AS time_joined
+    const rows = await runD1(
+        d1,
+        'GetMembershipRow',
+        sql =>
+            sql`SELECT account_id, role, time_updated AS time_joined
              FROM entity_memberships
-             WHERE account_id = ? AND entity_id = ? LIMIT 1`,
-        )
-        .bind(accountId, entityId)
-        .first();
+             WHERE account_id = ${accountId} AND entity_id = ${entityId} LIMIT 1`,
+    );
+    const row = rows[0];
     if (!row) return null;
     const parsed = MembershipIndexRowSchema.safeParse(row);
     if (!parsed.success) {
@@ -333,26 +366,22 @@ export async function GetWorkspaceRowsForAccount(
     d1: D1Database,
     accountId: string,
 ): Promise<WorkspaceForAccountRow[]> {
-    const result = await d1
-        .prepare(
-            `SELECT
+    const rows = await runD1(
+        d1,
+        'GetWorkspaceRowsForAccount',
+        sql =>
+            sql`SELECT
                 we.id, we.name, we.slug, we.slot, we.meta,
                 we.time_created, we.time_deleted, we.time_updated,
                 em.role, em.time_updated AS time_joined
             FROM entity_memberships em
             JOIN workspace_entities we ON we.id = em.entity_id
-            WHERE em.account_id = ?
+            WHERE em.account_id = ${accountId}
               AND we.type = 'workspace'
               AND we.time_deleted IS NULL
             ORDER BY (we.slot = 'personal_workspace') DESC, we.time_created ASC`,
-        )
-        .bind(accountId)
-        .all();
-    if (!result.success) {
-        console.error('GetWorkspaceRowsForAccount query failed');
-        throw new UnexpectedError();
-    }
-    return result.results.map((row) => {
+    );
+    return rows.map((row) => {
         const parsed = WorkspaceForAccountRowSchema.safeParse(row);
         if (!parsed.success) {
             console.error(
@@ -396,24 +425,24 @@ export async function ResolveInvitedWorkspaceBySlug(
     }: { slug: string; identityValues: string[]; nowSeconds: number },
 ): Promise<{ id: string; name: string | null } | null> {
     if (identityValues.length === 0) return null;
-    const placeholders = identityValues.map(() => '?').join(', ');
-    const row = await d1
-        .prepare(
-            `SELECT we.id AS id, we.name AS name
+    const rows = await runD1(
+        d1,
+        'ResolveInvitedWorkspaceBySlug',
+        sql =>
+            sql<{ id: string; name: string | null }>`SELECT we.id AS id, we.name AS name
             FROM workspace_entities we
             JOIN entity_invitations_index ei ON ei.target_id = we.id
             WHERE we.type = 'workspace'
-              AND we.slug = ?
+              AND we.slug = ${slug}
               AND we.time_deleted IS NULL
               AND ei.target_type = 'workspace'
               AND ei.status = 'pending'
               AND ei.identity_kind = 'email'
-              AND ei.time_expires > ?
-              AND ei.identity_value IN (${placeholders})
+              AND ei.time_expires > ${nowSeconds}
+              AND ei.identity_value IN ${sql.in(identityValues)}
             LIMIT 1`,
-        )
-        .bind(slug, nowSeconds, ...identityValues)
-        .first<{ id: string; name: string | null }>();
+    );
+    const row = rows[0];
     if (!row) return null;
     return { id: row.id, name: row.name ?? null };
 }
@@ -446,13 +475,21 @@ export async function EmitEntitySnapshotToCatalog(
     // clear the projection promptly for any rows whose own DO emit
     // hasn't landed yet.
     const cascadeSource = snapshot.cascade_source ?? null;
-    await d1
-        .prepare(
-            `INSERT INTO workspace_entities (
+    await runD1(
+        d1,
+        'EmitEntitySnapshotToCatalog',
+        sql =>
+            sql`INSERT INTO workspace_entities (
                 id, workspace_id, type, name, description, forked_from_id,
                 meta, slug, slot, cascade_source, authorization_rules,
                 time_created, time_updated, time_deleted, version
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ) VALUES (${snapshot.id}, ${snapshot.workspace_id}, ${snapshot.type},
+                ${snapshot.name}, ${snapshot.description}, ${snapshot.forked_from_id},
+                ${snapshot.meta ? JSON.stringify(snapshot.meta) : null}, ${slug},
+                ${snapshot.slot}, ${cascadeSource},
+                ${JSON.stringify(snapshot.authorization_rules)},
+                ${snapshot.time_created}, ${snapshot.time_updated},
+                ${snapshot.time_deleted}, ${snapshot.version})
              ON CONFLICT(id) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
                 name = excluded.name,
@@ -466,25 +503,8 @@ export async function EmitEntitySnapshotToCatalog(
                 time_deleted = excluded.time_deleted,
                 version = excluded.version
              WHERE excluded.version >= workspace_entities.version`,
-        )
-        .bind(
-            snapshot.id,
-            snapshot.workspace_id,
-            snapshot.type,
-            snapshot.name,
-            snapshot.description,
-            snapshot.forked_from_id,
-            snapshot.meta ? JSON.stringify(snapshot.meta) : null,
-            slug,
-            snapshot.slot,
-            cascadeSource,
-            JSON.stringify(snapshot.authorization_rules),
-            snapshot.time_created,
-            snapshot.time_updated,
-            snapshot.time_deleted,
-            snapshot.version,
-        )
-        .run();
+        { retry: true },
+    );
 }
 
 /**
@@ -532,67 +552,84 @@ export async function tryClaimSlug(
         };
     }
 
-    try {
-        const result = await d1
-            .prepare(
-                `UPDATE workspace_entities
-                    SET slug = ?
-                  WHERE id = ?
-                    AND type = ?
-                    AND time_deleted IS NULL
-                    AND NOT EXISTS (
-                        SELECT 1 FROM workspace_entities
-                         WHERE type = ?
-                           AND slug = ?
-                           AND id != ?
-                    )`,
-            )
-            .bind(newSlug, entityId, entityType, entityType, newSlug, entityId)
-            .run();
-        const rowsWritten =
-            (result.meta as { changes?: number } | undefined)?.changes ?? 0;
-        if (rowsWritten === 0) {
-            // Either the row doesn't exist (or is soft-deleted), or
-            // the collision check tripped. Disambiguate with a cheap
-            // followup lookup so the outcome reason is honest.
-            const existing = await d1
-                .prepare(
-                    `SELECT 1 FROM workspace_entities
-                      WHERE id = ?
-                        AND type = ?
-                        AND time_deleted IS NULL
-                      LIMIT 1`,
-                )
-                .bind(entityId, entityType)
-                .first();
-            if (!existing) {
+    return runD1(d1, 'tryClaimSlug', sql =>
+        Effect.gen(function* () {
+            // The guarded UPDATE needs `meta.changes`, which the sql-d1
+            // driver discards — raw API via d1Try.
+            const claim = yield* d1Try(() =>
+                d1
+                    .prepare(
+                        `UPDATE workspace_entities
+                            SET slug = ?
+                          WHERE id = ?
+                            AND type = ?
+                            AND time_deleted IS NULL
+                            AND NOT EXISTS (
+                                SELECT 1 FROM workspace_entities
+                                 WHERE type = ?
+                                   AND slug = ?
+                                   AND id != ?
+                            )`,
+                    )
+                    .bind(
+                        newSlug,
+                        entityId,
+                        entityType,
+                        entityType,
+                        newSlug,
+                        entityId,
+                    )
+                    .run(),
+            ).pipe(
+                Effect.map(result => ({ landed: true as const, result })),
+                Effect.catchAll(error => {
+                    // UNIQUE constraint violation — same outcome as the
+                    // NOT EXISTS predicate catching the collision, just
+                    // delivered by the index instead of the subquery.
+                    const cause = error.cause;
+                    const msg =
+                        cause instanceof Error ? cause.message : String(cause);
+                    if (/UNIQUE|constraint/i.test(msg)) {
+                        return Effect.succeed({ landed: false as const });
+                    }
+                    return Effect.fail(error);
+                }),
+            );
+            if (!claim.landed) {
                 return {
                     ok: false,
-                    reason: 'entity_missing',
-                    message: `No ${entityType} found for id "${entityId}".`,
-                };
+                    reason: 'slug_taken',
+                    message: `Slug "${newSlug}" is already in use by another ${entityType}.`,
+                } satisfies SlugClaimResult;
             }
-            return {
-                ok: false,
-                reason: 'slug_taken',
-                message: `Slug "${newSlug}" is already in use by another ${entityType}.`,
-            };
-        }
-        return { ok: true };
-    } catch (error) {
-        // UNIQUE constraint violation — same outcome as the
-        // NOT EXISTS predicate catching the collision, just delivered
-        // by the index instead of the subquery.
-        const msg = error instanceof Error ? error.message : String(error);
-        if (/UNIQUE|constraint/i.test(msg)) {
-            return {
-                ok: false,
-                reason: 'slug_taken',
-                message: `Slug "${newSlug}" is already in use by another ${entityType}.`,
-            };
-        }
-        throw error;
-    }
+            const rowsWritten =
+                (claim.result.meta as { changes?: number } | undefined)
+                    ?.changes ?? 0;
+            if (rowsWritten === 0) {
+                // Either the row doesn't exist (or is soft-deleted), or
+                // the collision check tripped. Disambiguate with a cheap
+                // followup lookup so the outcome reason is honest.
+                const existing = yield* sql`SELECT 1 FROM workspace_entities
+                      WHERE id = ${entityId}
+                        AND type = ${entityType}
+                        AND time_deleted IS NULL
+                      LIMIT 1`;
+                if (existing.length === 0) {
+                    return {
+                        ok: false,
+                        reason: 'entity_missing',
+                        message: `No ${entityType} found for id "${entityId}".`,
+                    } satisfies SlugClaimResult;
+                }
+                return {
+                    ok: false,
+                    reason: 'slug_taken',
+                    message: `Slug "${newSlug}" is already in use by another ${entityType}.`,
+                } satisfies SlugClaimResult;
+            }
+            return { ok: true } satisfies SlugClaimResult;
+        }),
+    );
 }
 
 // ─── Catalog reads ──────────────────────────────────────────────────
@@ -601,7 +638,7 @@ export async function tryClaimSlug(
 
 function parseRows<T>(
     schema: z.ZodType<T>,
-    rows: unknown[],
+    rows: readonly unknown[],
     op: string,
 ): T[] {
     return rows.map((row) => {
@@ -642,20 +679,20 @@ export async function ListOwnedEntities(
     d1: D1Database,
     accountId: string,
 ): Promise<CatalogEntity[]> {
-    const result = await d1
-        .prepare(
-            `SELECT we.id AS id, we.type AS type, we.name AS name
+    const rows = await runD1(
+        d1,
+        'ListOwnedEntities',
+        sql =>
+            sql`SELECT we.id AS id, we.type AS type, we.name AS name
              FROM workspace_entities AS we,
                   json_each(we.authorization_rules, '$.authorized_accounts') AS aa
              WHERE we.time_deleted IS NULL
                AND we.type IN ('list', 'template')
-               AND aa.key = ?
+               AND aa.key = ${accountId}
                AND json_extract(aa.value, '$.role') = 'owner'
              ORDER BY we.time_updated DESC`,
-        )
-        .bind(accountId)
-        .all();
-    return parseRows(CatalogEntitySchema, result.results ?? [], 'ListOwnedEntities');
+    );
+    return parseRows(CatalogEntitySchema, rows, 'ListOwnedEntities');
 }
 
 const TrashedEntitySchema = z.object({
@@ -711,25 +748,21 @@ export async function ListTrashedEntitiesForAccount(
     d1: D1Database,
     accountId: string,
 ): Promise<TrashedEntity[]> {
-    const result = await d1
-        .prepare(
-            `SELECT we.id, we.type, we.name, we.slug,
+    const rows = await runD1(
+        d1,
+        'ListTrashedEntitiesForAccount',
+        sql =>
+            sql`SELECT we.id, we.type, we.name, we.slug,
                     we.time_deleted, we.time_updated, we.cascade_source
              FROM entity_memberships em
              JOIN workspace_entities we ON we.id = em.entity_id
-             WHERE em.account_id = ?
+             WHERE em.account_id = ${accountId}
                AND em.role = 'owner'
                AND we.time_deleted IS NOT NULL
                AND (we.type = 'workspace' OR we.cascade_source IS NULL)
              ORDER BY we.time_deleted DESC`,
-        )
-        .bind(accountId)
-        .all();
-    return parseRows(
-        TrashedEntitySchema,
-        result.results ?? [],
-        'ListTrashedEntitiesForAccount',
     );
+    return parseRows(TrashedEntitySchema, rows, 'ListTrashedEntitiesForAccount');
 }
 
 const SharedEntitySchema = z.object({
@@ -772,30 +805,26 @@ export async function ListSharedWithAccount(
     d1: D1Database,
     accountId: string,
 ): Promise<SharedEntity[]> {
-    const result = await d1
-        .prepare(
-            `SELECT we.id, we.type, we.name, we.slug, em.role,
+    const rows = await runD1(
+        d1,
+        'ListSharedWithAccount',
+        sql =>
+            sql`SELECT we.id, we.type, we.name, we.slug, em.role,
                     we.time_updated
              FROM entity_memberships em
              JOIN workspace_entities we ON we.id = em.entity_id
-             WHERE em.account_id = ?
+             WHERE em.account_id = ${accountId}
                AND we.type IN ('list', 'template')
                AND we.time_deleted IS NULL
                AND em.role NOT IN ('owner', 'restricted', 'ownerless')
                AND (we.workspace_id IS NULL OR we.workspace_id NOT IN (
                      SELECT em2.entity_id
                      FROM entity_memberships em2
-                     WHERE em2.account_id = ?
+                     WHERE em2.account_id = ${accountId}
                    ))
              ORDER BY we.time_updated DESC`,
-        )
-        .bind(accountId, accountId)
-        .all();
-    return parseRows(
-        SharedEntitySchema,
-        result.results ?? [],
-        'ListSharedWithAccount',
     );
+    return parseRows(SharedEntitySchema, rows, 'ListSharedWithAccount');
 }
 
 const PendingInvitationSchema = z.object({
@@ -842,10 +871,11 @@ export async function ListPendingInvitationsForIdentities(
     }: { identityValues: string[]; nowSeconds: number },
 ): Promise<PendingInvitation[]> {
     if (identityValues.length === 0) return [];
-    const placeholders = identityValues.map(() => '?').join(', ');
-    const result = await d1
-        .prepare(
-            `SELECT ei.id AS id, ei.target_id AS target_id,
+    const rows = await runD1(
+        d1,
+        'ListPendingInvitationsForIdentities',
+        sql =>
+            sql`SELECT ei.id AS id, ei.target_id AS target_id,
                     ei.target_type AS target_type, ei.role AS role,
                     ei.inviter_account_id AS inviter_account_id,
                     ei.time_created AS time_created,
@@ -855,16 +885,14 @@ export async function ListPendingInvitationsForIdentities(
              JOIN workspace_entities we ON we.id = ei.target_id
              WHERE ei.status = 'pending'
                AND ei.identity_kind = 'email'
-               AND ei.time_expires > ?
-               AND ei.identity_value IN (${placeholders})
+               AND ei.time_expires > ${nowSeconds}
+               AND ei.identity_value IN ${sql.in(identityValues)}
                AND we.time_deleted IS NULL
              ORDER BY ei.time_created DESC`,
-        )
-        .bind(nowSeconds, ...identityValues)
-        .all();
+    );
     return parseRows(
         PendingInvitationSchema,
-        result.results ?? [],
+        rows,
         'ListPendingInvitationsForIdentities',
     );
 }
@@ -922,92 +950,102 @@ export async function EmitInvitationsSnapshot(
         doRowsByKey.set(doKey(row.identity_kind, row.identity_value), row);
     }
 
-    // Read current D1 pending rows for this target.
-    const existing = await d1
-        .prepare(
-            `SELECT id, identity_kind, identity_value
-             FROM entity_invitations_index
-             WHERE target_id = ? AND status = 'pending'`
-        )
-        .bind(targetId)
-        .all<{
-            id: string;
-            identity_kind: string;
-            identity_value: string;
-        }>();
+    // The whole read-diff-write runs as one retried program: a retry
+    // re-reads the pending rows, so the diff is always computed against
+    // fresh state. The write side is one `d1.batch()` (atomic on D1;
+    // the sql-d1 driver has no batch support — see module note).
+    await runD1(
+        d1,
+        'EmitInvitationsSnapshot',
+        sql =>
+            Effect.gen(function* () {
+                // Read current D1 pending rows for this target.
+                const existing = yield* sql<{
+                    id: string;
+                    identity_kind: string;
+                    identity_value: string;
+                }>`SELECT id, identity_kind, identity_value
+                    FROM entity_invitations_index
+                    WHERE target_id = ${targetId} AND status = 'pending'`;
 
-    const existingByKey = new Map<
-        string,
-        { id: string; identity_kind: string; identity_value: string }
-    >();
-    for (const row of existing.results ?? []) {
-        existingByKey.set(doKey(row.identity_kind, row.identity_value), row);
-    }
+                const existingByKey = new Map<
+                    string,
+                    { id: string; identity_kind: string; identity_value: string }
+                >();
+                for (const row of existing) {
+                    existingByKey.set(
+                        doKey(row.identity_kind, row.identity_value),
+                        row,
+                    );
+                }
 
-    const stmts: D1PreparedStatement[] = [];
+                const stmts: D1PreparedStatement[] = [];
 
-    // UPSERT each DO row as pending. Existing pending rows get their
-    // role/expiry refreshed; new rows get a fresh id.
-    for (const [key, row] of doRowsByKey) {
-        const existingRow = existingByKey.get(key);
-        if (existingRow) {
-            stmts.push(
-                d1
-                    .prepare(
-                        `UPDATE entity_invitations_index
-                         SET role = ?, inviter_account_id = ?,
-                             time_created = ?, time_expires = ?
-                         WHERE id = ?`
-                    )
-                    .bind(
-                        row.role,
-                        row.inviter_account_id,
-                        row.time_created,
-                        row.time_expires,
-                        existingRow.id
-                    )
-            );
-        } else {
-            stmts.push(
-                d1
-                    .prepare(
-                        `INSERT INTO entity_invitations_index (
-                            id, target_id, target_type, identity_kind,
-                            identity_value, role, inviter_account_id,
-                            status, time_created, time_expires
-                         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
-                    )
-                    .bind(
-                        newIdForRow(),
-                        targetId,
-                        targetType,
-                        row.identity_kind,
-                        row.identity_value,
-                        row.role,
-                        row.inviter_account_id,
-                        row.time_created,
-                        row.time_expires
-                    )
-            );
-        }
-    }
+                // UPSERT each DO row as pending. Existing pending rows get
+                // their role/expiry refreshed; new rows get a fresh id.
+                for (const [key, row] of doRowsByKey) {
+                    const existingRow = existingByKey.get(key);
+                    if (existingRow) {
+                        stmts.push(
+                            d1
+                                .prepare(
+                                    `UPDATE entity_invitations_index
+                                     SET role = ?, inviter_account_id = ?,
+                                         time_created = ?, time_expires = ?
+                                     WHERE id = ?`
+                                )
+                                .bind(
+                                    row.role,
+                                    row.inviter_account_id,
+                                    row.time_created,
+                                    row.time_expires,
+                                    existingRow.id
+                                )
+                        );
+                    } else {
+                        stmts.push(
+                            d1
+                                .prepare(
+                                    `INSERT INTO entity_invitations_index (
+                                        id, target_id, target_type, identity_kind,
+                                        identity_value, role, inviter_account_id,
+                                        status, time_created, time_expires
+                                     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+                                )
+                                .bind(
+                                    newIdForRow(),
+                                    targetId,
+                                    targetType,
+                                    row.identity_kind,
+                                    row.identity_value,
+                                    row.role,
+                                    row.inviter_account_id,
+                                    row.time_created,
+                                    row.time_expires
+                                )
+                        );
+                    }
+                }
 
-    // Mark missing-in-DO pending rows as revoked.
-    for (const [key, row] of existingByKey) {
-        if (doRowsByKey.has(key)) continue;
-        stmts.push(
-            d1
-                .prepare(
-                    `UPDATE entity_invitations_index
-                     SET status = 'revoked'
-                     WHERE id = ?`
-                )
-                .bind(row.id)
-        );
-    }
+                // Mark missing-in-DO pending rows as revoked.
+                for (const [key, row] of existingByKey) {
+                    if (doRowsByKey.has(key)) continue;
+                    stmts.push(
+                        d1
+                            .prepare(
+                                `UPDATE entity_invitations_index
+                                 SET status = 'revoked'
+                                 WHERE id = ?`
+                            )
+                            .bind(row.id)
+                    );
+                }
 
-    if (stmts.length === 0) return;
-    await d1.batch(stmts);
+                if (stmts.length === 0) return;
+                yield* d1Try(() => d1.batch(stmts));
+            }),
+        { retry: true },
+    );
 }
 
 /**
@@ -1023,15 +1061,15 @@ export async function CountInvitesByInviterSince(
     inviterAccountId: string,
     sinceSeconds: number
 ): Promise<number> {
-    const row = await d1
-        .prepare(
-            `SELECT COUNT(*) AS c
+    const rows = await runD1(
+        d1,
+        'CountInvitesByInviterSince',
+        sql => sql<{ c: number }>`SELECT COUNT(*) AS c
              FROM entity_invitations_index
-             WHERE inviter_account_id = ? AND time_created >= ?`
-        )
-        .bind(inviterAccountId, sinceSeconds)
-        .first<{ c: number }>();
-    return row?.c ?? 0;
+             WHERE inviter_account_id = ${inviterAccountId}
+               AND time_created >= ${sinceSeconds}`,
+    );
+    return rows[0]?.c ?? 0;
 }
 
 /**
@@ -1042,15 +1080,15 @@ export async function CountOutstandingInvitesByInviter(
     d1: D1Database,
     inviterAccountId: string
 ): Promise<number> {
-    const row = await d1
-        .prepare(
-            `SELECT COUNT(*) AS c
+    const rows = await runD1(
+        d1,
+        'CountOutstandingInvitesByInviter',
+        sql => sql<{ c: number }>`SELECT COUNT(*) AS c
              FROM entity_invitations_index
-             WHERE inviter_account_id = ? AND status = 'pending'`
-        )
-        .bind(inviterAccountId)
-        .first<{ c: number }>();
-    return row?.c ?? 0;
+             WHERE inviter_account_id = ${inviterAccountId}
+               AND status = 'pending'`,
+    );
+    return rows[0]?.c ?? 0;
 }
 
 /**
@@ -1061,10 +1099,12 @@ export async function DeleteInvitationsForTarget(
     d1: D1Database,
     targetId: string
 ): Promise<void> {
-    await d1
-        .prepare(`DELETE FROM entity_invitations_index WHERE target_id = ?`)
-        .bind(targetId)
-        .run();
+    await runD1(
+        d1,
+        'DeleteInvitationsForTarget',
+        sql =>
+            sql`DELETE FROM entity_invitations_index WHERE target_id = ${targetId}`,
+    );
 }
 
 export type PendingIndexRow = {
@@ -1102,19 +1142,19 @@ export async function GetInvitationFromIndex(
         identity_value: string;
     }
 ): Promise<PendingIndexRow | null> {
-    const row = await d1
-        .prepare(
-            `SELECT id, target_id, target_type, identity_kind, identity_value,
+    const rows = await runD1(
+        d1,
+        'GetInvitationFromIndex',
+        sql =>
+            sql<PendingIndexRow>`SELECT id, target_id, target_type, identity_kind, identity_value,
                     role, inviter_account_id, status, time_created, time_expires
              FROM entity_invitations_index
-             WHERE target_id = ?
-               AND identity_kind = ?
-               AND identity_value = ?
-             LIMIT 1`
-        )
-        .bind(targetId, identity_kind, identity_value)
-        .first<PendingIndexRow>();
-    return row ?? null;
+             WHERE target_id = ${targetId}
+               AND identity_kind = ${identity_kind}
+               AND identity_value = ${identity_value}
+             LIMIT 1`,
+    );
+    return rows[0] ?? null;
 }
 
 /**
@@ -1134,19 +1174,27 @@ export async function MarkInvitationsAccepted(
     }>
 ): Promise<void> {
     if (accepted.length === 0) return;
-    const stmts = accepted.map(a =>
-        d1
-            .prepare(
-                `UPDATE entity_invitations_index
-                 SET status = 'accepted'
-                 WHERE target_id = ?
-                   AND identity_kind = ?
-                   AND identity_value = ?
-                   AND status = 'pending'`
-            )
-            .bind(targetId, a.identity_kind, a.identity_value)
+    await runD1(
+        d1,
+        'MarkInvitationsAccepted',
+        () =>
+            d1Try(() => {
+                const stmts = accepted.map(a =>
+                    d1
+                        .prepare(
+                            `UPDATE entity_invitations_index
+                             SET status = 'accepted'
+                             WHERE target_id = ?
+                               AND identity_kind = ?
+                               AND identity_value = ?
+                               AND status = 'pending'`
+                        )
+                        .bind(targetId, a.identity_kind, a.identity_value)
+                );
+                return d1.batch(stmts);
+            }),
+        { retry: true },
     );
-    await d1.batch(stmts);
 }
 
 // ─── DO orchestration support ───────────────────────────────────────
@@ -1164,13 +1212,14 @@ export async function CountMembershipsForEntity(
     d1: D1Database,
     entityId: string,
 ): Promise<number> {
-    const row = await d1
-        .prepare(
-            `SELECT COUNT(*) AS n FROM entity_memberships WHERE entity_id = ?`,
-        )
-        .bind(entityId)
-        .first<{ n: number }>();
-    return row?.n ?? 0;
+    const rows = await runD1(
+        d1,
+        'CountMembershipsForEntity',
+        sql => sql<{
+            n: number;
+        }>`SELECT COUNT(*) AS n FROM entity_memberships WHERE entity_id = ${entityId}`,
+    );
+    return rows[0]?.n ?? 0;
 }
 
 /**
@@ -1183,14 +1232,13 @@ export async function GetWorkspaceSlug(
     d1: D1Database,
     workspaceId: string,
 ): Promise<string | null> {
-    const row = await d1
-        .prepare(
-            `SELECT slug FROM workspace_entities
-              WHERE id = ? AND type = 'workspace' LIMIT 1;`,
-        )
-        .bind(workspaceId)
-        .first<{ slug: string | null }>();
-    return row?.slug ?? null;
+    const rows = await runD1(
+        d1,
+        'GetWorkspaceSlug',
+        sql => sql<{ slug: string | null }>`SELECT slug FROM workspace_entities
+              WHERE id = ${workspaceId} AND type = 'workspace' LIMIT 1`,
+    );
+    return rows[0]?.slug ?? null;
 }
 
 /**
@@ -1204,18 +1252,17 @@ export async function ListCascadeArchiveBatch(
     workspaceId: string,
     limit: number,
 ): Promise<string[]> {
-    const result = await d1
-        .prepare(
-            `SELECT id FROM workspace_entities
-             WHERE workspace_id = ?
+    const rows = await runD1(
+        d1,
+        'ListCascadeArchiveBatch',
+        sql => sql<{ id: string }>`SELECT id FROM workspace_entities
+             WHERE workspace_id = ${workspaceId}
                AND time_deleted IS NULL
                AND cascade_source IS NULL
              ORDER BY id
-             LIMIT ?`,
-        )
-        .bind(workspaceId, limit)
-        .all<{ id: string }>();
-    return (result.results ?? []).map((r) => r.id);
+             LIMIT ${limit}`,
+    );
+    return rows.map((r) => r.id);
 }
 
 /**
@@ -1229,18 +1276,17 @@ export async function ListCascadeRestoreBatch(
     workspaceId: string,
     limit: number,
 ): Promise<string[]> {
-    const result = await d1
-        .prepare(
-            `SELECT id FROM workspace_entities
-             WHERE workspace_id = ?
-               AND cascade_source = ?
+    const rows = await runD1(
+        d1,
+        'ListCascadeRestoreBatch',
+        sql => sql<{ id: string }>`SELECT id FROM workspace_entities
+             WHERE workspace_id = ${workspaceId}
+               AND cascade_source = ${workspaceId}
                AND time_deleted IS NOT NULL
              ORDER BY id
-             LIMIT ?`,
-        )
-        .bind(workspaceId, workspaceId, limit)
-        .all<{ id: string }>();
-    return (result.results ?? []).map((r) => r.id);
+             LIMIT ${limit}`,
+    );
+    return rows.map((r) => r.id);
 }
 
 /**
@@ -1252,8 +1298,10 @@ export async function DeleteEntityRow(
     d1: D1Database,
     entityId: string,
 ): Promise<void> {
-    await d1
-        .prepare(`DELETE FROM workspace_entities WHERE id = ?;`)
-        .bind(entityId)
-        .run();
+    await runD1(
+        d1,
+        'DeleteEntityRow',
+        sql =>
+            sql`DELETE FROM workspace_entities WHERE id = ${entityId}`,
+    );
 }

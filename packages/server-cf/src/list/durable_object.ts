@@ -68,88 +68,44 @@ import {
     CountInvitesByInviterSince,
     CountMembershipsForEntity,
     CountOutstandingInvitesByInviter,
-    DeleteEntityRow,
     EmitEntityMembershipsToCatalog,
     EmitEntitySnapshotToCatalog,
-    EmitInvitationsSnapshot,
     GetEntityVersion,
     GetInvitationFromIndex,
-    GetWorkspaceSlug,
-    ListCascadeArchiveBatch,
-    ListCascadeRestoreBatch,
-    MarkInvitationsAccepted,
     tryClaimSlug,
 } from '../derived-index/d1';
 import {
     InvitationIdentityKindEnum,
     ensurePendingInvitesTable,
-    listPendingInvites,
-    normalizeIdentityValue,
     preflightAcceptInvitation,
     preflightInviteByIdentity,
     type AcceptPreflightFailureReason,
-    type InvitationIdentityKind,
     type InvitePreflightFailureReason,
 } from './invitations';
 import { preflightMoveList } from '@djibb/protocol/list/mutators/moveList';
-import { GetAccountByEmail, GetAccountById } from '../auth/d1';
+import { GetAccountByEmail } from '../auth/d1';
 import { GetMembership, mintPersonalWorkspaceEntity } from '../workspace/service';
-import {
-    sendEntityInvitationEmail,
-    sendOwnershipTransferEmail,
-    sendOwnershipTransferReceiptEmail,
-} from '../email';
 import { LIST_PULL_KEYSPACES } from './pull';
+import { applyInvitationPostCommit } from './notifications';
 import {
     appendKeyspacePatches,
     encodePullCookie,
     parsePullCookie,
 } from '../replicache/keyspaces';
-import { newId } from '@djibb/protocol/id';
-
-/**
- * Mutator names that change entity-level metadata (the fields projected
- * to the D1 read index). Used by the push handler to decide whether to
- * emit an entity snapshot post-commit. Add entries here as new metadata
- * mutators land (renameList, setListAuthRules, archiveList, ...).
- */
-const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
-    'acceptInvitation',
-    'archiveList',
-    'cascadeArchiveList',
-    'cascadeRestoreList',
-    'changeMemberRole',
-    'claimEntity',
-    'createWorkspace',
-    'initFromTemplate',
-    'initList',
-    'leaveMember',
-    'mintFromBlank',
-    'moveList',
-    'removeMember',
-    'renameList',
-    'renameWorkspace',
-    'setDescription',
-    'setListAuthRules',
-    'setWorkspaceImage',
-    'setWorkspaceSlug',
-    'startFresh',
-    'transferOwnership',
-    'unarchiveList',
-]);
-
-/**
- * Mutator names that touch the DO's `pending_invites` table. Used by
- * the push handler to decide whether to reconcile invitations to the
- * D1 read index post-commit (ADR 0009). The reconciler runs once per
- * push regardless of how many invitation mutations were in the batch
- * — it's a full-snapshot diff, not per-row.
- */
-const INVITATION_MUTATORS: ReadonlySet<string> = new Set([
-    'acceptInvitation',
-    'inviteByIdentity',
-    'revokeInvitation',
-]);
+import type { AlarmEventName } from './alarm-events';
+import {
+    applyWorkspacePostCommit,
+    cascadeArchiveSweep,
+    cascadeRestoreSweep,
+    hardDeleteSweep,
+    type AlarmScheduler,
+} from '../workspace/cascade';
+import {
+    emptyPostCommitIntent,
+    foldCommittedMutation,
+    invitationFlags,
+    workspaceFlags,
+} from './postCommit';
 
 /**
  * Mutators whose push-time semantics depend on cross-target / cross-
@@ -244,26 +200,9 @@ function acceptReasonToOutcomeStatus(
     }
 }
 
-/**
- * Multi-event alarm dispatcher event names (ADR 0011 §Step 10a.2 /
- * ADR 0008). One per kind of scheduled work the DO does:
- *
- *   - reconcile        : ADR 0007 D1 drift check (every DO, every day)
- *   - cascade-archive  : Workspace DO sweeps children on
- *                        `softDeleteWorkspace` (10a.4)
- *   - cascade-restore  : Workspace DO sweeps children on
- *                        `restoreWorkspace` (10a.5)
- *   - harddelete       : per-DO self-destruct 30d after soft delete
- *                        (10a.6 / 10b)
- *
- * Adding a new event: extend this union, register a case in
- * `runAlarmEvent`, schedule via `scheduleEvent(name, dueAt)`.
- */
-export type AlarmEventName =
-    | 'reconcile'
-    | 'cascade-archive'
-    | 'cascade-restore'
-    | 'harddelete';
+// `AlarmEventName` moved to `./alarm-events` (ADR 0026 series 1) so the
+// workspace cascade module (`workspace/cascade.ts`) and the DO import it
+// with no cycle. It's imported at the top of this file.
 
 /**
  * TODO:
@@ -1132,89 +1071,14 @@ export class DjibbList extends DurableObject {
             `begin processing ${pushRequest.mutations.length} mutations`
         );
 
-        // Tracks whether any successful mutation in this push touched
-        // entity-level metadata fields. The DO emits a snapshot to the
-        // D1 read index post-commit per ADR 0003. For now the only
-        // entity-mutating mutator is `initList`; renameList / archive /
-        // setListAuthRules will join this list as they land.
-        let entityMetadataMutated = false;
-        // Tracks whether this push just soft-deleted a Workspace entity.
-        // ADR 0008: a workspace's own `archiveList` is the trigger for
-        // the cascade-archive sweep — the post-commit tail enqueues a
-        // `cascade-archive` alarm event, which the dispatcher then
-        // drives in N=10 batches against the workspace's children
-        // (lists + templates). The cascade fan-out is async by design
-        // so the user's click returns instantly regardless of how many
-        // children the workspace owns.
-        let cascadeArchiveTriggered = false;
-        // Tracks whether this push just restored a Workspace entity.
-        // ADR 0008 §"Restore" mirrors the archive path: an
-        // `unarchiveList` against the workspace's own id enqueues the
-        // `cascade-restore` event. The two triggers cancel each
-        // other's pending events so a mid-sweep flip (Delete then
-        // Restore inside seconds) doesn't leave the dispatcher
-        // chasing the older direction.
-        let cascadeRestoreTriggered = false;
-        // Tracks whether this push transitioned this DO's own entity row
-        // into (or out of) the soft-deleted state. ADR 0008's hard-delete
-        // clock (10b): when the row goes soft-deleted, arm a 30d
-        // `harddelete` alarm event; when it comes back, clear it. Last
-        // write wins across the push (a single push containing both an
-        // archive and an unarchive should reflect the final state).
-        //
-        // Both the user-driven (`archiveList` / `unarchiveList`) and
-        // system-driven cascade variants (`cascadeArchiveList` /
-        // `cascadeRestoreList`) flow through this tracker, so every
-        // DjibbList — workspaces, lists, templates — runs the same
-        // clock against its own row regardless of whether the user or a
-        // parent workspace's sweep is the proximate cause.
-        let harddeleteArmed: 'arm' | 'clear' | null = null;
-        // Tracks whether this push ran a `startFresh` on the DO's own
-        // personal workspace. Carries the display_name the actor
-        // wants for the freshly-minted personal workspace (so the
-        // post-commit mint can format `<display_name>'s space`).
-        // ADR 0008 §"Personal Workspace: 'Start Fresh,' not Delete",
-        // ADR 0011 §Step 10c. The mint runs in the post-commit tail
-        // because it requires a cross-DO synth push, which the
-        // synchronous server-mutator surface cannot do.
-        let startFreshDisplayName: {
-            accountId: string;
-            displayName: string | null;
-        } | null = null;
-        // Tracks whether any mutation in this push touched the DO's
-        // `pending_invites` table. Triggers the post-commit
-        // reconciliation emit to `entity_invitations_index` (ADR 0009).
-        let invitationsMutated = false;
-        // Tracks (identity_kind, identity_value) pairs whose
-        // pending_invite row was accepted in this push. Each gets a
-        // direct UPDATE to D1 (`status='accepted'`) BEFORE the
-        // reconciler runs, so the "missing in DO ⇒ revoked" diff
-        // doesn't downgrade the row.
-        const acceptedInvites: Array<{
-            identity_kind: InvitationIdentityKind;
-            identity_value: string;
-        }> = [];
-        // Tracks (identity_kind, identity_value, inviter_account_id)
-        // for every `inviteByIdentity` mutation that successfully
-        // committed in this push. Drained post-commit to fire
-        // notification emails per ADR 0009 §"Email send". Stored
-        // separately from the reconciler input so we never fire on a
-        // mutation that was skipped/rolled back.
-        const sentInvites: Array<{
-            identity_kind: InvitationIdentityKind;
-            identity_value: string;
-            inviter_account_id: string;
-        }> = [];
-        // Tracks (to_account_id, former_owner_account_id) for every
-        // `transferOwnership` mutation that committed AND actually moved
-        // the principal (to ≠ actor). Drained post-commit to email the
-        // new owner a confirmation (ADR 0011 §Decision C, Phase 5).
-        // Captured separately from any reconciler input so we never fire
-        // on a skipped/stale transfer or a same-owner no-op.
-        const transferredOwnerships: Array<{
-            to_account_id: string;
-            former_owner_account_id: string | null;
-        }> = [];
+        // What this push's committed mutations imply for the post-commit
+        // tail — the entity-snapshot emit (ADR 0003), the workspace
+        // cascade + hard-delete clock (ADR 0008), and the invitation /
+        // ownership notifications (ADR 0009, ADR 0011). Accumulated by a
+        // pure fold in `./postCommit` (ADR 0026 series 3) so the loop
+        // below keeps only its Replicache bookkeeping; the trigger rules
+        // themselves live next to the tails they feed.
+        let intent = emptyPostCommitIntent();
 
         for (let i = 0; i < pushRequest.mutations.length; i++) {
             const mutation = pushRequest.mutations[i];
@@ -1344,160 +1208,12 @@ export class DjibbList extends DurableObject {
 
             if (didMutate) {
                 listVersion = nextVersion;
-                if (ENTITY_METADATA_MUTATORS.has(mutation.name)) {
-                    entityMetadataMutated = true;
-                }
-                // ADR 0008 §"Trigger": a successful `archiveList`
-                // mutation against this DO's own workspace entity is
-                // the cascade-archive trigger. The ID-prefix check
-                // narrows to workspace entities — list and template
-                // archives stay self-contained. `listId` is the outer
-                // function param and matches this DO's entity id (the
-                // mutator's `args.listId` is required to equal it).
-                if (
-                    (mutation.name === 'archiveList' ||
-                        mutation.name === 'startFresh') &&
-                    listId.startsWith('w/')
-                ) {
-                    cascadeArchiveTriggered = true;
-                }
-                // Capture startFresh args at trigger time so the
-                // post-commit tail can mint the new personal workspace
-                // with the actor's display name. We avoid re-reading
-                // args downstream — the mutation envelope is already
-                // parsed and validated here.
-                if (
-                    mutation.name === 'startFresh' &&
-                    listId.startsWith('w/')
-                ) {
-                    const rawArgs = (mutation.args ?? {}) as Record<
-                        string,
-                        unknown
-                    >;
-                    const dn = rawArgs.accountDisplayName;
-                    const actor = rawArgs.accountId;
-                    if (typeof actor === 'string') {
-                        startFreshDisplayName = {
-                            accountId: actor,
-                            displayName:
-                                typeof dn === 'string' ? dn : null,
-                        };
-                    }
-                }
-                // ADR 0008 §"Restore": symmetric trigger. An
-                // unarchive against the workspace's own id flips the
-                // dispatcher into restore mode. The cascade-archive
-                // event (if any pending from a prior delete) gets
-                // canceled in the post-commit tail, so the dispatcher
-                // doesn't keep archiving children that are about to
-                // be restored.
-                if (
-                    mutation.name === 'unarchiveList' &&
-                    listId.startsWith('w/')
-                ) {
-                    cascadeRestoreTriggered = true;
-                }
-                // ADR 0008 hard-delete clock arm/clear. Mutator names
-                // are the signal: a successful archive of any flavor
-                // means this DO's entity row is now soft-deleted; a
-                // successful restore means it's live again. We don't
-                // re-read the row because the mutator's own SQL helper
-                // (`archiveEntity` / `unarchiveEntity`) already enforces
-                // the transition or throws — `didMutate` proves it
-                // landed.
-                if (
-                    mutation.name === 'archiveList' ||
-                    mutation.name === 'cascadeArchiveList' ||
-                    mutation.name === 'startFresh'
-                ) {
-                    harddeleteArmed = 'arm';
-                }
-                if (
-                    mutation.name === 'unarchiveList' ||
-                    mutation.name === 'cascadeRestoreList'
-                ) {
-                    harddeleteArmed = 'clear';
-                }
-                if (INVITATION_MUTATORS.has(mutation.name)) {
-                    invitationsMutated = true;
-                }
-                if (mutation.name === 'inviteByIdentity') {
-                    // Capture sent invites so the post-commit tail can
-                    // fire notification emails. Pull (kind, value,
-                    // inviter) directly off the wire args — the mutator
-                    // already parsed + role-gated, and the preflight
-                    // verified the inviter is in-session.
-                    const rawArgs = (mutation.args ?? {}) as Record<
-                        string,
-                        unknown
-                    >;
-                    const kindParse = InvitationIdentityKindEnum.safeParse(
-                        rawArgs.identity_kind
-                    );
-                    const valueRaw = rawArgs.identity_value;
-                    const inviterRaw = rawArgs.accountId;
-                    if (
-                        kindParse.success &&
-                        typeof valueRaw === 'string' &&
-                        typeof inviterRaw === 'string'
-                    ) {
-                        sentInvites.push({
-                            identity_kind: kindParse.data,
-                            identity_value: normalizeIdentityValue(
-                                kindParse.data,
-                                valueRaw
-                            ),
-                            inviter_account_id: inviterRaw,
-                        });
-                    }
-                }
-                if (mutation.name === 'transferOwnership') {
-                    // Capture the transfer so the post-commit tail can
-                    // email the new owner. `accountId` is the actor; the
-                    // mutator proved it equals the current owner (else
-                    // `stale`), so it's the former owner. Skip same-owner
-                    // no-ops (to === actor): the mutator returns without
-                    // writing, but `didMutate` is still true for a clean
-                    // succeed, so we filter here rather than fire a
-                    // "you're now the owner" note at the existing owner.
-                    const rawArgs = (mutation.args ?? {}) as Record<
-                        string,
-                        unknown
-                    >;
-                    const toRaw = rawArgs.toAccountId;
-                    const actorRaw = rawArgs.accountId;
-                    if (typeof toRaw === 'string' && toRaw !== actorRaw) {
-                        transferredOwnerships.push({
-                            to_account_id: toRaw,
-                            former_owner_account_id:
-                                typeof actorRaw === 'string' ? actorRaw : null,
-                        });
-                    }
-                }
-                if (mutation.name === 'acceptInvitation') {
-                    // Pull the (kind, value) directly off the wire
-                    // args. The mutator already parsed + role-gated
-                    // above, so we trust the args' shape here; a
-                    // belt-and-suspenders zod parse keeps the cast
-                    // honest.
-                    const rawArgs = (mutation.args ?? {}) as Record<
-                        string,
-                        unknown
-                    >;
-                    const kindParse = InvitationIdentityKindEnum.safeParse(
-                        rawArgs.identity_kind
-                    );
-                    const valueRaw = rawArgs.identity_value;
-                    if (kindParse.success && typeof valueRaw === 'string') {
-                        acceptedInvites.push({
-                            identity_kind: kindParse.data,
-                            identity_value: normalizeIdentityValue(
-                                kindParse.data,
-                                valueRaw
-                            ),
-                        });
-                    }
-                }
+                // Every trigger rule (which mutators dirty the snapshot,
+                // what arms the hard-delete clock, which args become an
+                // invite email) lives in the fold. `didMutate` is the gate:
+                // a skipped / stale / unauthorized mutation must never fire
+                // an email or arm a clock.
+                intent = foldCommittedMutation(intent, mutation, listId);
             }
             if (ackedMutationId !== null) {
                 replicacheClient.lastMutationId = ackedMutationId;
@@ -1520,7 +1236,7 @@ export class DjibbList extends DurableObject {
         // We catch here rather than letting the throw mark the push
         // failed, since a successful mutation should still ack to the
         // client even if its D1 projection lagged.
-        if (entityMetadataMutated) {
+        if (intent.entityMetadataMutated) {
             try {
                 await this.emitEntitySnapshot(listId);
             } catch (error) {
@@ -1531,183 +1247,55 @@ export class DjibbList extends DurableObject {
             }
         }
 
-        // Flip D1 index rows to `status='accepted'` for each accepted
-        // invite BEFORE the reconciler's snapshot diff runs (ADR 0009
-        // Slice 3). Order matters: the reconciler converts D1 'pending'
-        // rows that have no DO counterpart to 'revoked'; the accepted
-        // rows have been tombstoned in the DO, so without this update
-        // they'd be misclassified as revoked. Fire-and-pray on D1
-        // failure — same posture as the snapshot below.
-        if (acceptedInvites.length > 0) {
-            try {
-                await MarkInvitationsAccepted(
-                    (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
-                    listId,
-                    acceptedInvites
-                );
-            } catch (error) {
-                console.error(
-                    `\`MarkInvitationsAccepted()\` D1 emit failed for "${listId}":`,
-                    error
-                );
-            }
-        }
+        // Post-commit invitation/ownership tail (ADR 0009, ADR 0011
+        // §Decision C), extracted to `./notifications` (ADR 0026 series
+        // 2). Folds, in order: MarkInvitationsAccepted (BEFORE the
+        // reconciler's diff so accepted rows aren't misread as revoked),
+        // the invitations-index reconcile, the invite emails, and the
+        // ownership-transfer emails. Runs AFTER `emitEntitySnapshot`
+        // above. All effects are fire-and-pray / best-effort — the DO is
+        // authoritative and the reconciliation alarm (ADR 0007) repairs
+        // drift.
+        await applyInvitationPostCommit(
+            {
+                sql: this.sql,
+                d1: (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+                env: this.env as Bindings,
+                authorizedAccounts,
+                // Keep the notification emails off the push's critical path
+                // — the ack should not wait on an outbound send (plus its
+                // retry backoff). `waitUntil` keeps the DO alive until they
+                // settle after the response.
+                waitUntil: promise => this.ctx.waitUntil(promise),
+            },
+            invitationFlags(intent, listId)
+        );
 
-        // Reconcile invitation index post-commit (ADR 0009). Full-snapshot
-        // diff: DO rows become D1 'pending', any D1 'pending' rows
-        // absent from the DO become 'revoked'. Same fire-and-pray
-        // posture as the entity-metadata emit — DO is authoritative
-        // and the reconciliation alarm is the eventual repair.
-        if (invitationsMutated) {
-            try {
-                await this.emitInvitationsSnapshot(listId);
-            } catch (error) {
-                console.error(
-                    `\`emitInvitationsSnapshot()\` D1 emit failed for "${listId}":`,
-                    error
-                );
-            }
-        }
-
-        // Fire invitation notification emails for any inviteByIdentity
-        // mutations that committed in this push (ADR 0009 §"Email
-        // send"). Best-effort: a delivery failure is logged but doesn't
-        // affect the push response — the invite still exists in the DO
-        // + D1 index and the invitee can be re-notified by another
-        // surface (resend button, future inbox). Email lookup is keyed
-        // by the entity row + the inviter's display_name on the session
-        // we already have in scope, so no extra D1 reads.
-        if (sentInvites.length > 0) {
-            await this.fireInvitationEmails(
-                listId,
-                sentInvites,
-                authorizedAccounts
-            );
-        }
-
-        // Email the new owner a confirmation for any transferOwnership
-        // that committed in this push (ADR 0011 §Decision C, Phase 5).
-        // Best-effort, same posture as the invite emails: a delivery
-        // failure is logged but never blocks the push.
-        if (transferredOwnerships.length > 0) {
-            await this.fireOwnershipTransferEmails(
-                listId,
-                transferredOwnerships,
-                authorizedAccounts
-            );
-        }
-
-        // ADR 0008 §"Trigger": enqueue the cascade-archive event for
-        // immediate fire. The handler reads this workspace's child
-        // catalog and fans out `cascadeArchiveList` pushes in N=10
-        // batches; if more children remain after a batch it re-arms
-        // itself. Idempotent re-scheduling: scheduling the same event
-        // again (e.g. a retry archive on an already-deleted workspace)
-        // just resets the dueAt to "now," which is harmless. We
-        // schedule AFTER `emitEntitySnapshot` so the workspace's own
-        // `time_deleted` is already in the catalog before any child
-        // begins its sweep — useful for the read paths (Trash UI,
-        // future "this list is in a deleted workspace" hint) that
-        // consult both rows.
-        //
-        // Mid-restore re-archive: also cancel any pending
-        // cascade-restore event. The dispatcher would self-abort on
-        // the next tick (the handler checks the workspace's own
-        // `time_deleted`), but canceling here drops the storage key
-        // immediately and avoids a pointless alarm fire.
-        if (cascadeArchiveTriggered) {
-            try {
-                await this.cancelEvent('cascade-restore');
-                await this.scheduleEvent('cascade-archive', Date.now());
-            } catch (error) {
-                console.error(
-                    `\`scheduleEvent('cascade-archive')\` failed for "${listId}":`,
-                    error
-                );
-            }
-        }
-
-        // ADR 0008 §"Restore": symmetric to the archive trigger.
-        // Cancels any pending cascade-archive (mid-sweep flip) and
-        // enqueues cascade-restore for immediate fire.
-        if (cascadeRestoreTriggered) {
-            try {
-                await this.cancelEvent('cascade-archive');
-                await this.scheduleEvent('cascade-restore', Date.now());
-            } catch (error) {
-                console.error(
-                    `\`scheduleEvent('cascade-restore')\` failed for "${listId}":`,
-                    error
-                );
-            }
-        }
-
-        // ADR 0008 §"Personal Workspace: 'Start Fresh,' not Delete" /
-        // ADR 0011 §Step 10c: mint a fresh personal workspace for the
-        // actor immediately after their old one got archived by
-        // `startFresh`. Cross-DO synth push, so it has to live in the
-        // post-commit tail (the mutator surface is synchronous).
-        //
-        // Failures here are logged-but-swallowed. The cascade-archive
-        // and harddelete clock on the old workspace have already been
-        // scheduled above; if the mint fails, the user lands in a
-        // weird zero-personal-workspaces state until the next signin
-        // (or until a manual recovery path is built). Worth
-        // reconsidering if this proves flaky in production.
-        if (startFreshDisplayName) {
-            try {
-                const env = this.env as Bindings;
-                await mintPersonalWorkspaceEntity(env.DJIBB_LIST, {
-                    id: startFreshDisplayName.accountId,
-                    display_name: startFreshDisplayName.displayName,
-                } as Account);
-            } catch (error) {
-                console.error(
-                    `\`startFresh\` mint failed for actor "${startFreshDisplayName.accountId}":`,
-                    error
-                );
-            }
-        }
-
-        // ADR 0008 hard-delete clock (10b). Armed when this push
-        // soft-deleted the DO's own entity row; cleared when restored.
-        // 30d from now (override via `HARD_DELETE_DELAY_MS` for tests).
-        //
-        // Scheduled here, AFTER any cascade-archive/restore trigger,
-        // so the clock arm is the last event-store write in the push.
-        // That ordering is unimportant for correctness (the dispatcher
-        // picks the minimum due time across all pending events), but
-        // keeps the test reading order predictable: by the time
-        // `_handlePush` returns, both events for an archive flow
-        // (cascade-archive at `now`, harddelete at `now + 30d`) are
-        // present in storage.
-        //
-        // The handler's safety net (re-reads `time_deleted` before
-        // destroying anything) means a missed `clear` won't hard-delete
-        // a restored entity — but we still clear here so the alarm
-        // doesn't fire pointlessly 30d later.
-        if (harddeleteArmed === 'arm') {
-            try {
-                await this.scheduleEvent(
-                    'harddelete',
-                    Date.now() + DjibbList.HARD_DELETE_DELAY_MS
-                );
-            } catch (error) {
-                console.error(
-                    `\`scheduleEvent('harddelete')\` failed for "${listId}":`,
-                    error
-                );
-            }
-        } else if (harddeleteArmed === 'clear') {
-            try {
-                await this.cancelEvent('harddelete');
-            } catch (error) {
-                console.error(
-                    `\`cancelEvent('harddelete')\` failed for "${listId}":`,
-                    error
-                );
-            }
-        }
+        // ADR 0008 workspace post-commit tail (§Step 10a/10b/10c),
+        // extracted to `workspace/cascade.ts` (ADR 0026 series 1). Folds
+        // the cascade-archive/restore triggers, the startFresh personal-
+        // workspace mint, and the hard-delete clock arm/clear. Runs AFTER
+        // `emitEntitySnapshot` so the workspace's own `time_deleted` is in
+        // the catalog before any child sweep begins. The mint is injected
+        // (the DO owns the DJIBB_LIST binding + Account shaping); every
+        // block swallows its own failure so a scheduling blip doesn't fail
+        // the already-committed push.
+        await applyWorkspacePostCommit(
+            {
+                scheduler: this.alarmScheduler,
+                hardDeleteDelayMs: DjibbList.HARD_DELETE_DELAY_MS,
+                mintPersonalWorkspace: async (actor) => {
+                    await mintPersonalWorkspaceEntity(
+                        (this.env as Bindings).DJIBB_LIST,
+                        {
+                            id: actor.accountId,
+                            display_name: actor.displayName,
+                        } as Account
+                    );
+                },
+            },
+            workspaceFlags(intent, listId)
+        );
 
         // Bootstrap the reconciliation alarm per ADR 0007. Idempotent;
         // ensureReconcileAlarm() no-ops when an alarm is already
@@ -2145,304 +1733,6 @@ export class DjibbList extends DurableObject {
     }
 
     /**
-     * Reconcile this DO's pending_invites into D1's
-     * `entity_invitations_index` (ADR 0009). Called post-commit when a
-     * push touched any INVITATION_MUTATORS. Full-snapshot pattern:
-     * DO rows are UPSERTed as 'pending'; D1 'pending' rows that no
-     * longer correspond to a DO row become 'revoked'.
-     *
-     * The entity-not-found branch (DO ran an invitation mutator but
-     * its own list_elements row is missing) is an invariant violation
-     * — logged and skipped, not thrown, mirroring `emitEntitySnapshot`.
-     */
-    /**
-     * Send notification emails for invitations that committed in this
-     * push (ADR 0009 §"Email send"). One email per recipient. The
-     * `acceptUrl` points directly to the entity page with
-     * `?from_invite=1`; the entity route handles its own redirect-to-
-     * login for unauthenticated invitees and a future banner picks up
-     * the flag to surface an explicit "accept" affordance.
-     *
-     * Best-effort: failures are logged, never thrown. Concurrent sends
-     * are awaited via `Promise.allSettled` so one slow recipient
-     * doesn't serialize the rest, and the push response isn't blocked
-     * on aggregate latency beyond the slowest send. The DO's input
-     * gate keeps the object alive while these promises resolve, so we
-     * don't need `executionCtx.waitUntil` here (which isn't available
-     * inside the DO anyway).
-     */
-    private async fireInvitationEmails(
-        entityId: string,
-        invites: ReadonlyArray<{
-            identity_kind: InvitationIdentityKind;
-            identity_value: string;
-            inviter_account_id: string;
-        }>,
-        authorizedAccounts: Readonly<Account[]>
-    ): Promise<void> {
-        const entity = getElementById(this.sql, entityId);
-        if (!entity || !isEntityRow(entity)) {
-            console.warn(
-                `\`fireInvitationEmails()\` no entity row for "${entityId}"`
-            );
-            return;
-        }
-        const entityName = (entity as { name?: string }).name ?? '';
-        const entityTypeLabel = entity.type;
-
-        const env = this.env as Bindings;
-        if (!env.EMAIL) {
-            console.warn(
-                '`fireInvitationEmails()` no EMAIL binding; skipping send.'
-            );
-            return;
-        }
-
-        // First domain in the semicolon-separated list is treated as
-        // canonical for outbound links (matches the workspace-invite
-        // pattern in `workspace/fetch.ts`).
-        const origin = (env.AUTHORIZED_DOMAINS ?? '').split(';')[0] ?? '';
-        if (!origin) {
-            console.warn(
-                '`fireInvitationEmails()` no AUTHORIZED_DOMAINS; using relative URL.'
-            );
-        }
-        // URL prefix mirrors the entity ID's type prefix (`l/`, `t/`, `w/`)
-        // — see user memory note "URLs mirror ID type prefixes".
-        const pathPrefix =
-            entityTypeLabel === 'list'
-                ? '/l/'
-                : entityTypeLabel === 'workspace'
-                  ? '/w/'
-                  : '/t/';
-        // ID prefix lives in the entity id (`l/<suffix>` / `t/<suffix>`)
-        // but the URL form strips the prefix segment (see user memory:
-        // URLs mirror ID type prefixes — `/l/<suffix>` not `/l/l/<suffix>`).
-        const idSuffix = entityId.includes('/')
-            ? entityId.split('/')[1]
-            : entityId;
-        // Workspace pages route by slug (`/w/<slug>`), not by id suffix,
-        // so resolve the slug from the D1 catalog (the DO's local sql
-        // doesn't carry it — ADR 0011 §7b.5). Lists/Templates route by
-        // their id suffix directly. Fall back to the id suffix if the
-        // slug is somehow missing so the link still names the right DO.
-        let pathSegment = idSuffix;
-        if (entityTypeLabel === 'workspace') {
-            const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-            const slug = await GetWorkspaceSlug(d1, entityId);
-            if (slug) {
-                pathSegment = slug;
-            } else {
-                console.warn(
-                    `\`fireInvitationEmails()\` no slug for workspace "${entityId}"; using id suffix.`
-                );
-            }
-        }
-        const acceptUrl = `${origin}${pathPrefix}${pathSegment}?from_invite=1`;
-
-        const sends = invites.map(async invite => {
-            // v1 only supports email-kind identities.
-            if (invite.identity_kind !== 'email') return;
-            const inviter = authorizedAccounts.find(
-                a => a.id === invite.inviter_account_id
-            );
-            const inviterName = inviter?.display_name ?? '';
-            try {
-                await sendEntityInvitationEmail(env, {
-                    to: invite.identity_value,
-                    entityTypeLabel,
-                    entityName,
-                    inviterName,
-                    acceptUrl,
-                });
-            } catch (error) {
-                console.error(
-                    `\`sendEntityInvitationEmail()\` failed for "${entityId}" -> "${invite.identity_value}":`,
-                    error
-                );
-            }
-        });
-        await Promise.allSettled(sends);
-    }
-
-    /**
-     * Email both parties of each `transferOwnership` that committed in
-     * this push (ADR 0011 §Decision C, Phase 5): a notification to the
-     * new owner ("you're now the owner") and a receipt to the former
-     * owner ("you transferred X" — an accountability / compromise
-     * signal). Mirrors `fireInvitationEmails`' best-effort posture:
-     * per-send failures are logged via `Promise.allSettled`, never
-     * thrown, so the push response isn't blocked. The two sends are
-     * independent — a missing new-owner email doesn't suppress the
-     * former owner's receipt.
-     *
-     * Unlike the invite path the new owner is identified by account id,
-     * not an email literal, so we resolve it from D1 (`GetAccountById`);
-     * that one lookup feeds both emails (their email for the
-     * notification, their name for the receipt). The former owner is the
-     * actor, read straight from the session's `authorizedAccounts`
-     * (name + email, no D1 read). The link carries no `?from_invite=1`:
-     * the transfer already granted `owner` access, so there's nothing to
-     * accept.
-     */
-    private async fireOwnershipTransferEmails(
-        entityId: string,
-        transfers: ReadonlyArray<{
-            to_account_id: string;
-            former_owner_account_id: string | null;
-        }>,
-        authorizedAccounts: Readonly<Account[]>
-    ): Promise<void> {
-        const entity = getElementById(this.sql, entityId);
-        if (!entity || !isEntityRow(entity)) {
-            console.warn(
-                `\`fireOwnershipTransferEmails()\` no entity row for "${entityId}"`
-            );
-            return;
-        }
-        const entityName = (entity as { name?: string }).name ?? '';
-        const entityTypeLabel = entity.type;
-
-        const env = this.env as Bindings;
-        if (!env.EMAIL) {
-            console.warn(
-                '`fireOwnershipTransferEmails()` no EMAIL binding; skipping send.'
-            );
-            return;
-        }
-        const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-
-        const origin = (env.AUTHORIZED_DOMAINS ?? '').split(';')[0] ?? '';
-        if (!origin) {
-            console.warn(
-                '`fireOwnershipTransferEmails()` no AUTHORIZED_DOMAINS; using relative URL.'
-            );
-        }
-        // URL prefix mirrors the entity ID's type prefix (`l/`, `t/`,
-        // `w/`) — see user memory "URLs mirror ID type prefixes".
-        const pathPrefix =
-            entityTypeLabel === 'list'
-                ? '/l/'
-                : entityTypeLabel === 'workspace'
-                  ? '/w/'
-                  : '/t/';
-        const idSuffix = entityId.includes('/')
-            ? entityId.split('/')[1]
-            : entityId;
-        // Workspaces route by slug, not id suffix (ADR 0011 §7b.5); the
-        // DO's local sql doesn't carry the slug, so resolve it from the
-        // D1 catalog. Fall back to the id suffix so the link still names
-        // the right DO.
-        let pathSegment = idSuffix;
-        if (entityTypeLabel === 'workspace') {
-            const slug = await GetWorkspaceSlug(d1, entityId);
-            if (slug) {
-                pathSegment = slug;
-            } else {
-                console.warn(
-                    `\`fireOwnershipTransferEmails()\` no slug for workspace "${entityId}"; using id suffix.`
-                );
-            }
-        }
-        const entityUrl = `${origin}${pathPrefix}${pathSegment}`;
-
-        const sends = transfers.map(async transfer => {
-            // Former owner = the actor, resolved from the in-session
-            // accounts (carries both display_name and email; no D1 read).
-            const formerOwner = transfer.former_owner_account_id
-                ? authorizedAccounts.find(
-                      a => a.id === transfer.former_owner_account_id
-                  )
-                : undefined;
-            const formerOwnerName = formerOwner?.display_name ?? '';
-
-            // New owner needs a D1 lookup — they're identified by id, and
-            // (unlike the actor) aren't in the session. One lookup feeds
-            // both emails: their email for the notification, their name
-            // for the former owner's receipt.
-            const recipient = await GetAccountById(
-                d1,
-                transfer.to_account_id
-            ).catch(err => {
-                console.error(
-                    `\`fireOwnershipTransferEmails()\` GetAccountById failed for "${transfer.to_account_id}":`,
-                    err
-                );
-                return null;
-            });
-
-            // 1. Notify the new owner.
-            const newOwnerEmail = recipient?.email;
-            if (newOwnerEmail) {
-                try {
-                    await sendOwnershipTransferEmail(env, {
-                        to: newOwnerEmail,
-                        entityTypeLabel,
-                        entityName,
-                        formerOwnerName,
-                        entityUrl,
-                    });
-                } catch (error) {
-                    console.error(
-                        `\`sendOwnershipTransferEmail()\` failed for "${entityId}" -> "${transfer.to_account_id}":`,
-                        error
-                    );
-                }
-            } else {
-                console.warn(
-                    `\`fireOwnershipTransferEmails()\` no email for new owner "${transfer.to_account_id}" of "${entityId}"; skipping notification.`
-                );
-            }
-
-            // 2. Receipt to the former owner (accountability / account-
-            // compromise signal). Independent of (1): a missing
-            // new-owner email shouldn't suppress the former owner's
-            // record of the change.
-            const formerOwnerEmail = formerOwner?.email;
-            if (formerOwnerEmail) {
-                const newOwnerName =
-                    recipient?.display_name || recipient?.email || '';
-                try {
-                    await sendOwnershipTransferReceiptEmail(env, {
-                        to: formerOwnerEmail,
-                        entityTypeLabel,
-                        entityName,
-                        newOwnerName,
-                        entityUrl,
-                    });
-                } catch (error) {
-                    console.error(
-                        `\`sendOwnershipTransferReceiptEmail()\` failed for "${entityId}" -> former owner "${transfer.former_owner_account_id}":`,
-                        error
-                    );
-                }
-            }
-        });
-        await Promise.allSettled(sends);
-    }
-
-    private async emitInvitationsSnapshot(entityId: string): Promise<void> {
-        const entity = getElementById(this.sql, entityId);
-        if (!entity || !isEntityRow(entity)) {
-            console.warn(
-                `\`emitInvitationsSnapshot()\` no entity row for "${entityId}"`
-            );
-            return;
-        }
-
-        const doInvites = listPendingInvites(this.sql);
-        await EmitInvitationsSnapshot(
-            (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
-            {
-                targetId: entityId,
-                targetType: entity.type,
-                doInvites,
-                newIdForRow: () => newId('invitation'),
-            }
-        );
-    }
-
-    /**
      * Reconciliation cadence per ADR 0007. The healthy interval is
      * 24h — the synchronous post-commit emit handles freshness, so
      * the alarm only buys recovery time after a missed emit. The
@@ -2503,6 +1793,20 @@ export class DjibbList extends DurableObject {
     private async cancelEvent(name: AlarmEventName): Promise<void> {
         await this.ctx.storage.delete(this.alarmEventKey(name));
         await this.rearmAlarm();
+    }
+
+    /**
+     * Narrow view of this DO's multi-event scheduler, injected into the
+     * workspace cascade free functions (`workspace/cascade.ts`, ADR 0026
+     * series 1). `schedule`/`cancel` bind to `scheduleEvent`/
+     * `cancelEvent`; tests drive the free functions with a fake in-memory
+     * scheduler instead.
+     */
+    private get alarmScheduler(): AlarmScheduler {
+        return {
+            schedule: (name, dueAtMs) => this.scheduleEvent(name, dueAtMs),
+            cancel: (name) => this.cancelEvent(name),
+        };
     }
 
     /**
@@ -2722,136 +2026,13 @@ export class DjibbList extends DurableObject {
     static readonly CASCADE_ARCHIVE_BATCH_SIZE = 10;
 
     async handleCascadeArchive(): Promise<void> {
-        const entityId = getEntityId(this.sql);
-        if (!entityId || !entityId.startsWith('w/')) {
-            // Not a workspace DO. Should never reach the handler given
-            // the trigger guard in `_handlePush`, but a misconfigured
-            // event key shouldn't loop forever.
-            console.warn(
-                `\`handleCascadeArchive()\` not a workspace entity (id="${entityId}"); canceling`
-            );
-            await this.cancelEvent('cascade-archive');
-            return;
-        }
-
-        // Read this workspace's own time_deleted to use as the
-        // deletion-timestamp portion of the synthetic clientID. Also
-        // doubles as the abort check: if the user restored the
-        // workspace before this tick, time_deleted is null and we
-        // bail (10a.5 turns this into the inverse sweep).
-        const own = this.sql
-            .exec(
-                `SELECT time_deleted FROM list_elements WHERE id = ?;`,
-                entityId
-            )
-            .one();
-        const ownTimeDeletedRaw = own?.time_deleted as number | null;
-        if (ownTimeDeletedRaw == null) {
-            console.log(
-                `\`handleCascadeArchive()\` workspace "${entityId}" not deleted; canceling`
-            );
-            await this.cancelEvent('cascade-archive');
-            return;
-        }
-        // time_deleted is unix seconds in the DO row (`getElementById`
-        // multiplies by 1000); raw column read is seconds. Convert to
-        // ms for the clientID — keeps the cascade campaign id stable
-        // across restarts even though the wall clock has moved.
-        const deletionTsMs = ownTimeDeletedRaw * 1000;
-
-        const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-        const rows = await ListCascadeArchiveBatch(
-            d1,
-            entityId,
-            DjibbList.CASCADE_ARCHIVE_BATCH_SIZE
-        );
-        if (rows.length === 0) {
-            // Drained. Per ADR 0008 the next workspace-side event is
-            // the 30d hard-delete clock (10b); we don't set it here
-            // because the trigger landed it at archive time. Just
-            // clear the cascade-archive key.
-            await this.cancelEvent('cascade-archive');
-            return;
-        }
-
-        for (const childId of rows) {
-            try {
-                await this.cascadeArchiveChild(
-                    childId,
-                    entityId,
-                    deletionTsMs
-                );
-            } catch (error) {
-                console.error(
-                    `\`handleCascadeArchive()\` child push failed for "${childId}":`,
-                    error
-                );
-                // Leave the child unarchived; next batch re-selects it
-                // (its time_deleted didn't get set). Retries are
-                // bounded by progress on the rest of the batch.
-            }
-        }
-
-        // Re-arm for "immediate" — the dispatcher will run us again
-        // when Cloudflare's alarm fires next. A batch < N children
-        // doesn't mean we're done (a write could have raced); keep
-        // looping until the SELECT comes back empty.
-        await this.scheduleEvent('cascade-archive', Date.now());
-    }
-
-    /**
-     * Cascade-archive a single child entity (List or Template) via
-     * a synthetic-client push to its DO. ADR 0008 §"Cascade-archive
-     * invocation":
-     *
-     *   - clientID = `cascade:<workspaceId>:<deletionTimestampMs>`
-     *     — campaign-scoped; a fresh deletion mints a fresh clientID,
-     *     so delete→restore→delete cycles never reuse one.
-     *   - mutationId = 1 — child DOs each maintain their own
-     *     `replicache_clients` table, so this clientID is new to every
-     *     child the first time we push to it; mutationId=1 works
-     *     uniformly across all children of one campaign. Retries on
-     *     the same child are idempotent: Replicache recognizes
-     *     mutationId=1 as already-processed and no-ops.
-     *   - authorizedRole = 'system' — gates on the cascade mutator's
-     *     SYSTEM_ROLES requiredRole (ADR 0011 §Step 10a.3).
-     */
-    private async cascadeArchiveChild(
-        childId: string,
-        workspaceId: string,
-        deletionTsMs: number
-    ): Promise<void> {
-        const env = this.env as { DJIBB_LIST: DurableObjectNamespace };
-        const stubId = env.DJIBB_LIST.idFromName(childId);
-        const stub = env.DJIBB_LIST.get(
-            stubId
-        ) as unknown as DurableObjectStub<DjibbList>;
-        const clientID = `cascade:${workspaceId}:${deletionTsMs}`;
-
-        await stub.handlePush({
-            authorizedAccounts: [],
-            authorizedRole: 'system',
-            listId: childId,
-            pushRequest: {
-                profileID: 'p_cascade',
-                clientGroupID: `cg_cascade:${workspaceId}`,
-                pushVersion: 1,
-                schemaVersion: '1',
-                mutations: [
-                    {
-                        clientID,
-                        id: 1,
-                        name: 'cascadeArchiveList',
-                        timestamp: Date.now(),
-                        args: {
-                            accountId: null,
-                            timestamp_client: new Date().toISOString(),
-                            listId: childId,
-                            cascade_source: workspaceId,
-                        },
-                    },
-                ],
-            },
+        return cascadeArchiveSweep({
+            sql: this.sql,
+            d1: (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+            listNs: (this.env as { DJIBB_LIST: DurableObjectNamespace })
+                .DJIBB_LIST,
+            scheduler: this.alarmScheduler,
+            batchSize: DjibbList.CASCADE_ARCHIVE_BATCH_SIZE,
         });
     }
 
@@ -2887,118 +2068,13 @@ export class DjibbList extends DurableObject {
      * empty.
      */
     async handleCascadeRestore(): Promise<void> {
-        const entityId = getEntityId(this.sql);
-        if (!entityId || !entityId.startsWith('w/')) {
-            console.warn(
-                `\`handleCascadeRestore()\` not a workspace entity (id="${entityId}"); canceling`
-            );
-            await this.cancelEvent('cascade-restore');
-            return;
-        }
-
-        const own = this.sql
-            .exec(
-                `SELECT time_deleted, time_updated FROM list_elements WHERE id = ?;`,
-                entityId
-            )
-            .one();
-        const ownTimeDeleted = own?.time_deleted as number | null;
-        if (ownTimeDeleted != null) {
-            // Workspace got re-archived between the user's restore and
-            // this alarm tick. The archive trigger has already
-            // enqueued cascade-archive; cancel restore to avoid
-            // chasing the older direction.
-            console.log(
-                `\`handleCascadeRestore()\` workspace "${entityId}" re-archived; canceling restore`
-            );
-            await this.cancelEvent('cascade-restore');
-            return;
-        }
-        // The workspace's `time_updated` was bumped by the
-        // unarchiveList that triggered this sweep, so it's a monotonic
-        // per-campaign timestamp — same epoch role the deletion
-        // timestamp plays for cascade-archive. Without it, a
-        // delete→restore→delete→restore cycle would re-use the same
-        // clientID across the two restore campaigns; Replicache's
-        // per-(DO, clientID) mutationID counter would then skip the
-        // second restore's push as already-processed.
-        const restoreTsMs = (own.time_updated as number) * 1000;
-
-        const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-        const rows = await ListCascadeRestoreBatch(
-            d1,
-            entityId,
-            DjibbList.CASCADE_ARCHIVE_BATCH_SIZE
-        );
-        if (rows.length === 0) {
-            await this.cancelEvent('cascade-restore');
-            return;
-        }
-
-        for (const childId of rows) {
-            try {
-                await this.cascadeRestoreChild(
-                    childId,
-                    entityId,
-                    restoreTsMs
-                );
-            } catch (error) {
-                console.error(
-                    `\`handleCascadeRestore()\` child push failed for "${childId}":`,
-                    error
-                );
-            }
-        }
-
-        await this.scheduleEvent('cascade-restore', Date.now());
-    }
-
-    /**
-     * Cascade-restore a single child entity via synthetic-client push.
-     * Symmetric with `cascadeArchiveChild`: clientID encodes the
-     * campaign epoch (here, the workspace's `time_updated` from when
-     * the unarchive ran), so delete→restore→delete→restore cycles
-     * never reuse a clientID. Without this, the second restore's
-     * mutationId=1 push would be rejected by Replicache as
-     * already-processed against the first restore's clientID, and the
-     * second restore would silently no-op.
-     */
-    private async cascadeRestoreChild(
-        childId: string,
-        workspaceId: string,
-        restoreTsMs: number
-    ): Promise<void> {
-        const env = this.env as { DJIBB_LIST: DurableObjectNamespace };
-        const stubId = env.DJIBB_LIST.idFromName(childId);
-        const stub = env.DJIBB_LIST.get(
-            stubId
-        ) as unknown as DurableObjectStub<DjibbList>;
-        const clientID = `cascade-restore:${workspaceId}:${restoreTsMs}`;
-
-        await stub.handlePush({
-            authorizedAccounts: [],
-            authorizedRole: 'system',
-            listId: childId,
-            pushRequest: {
-                profileID: 'p_cascade',
-                clientGroupID: `cg_cascade:${workspaceId}`,
-                pushVersion: 1,
-                schemaVersion: '1',
-                mutations: [
-                    {
-                        clientID,
-                        id: 1,
-                        name: 'cascadeRestoreList',
-                        timestamp: Date.now(),
-                        args: {
-                            accountId: null,
-                            timestamp_client: new Date().toISOString(),
-                            listId: childId,
-                            cascade_source: workspaceId,
-                        },
-                    },
-                ],
-            },
+        return cascadeRestoreSweep({
+            sql: this.sql,
+            d1: (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+            listNs: (this.env as { DJIBB_LIST: DurableObjectNamespace })
+                .DJIBB_LIST,
+            scheduler: this.alarmScheduler,
+            batchSize: DjibbList.CASCADE_ARCHIVE_BATCH_SIZE,
         });
     }
 
@@ -3044,72 +2120,12 @@ export class DjibbList extends DurableObject {
      * fan-out), so the whole tree drains together.
      */
     async handleHardDelete(): Promise<boolean> {
-        const entityId = getEntityId(this.sql);
-        if (!entityId) {
-            // No entity row in this DO — either never initialized, or
-            // already hard-deleted by a prior tick. Defensive cancel so
-            // a stuck alarm-event key doesn't loop.
-            console.warn(
-                '`handleHardDelete()` no entity row; canceling'
-            );
-            await this.cancelEvent('harddelete');
-            return false;
-        }
-
-        const own = this.sql
-            .exec(
-                `SELECT time_deleted FROM list_elements WHERE id = ?;`,
-                entityId
-            )
-            .one();
-        const ownTimeDeleted = own?.time_deleted as number | null;
-        if (ownTimeDeleted == null) {
-            // Restored mid-flight. The unarchive's `cancelEvent` should
-            // have dropped this event from storage, but races happen —
-            // the safety net catches them. Cancel and return.
-            console.log(
-                `\`handleHardDelete()\` entity "${entityId}" not deleted; canceling`
-            );
-            await this.cancelEvent('harddelete');
-            return false;
-        }
-
-        // Purge the catalog row first. If this fails the DO survives —
-        // a vanished DO with a live catalog row is worse than the
-        // current limbo state.
-        try {
-            const d1 = (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH;
-            await DeleteEntityRow(d1, entityId);
-        } catch (error) {
-            console.error(
-                `\`handleHardDelete()\` D1 purge failed for "${entityId}":`,
-                error
-            );
-            // Re-arm at a short backoff so the next tick retries the
-            // purge. The entity is still soft-deleted, so the safety
-            // net stays valid against an intervening restore.
-            await this.scheduleEvent(
-                'harddelete',
-                Date.now() + 60 * 1000
-            );
-            return false;
-        }
-
-        // DO storage gone. Per ADR 0008: no further alarm scheduling.
-        // `deleteAll()` removes the SQLite + KV state (including the
-        // `alarm:*:at` event keys) and clears the Cloudflare alarm.
-        // After this call the DO has nothing left to do; subsequent
-        // pushes (if any stale ones arrive) hit an uninitialized DO
-        // and either fail or re-bootstrap empty — both safe.
-        await this.ctx.storage.deleteAll();
-
-        // Terminal: signal the alarm dispatcher to stop. The `pending`
-        // map it's iterating was read before this `deleteAll()`, so any
-        // remaining due events (e.g. a co-scheduled `reconcile`) would
-        // otherwise run against a now-destroyed DO — querying a dropped
-        // `list_elements` table (harmless log noise) and, worse,
-        // re-arming themselves, resurrecting storage we just wiped.
-        return true;
+        return hardDeleteSweep({
+            sql: this.sql,
+            d1: (this.env as { DJIBB_AUTH: D1Database }).DJIBB_AUTH,
+            scheduler: this.alarmScheduler,
+            deleteAllStorage: () => this.ctx.storage.deleteAll(),
+        });
     }
 
     async handleReconcile(): Promise<void> {

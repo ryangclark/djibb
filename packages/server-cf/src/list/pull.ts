@@ -21,10 +21,10 @@ import type { Keyspace } from '../replicache/keyspaces';
  * but the existing handler already correctly emits it; not worth
  * the churn for Slice 2.
  *
- * `DjibbWorkspace` (when it lands) will export its own array that
- * may share this `pending_invites` entry — workspace-target
- * invitations live in the same shape — and add workspace-specific
- * keyspaces of its own.
+ * There is no separate workspace DO class (ADR 0026: one `DjibbList`
+ * class, decomposed internally). Workspaces are `w/`-prefixed entities
+ * on the same DO, so any workspace-specific pull surface would extend
+ * this same array rather than live behind a sibling class.
  */
 export const LIST_PULL_KEYSPACES: readonly Keyspace[] = [
     {
