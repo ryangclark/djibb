@@ -1,7 +1,10 @@
 # ADR 0015: Effect as the backend spine; Zod stays the protocol schema
 
-- **Status:** Accepted (2026-07-09, on Phase 1 of
-  `docs/plans/effect-adoption.md` landing — see Amendments)
+- **Status:** Accepted (2026-07-09, on Phase 1 landing) — **adoption
+  complete 2026-07-11.** Decision D's steps 3 and 4 were evaluated and
+  **not taken** (Amendments 6 and 7): Effect's realized scope is the D1
+  owner modules and the outward edges, not the DO's synchronous host.
+  Decisions A–C stand unchanged. See `docs/plans/effect-adoption.md`.
 - **Date:** 2026-06-14
 - **Layer:** server-cf
 
@@ -372,6 +375,53 @@ true; the decisions themselves (A–D) all stand unchanged.
    remains the spine for the D1 owner modules and the outward edges. The
    remaining unrealized step is Decision D's step 4 (push-handler
    orchestration = plan Phase 4), still gated on the ADR 0026 DO carve.
+
+7. **Phase 4's Effect pipeline declined (2026-07-11); the phase shipped as
+   a decomposition instead.** Decision D's step 4 said `_handlePush`'s
+   post-commit fan-out becomes "one Effect pipeline with the
+   `auth | stale | gone` outcome as the typed channel." Evaluated against
+   the post-ADR-0026 DO, the *pipeline* buys nothing and was **not built**;
+   what step 4 was really reaching for — untangling the hand-rolled host
+   orchestration — was real, and shipped as a pure fold
+   (`list/postCommit.ts`, ADR 0026 series 3). The four Effect value
+   propositions, each against the actual tail:
+
+   - **Typed error channel — nothing to type.** Every step in the tail is
+     deliberately fire-and-pray: the DO is already committed and
+     authoritative, and the ADR 0007 reconcile alarm repairs drift. The
+     errors are *swallowed by design*, so a typed channel over them types a
+     value no caller may act on.
+   - **Retry — already inside, and doubling it would be a bug.**
+     `transientD1Retry` (Amendment 4) and `transientEmailRetry` (Phase 2)
+     already wrap the exact calls the tail makes. Retry at the fan-out
+     level would retry the retries.
+   - **`Layer` mockability — already bought by the carve.** The tail's deps
+     are explicitly injected (`scheduler`, `mintPersonalWorkspace`, `d1`,
+     `env`, `sql`) per ADR 0026's "explicit dependencies" rule. Layers
+     would re-express injection that exists.
+   - **The `auth | stale | gone` channel is on the *synchronous* path.**
+     That outcome is emitted per mutation, and `handleMutation` is sync by
+     contract (Decision B — one mutation = one DO turn = one implicit
+     transaction). Effect there reduces to `runSync` ceremony — Amendment
+     6's finding exactly, in the same file.
+
+   The one genuine win Effect could have offered — structured concurrency —
+   is unavailable where it matters: the tail's ordering is load-bearing
+   (entity snapshot **before** the cascade so the workspace's `time_deleted`
+   is in the catalog before any child sweep; `MarkInvitationsAccepted`
+   **before** the reconciler's diff). See the separate latency finding in
+   `docs/plans/effect-adoption.md` §Phase 4 — the notification emails do sit
+   on the push's critical path, but `ctx.waitUntil()` is the CF-native fix,
+   not Effect fibers.
+
+   **Decision D is therefore complete with steps 3 and 4 not taken.**
+   Effect's final scope is the D1 owner modules (`derived-index/d1.ts`,
+   `auth/d1.ts`) and the outward edges (`EmailSender`, `GoogleIdentity`) —
+   the places with real async, real retry, and real external failure.
+   Decisions A, B, and C stand unchanged. This is not a partial adoption to
+   be finished later: it is the adoption finding its own boundary, which is
+   what the ADR's own revert-target framing invited. Effect earned the
+   substrate; it did not earn the host.
 
 Phase 0 gate results (bundle delta, workerd runtime proof, `runSync`
 spike detail, runtime topology decision) are recorded inline in

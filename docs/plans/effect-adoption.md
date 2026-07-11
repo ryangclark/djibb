@@ -1,8 +1,14 @@
 # Effect adoption plan (implements ADR 0015)
 
-- **Status:** Phases 0–2 complete; Phase 3 declined (2026-07-10); Phase 4
-  pending the ADR 0026 DO carve. ADR 0015 is **Accepted**.
-- **Date:** 2026-07-09 (updated 2026-07-10)
+- **Status:** **COMPLETE (2026-07-11).** Phases 0–2 landed; Phase 3 declined
+  (2026-07-10, ADR 0015 Amendment 6); Phase 4 shipped as a decomposition
+  with its Effect pipeline declined (2026-07-11, Amendment 7). Effect's
+  realized scope is the D1 owner modules (`derived-index/d1.ts`,
+  `auth/d1.ts`) and the outward edges (`EmailSender`, `GoogleIdentity`) —
+  the places with real async, real retry, and real external failure. It did
+  not enter the DO's synchronous host, and that is the finding, not a gap.
+  ADR 0015 is **Accepted**.
+- **Date:** 2026-07-09 (updated 2026-07-11)
 - **Layer:** server-cf only (ADR 0015 Decision A — Effect never crosses into
   `@djibb/protocol` or `@djibb/client`)
 
@@ -322,6 +328,51 @@ current one.
   so `Result` remains the serializable envelope (change (3) above).
 - The mutator author surface (`docs/adding-a-mutator.md`) is provably
   untouched — mutator bodies never see Effect.
+
+> **Phase 4 shipped 2026-07-11 as a decomposition; the Effect pipeline is
+> DECLINED (ADR 0015 Amendment 7).** The phase had two halves hiding inside
+> one bullet, and they came apart cleanly once the ADR 0026 carve was done.
+>
+> **What shipped — the intent fold (ADR 0026 series 3).** Series 1 and 2
+> carved the tail's *execution* into `workspace/cascade.ts` and
+> `list/notifications.ts`, each taking a flags object. But the
+> *accumulation* of those flags was still inline in the DO's mutation loop:
+> nine mutable `let`s and ~140 lines of arg-fishing tangled into the loop's
+> Replicache bookkeeping — the last hand-rolled orchestration in the DO, and
+> the thing step 4 was actually reaching for. It is now a pure fold:
+> `PostCommitIntent` in `list/postCommit.ts`, committed mutations in, one
+> intent out, projected onto the two tails by `invitationFlags()` /
+> `workspaceFlags()`. `ENTITY_METADATA_MUTATORS` / `INVITATION_MUTATORS`
+> moved with it. Semantics preserved exactly, sharp edges included
+> (`didMutate` as the gate, last-write-wins on harddelete/startFresh, the
+> same-owner `transferOwnership` no-op stays filtered). DO 2,561 → 2,299 LOC.
+> The fold is pure, so the fiddliest logic in the push path is now asserted
+> in the plain-node `meta` project — 25 tests, no pool, no wrangler login,
+> 890ms. Suite: 583 tests / 63 files green.
+>
+> **What did not ship — the Effect pipeline.** Against the real post-carve
+> tail (seven lines of straight-line `await`s), every Effect value
+> proposition fails structurally: the tail is *deliberately* fire-and-pray
+> so there is no error to type; retry already lives inside the calls it
+> makes (`transientD1Retry`, `transientEmailRetry`) and wrapping it again
+> would double-retry; the deps are already injected so Layers buy no
+> mockability; and the `auth | stale | gone` outcome rides the *synchronous*
+> `handleMutation` path, where Effect is `runSync` ceremony — Phase 3's
+> finding, in the same file. Structured concurrency, the one win on offer,
+> is blocked by load-bearing ordering (snapshot before cascade;
+> `MarkInvitationsAccepted` before the reconciler's diff). Recorded as **ADR
+> 0015 Amendment 7**; Decision D is complete with steps 3 and 4 not taken.
+>
+> **Finding, logged not fixed — notification emails are on the push's
+> critical path.** `fireInvitationEmails` / `fireOwnershipTransferEmails`
+> are awaited inside `_handlePush`, so a user's push ack waits on outbound
+> email network calls. These are best-effort notifications; nothing about
+> the DO's consistency needs them awaited. The fix is `ctx.waitUntil()` (the
+> CF-native primitive for exactly this), **not** Effect fibers — and it is a
+> real behavior change (tests may assume the sends have happened by the time
+> the push returns, and a DO can hibernate after the response), so it wants
+> its own change with its own test pass rather than riding in on a refactor.
+> Deliberately left alone.
 
 ## ADR bookkeeping
 
