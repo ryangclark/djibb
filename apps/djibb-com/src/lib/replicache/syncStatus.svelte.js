@@ -13,6 +13,8 @@ import { createSyncTracker, INITIAL_STATUS } from '@djibb/client/syncStatus';
  *
  * @param {object} [input]
  * @param {() => void} [input.onDrained] Fired when the queue is seen empty.
+ * @param {() => number} [input.markVersion] Ledger's mark counter (staleness guard).
+ * @param {() => number} [input.inFlight] Ledger's claimed-but-unpersisted count.
  * @returns {{
  *   status: import('@djibb/client/syncStatus').SyncStatus,
  *   notifyPush: (httpStatusCode: number) => void,
@@ -21,7 +23,7 @@ import { createSyncTracker, INITIAL_STATUS } from '@djibb/client/syncStatus';
  *   close: () => void
  * }}
  */
-export function createSyncStatusState({ onDrained } = {}) {
+export function createSyncStatusState({ onDrained, markVersion, inFlight } = {}) {
 	/** @type {import('@djibb/client/syncStatus').SyncStatus} */
 	let status = $state(INITIAL_STATUS);
 
@@ -32,7 +34,9 @@ export function createSyncStatusState({ onDrained } = {}) {
 		onChange: (next) => {
 			status = next;
 		},
-		onDrained
+		onDrained,
+		markVersion,
+		inFlight
 	});
 
 	return {

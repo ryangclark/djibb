@@ -3,7 +3,10 @@
 	import { getSessionState, STATUSES } from '$lib/session.svelte';
 	import { setAccountUsername } from '$lib/api/account';
 	import { api, DjibbHttpError } from '$lib/api/client';
-	import { discardUnflushed } from '@djibb/client/unflushed';
+	import {
+		discardUnflushed,
+		UnflushedDiscardError
+	} from '@djibb/client/unflushed';
 	import { unflushedLedger } from '$lib/replicache/ledger.js';
 
 	/**
@@ -32,6 +35,7 @@
 	let stuckEntities = $state([]);
 	let confirmingSignOut = $state(false);
 	let discarding = $state(false);
+	let signOutError = $state('');
 
 	function handleSignOut() {
 		if (signingOut) return;
@@ -52,6 +56,8 @@
 		if (signingOut) return;
 		signingOut = true;
 		confirmingSignOut = false;
+
+		signOutError = '';
 
 		try {
 			// Sign out FIRST, discard second — the order is load-bearing.
@@ -84,9 +90,20 @@
 				await sessionState.fetchSession();
 			}
 		} catch (err) {
-			if (err instanceof DjibbHttpError) {
+			// This is the one place in the flow where the user made an
+			// irreversible decision, so a failure here cannot be a silent
+			// console line: they were shown "Removing…" and would otherwise
+			// walk away believing the changes are gone when they aren't.
+			if (err instanceof UnflushedDiscardError) {
+				signOutError =
+					'Signed out, but some unsaved changes could not be removed — ' +
+					'another tab may still have this list open. Close it and try again.';
+				console.error('Discard failed:', err.blocked);
+			} else if (err instanceof DjibbHttpError) {
+				signOutError = `Sign-out failed (${err.status}). Nothing was changed.`;
 				console.error('Sign-out failed:', err.status);
 			} else {
+				signOutError = 'Sign-out failed. Nothing was changed.';
 				console.error('Sign-out error:', err);
 			}
 		}
@@ -210,6 +227,10 @@
 	</button>
 </div>
 
+{#if signOutError}
+	<p class="signout-error" role="alert">{signOutError}</p>
+{/if}
+
 {#if confirmingSignOut}
 	<div class="unsynced-confirm" role="alertdialog" aria-label="Unsaved changes">
 		<p>
@@ -259,6 +280,15 @@
 {/if}
 
 <style>
+	.signout-error {
+		border: 1px solid #fecaca;
+		background: #fef2f2;
+		color: #7f1d1d;
+		padding: 0.5rem 0.75rem;
+		border-radius: 0.35rem;
+		margin: 0.5rem 0;
+		font-size: 0.9rem;
+	}
 	.unsynced-confirm {
 		border: 1px solid #fed7aa;
 		background: #fff7ed;

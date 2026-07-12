@@ -94,6 +94,21 @@ function keyFor(entityId) {
  * @param {LedgerStorage} input.storage
  */
 export function createUnflushedLedger({ storage }) {
+	// Monotonic count of marks made by this ledger instance. The sync
+	// tracker samples it either side of its (async) pending-count read so
+	// it can tell whether a claim was staked *while that read was in
+	// flight* — see `createSyncTracker`. Without it, a read that began
+	// before a mutation and resolved after the mark would retire a claim
+	// for work that is about to become durable: an orphan, which is the
+	// one outcome this whole module exists to prevent.
+	let marks = 0;
+
+	// Mutations that have been claimed but whose local write has not yet
+	// settled. A pending-count read taken in that window reports a queue
+	// that does not yet contain them, so it must not be used to retire
+	// anything — see `inFlight` below and `refreshPending` in the tracker.
+	let inFlight = 0;
+
 	/**
 	 * @param {string} entityId
 	 * @returns {string[]} account ids, least-recent first
@@ -117,18 +132,66 @@ export function createUnflushedLedger({ storage }) {
 		accountsFor,
 
 		/**
-		 * Record that `accountId` has unflushed work for `entityId`.
-		 * Idempotent, and cheap enough to call on every mutation.
+		 * How many claims this ledger has staked. Strictly increasing;
+		 * the value itself is meaningless — only whether it *changed*
+		 * across an await.
+		 */
+		markVersion() {
+			return marks;
+		},
+
+		/**
+		 * How many claimed mutations have not yet settled locally.
+		 *
+		 * Replicache's `mutate` persists asynchronously, so between the claim
+		 * (synchronous, below) and the local commit there is a window in which
+		 * `experimentalPendingMutations()` legitimately reports an empty queue
+		 * for work that is about to exist. A read taken in that window is
+		 * worthless for retiring claims — acting on it orphans the very
+		 * mutation being claimed. While this is above zero, no pending-count
+		 * read is trustworthy.
+		 */
+		inFlight() {
+			return inFlight;
+		},
+
+		/**
+		 * Record that `accountId` has unflushed work for `entityId`, and hold
+		 * the claim un-retirable until `settled` resolves.
+		 *
+		 * Deliberately NOT memoised. A "we already wrote this" cache would
+		 * skip re-writing a claim that something else — another tab, or a
+		 * retirement we later decide was wrong — had removed in the meantime,
+		 * turning a self-healing system into a silently wrong one. Re-writing
+		 * a couple hundred bytes of localStorage per mutation is a price worth
+		 * paying to have every mutation re-assert its own claim.
 		 *
 		 * @param {string} entityId
 		 * @param {string} accountId
 		 */
 		mark(entityId, accountId) {
+			marks += 1;
+
 			const accounts = accountsFor(entityId);
 			// Re-append so the tail is always the most recent claimant —
 			// `resolveEffectiveAccount` reads it from there.
 			const next = [...accounts.filter(a => a !== accountId), accountId];
 			storage.setItem(keyFor(entityId), JSON.stringify(next));
+		},
+
+		/**
+		 * Hold every claim un-retirable until this mutation's local write
+		 * lands. Paired with `mark` by `wrapMutators`.
+		 *
+		 * @param {Promise<unknown>} settled
+		 */
+		trackMutation(settled) {
+			inFlight += 1;
+			Promise.resolve(settled)
+				.catch(() => {})
+				.finally(() => {
+					inFlight -= 1;
+				});
 		},
 
 		/**
@@ -140,7 +203,13 @@ export function createUnflushedLedger({ storage }) {
 		 * @param {string} accountId
 		 */
 		clear(entityId, accountId) {
-			const next = accountsFor(entityId).filter(a => a !== accountId);
+			const accounts = accountsFor(entityId);
+			// The tracker calls this on every observed-empty read, which is
+			// every idle tick. Bail before touching storage when there is
+			// nothing to retire.
+			if (!accounts.includes(accountId)) return;
+
+			const next = accounts.filter(a => a !== accountId);
 			if (next.length === 0) {
 				storage.removeItem(keyFor(entityId));
 			} else {
@@ -212,21 +281,92 @@ export function resolveEffectiveAccount({ accountId, entityId, ledger }) {
  * automatic. Sign-out keeps unflushed work by default precisely
  * because it is still recoverable.
  *
+ * ## Why this can time out
+ *
+ * `dropDatabase` bottoms out in `indexedDB.deleteDatabase`, which
+ * **blocks rather than rejects** while any connection to that database
+ * is open — it simply never fires `success`. Another tab sitting on the
+ * same list holds such a connection. Awaiting it bare would hang
+ * forever, and by the time we get here the user is already signed out
+ * (the sign-out request goes first, deliberately), so they'd be left
+ * signed out and staring at a spinner that never resolves, with no
+ * error to catch — a hang is not a rejection.
+ *
+ * So each drop races a deadline, and a drop that doesn't land throws
+ * with the entities it couldn't remove. The claims for those are left
+ * in place: the work is still there, so saying otherwise would be a
+ * lie, and a surviving claim is recoverable while a false "removed" is
+ * not.
+ *
  * @param {object} input
  * @param {ReturnType<typeof createUnflushedLedger>} input.ledger
  * @param {string} input.accountId
+ * @param {number} [input.timeoutMs=5000] Per-store deadline.
+ * @param {(dbName: string) => Promise<void>} [input.dropStore] Seam for tests.
  * @returns {Promise<string[]>} the entity ids whose stores were dropped
+ * @throws {UnflushedDiscardError} if any store could not be dropped
  */
-export async function discardUnflushed({ ledger, accountId }) {
+export async function discardUnflushed({
+	ledger,
+	accountId,
+	timeoutMs = 5000,
+	dropStore = dropDatabase
+}) {
 	const entities = ledger.entitiesFor(accountId);
+	/** @type {string[]} */
+	const dropped = [];
+	/** @type {string[]} */
+	const blocked = [];
+
 	for (const entityId of entities) {
 		// The IDB name is derived from the same store name and schema
 		// version the client is built with — shared so the drop path
 		// can't drift away from the create path and silently miss.
-		await dropDatabase(
-			makeIDBName(storeName(accountId, entityId), SCHEMA_VERSION)
-		);
-		ledger.clear(entityId, accountId);
+		const dbName = makeIDBName(storeName(accountId, entityId), SCHEMA_VERSION);
+
+		let timer;
+		const deadline = new Promise((_, reject) => {
+			timer = setTimeout(
+				() => reject(new Error('timed out')),
+				timeoutMs
+			);
+		});
+
+		try {
+			await Promise.race([dropStore(dbName), deadline]);
+			// Retire the claim only once the store is actually gone.
+			ledger.clear(entityId, accountId);
+			dropped.push(entityId);
+		} catch {
+			blocked.push(entityId);
+		} finally {
+			clearTimeout(timer);
+		}
 	}
-	return entities;
+
+	if (blocked.length) throw new UnflushedDiscardError(dropped, blocked);
+	return dropped;
+}
+
+/**
+ * Some stores survived a discard — almost always because another tab
+ * still has them open. Carries both lists so the UI can tell the user
+ * exactly what did and didn't happen, rather than claiming a removal
+ * that didn't occur.
+ */
+export class UnflushedDiscardError extends Error {
+	/**
+	 * @param {string[]} dropped
+	 * @param {string[]} blocked
+	 */
+	constructor(dropped, blocked) {
+		super(
+			`could not remove unsaved changes for ${blocked.length} ` +
+				`entit${blocked.length === 1 ? 'y' : 'ies'} — ` +
+				'another tab may still have them open'
+		);
+		this.name = 'UnflushedDiscardError';
+		this.dropped = dropped;
+		this.blocked = blocked;
+	}
 }

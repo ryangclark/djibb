@@ -1,7 +1,12 @@
 // @ts-check
 
-import { describe, expect, it } from 'vitest';
-import { createUnflushedLedger, resolveEffectiveAccount } from './unflushed.js';
+import { describe, expect, it, vi } from 'vitest';
+import {
+	createUnflushedLedger,
+	discardUnflushed,
+	resolveEffectiveAccount,
+	UnflushedDiscardError
+} from './unflushed.js';
 
 /** In-memory stand-in for `localStorage`. */
 function memoryStorage() {
@@ -130,5 +135,112 @@ describe('resolveEffectiveAccount', () => {
 		expect(
 			resolveEffectiveAccount({ accountId: null, entityId: 'l/1', ledger })
 		).toBe('acct_a');
+	});
+});
+
+describe('markVersion', () => {
+	it('advances on every mark, even a redundant one', () => {
+		// The sync tracker compares this across an await to decide whether
+		// its pending-count read is stale. A repeat mark writes nothing to
+		// storage but still means "work was claimed just now", so it must
+		// still move the counter — otherwise the tracker could retire a
+		// claim for a mutation staked during its read.
+		const { ledger } = setup();
+		const v0 = ledger.markVersion();
+
+		ledger.mark('l/1', 'acct_a');
+		const v1 = ledger.markVersion();
+		expect(v1).toBeGreaterThan(v0);
+
+		ledger.mark('l/1', 'acct_a'); // same claim again
+		expect(ledger.markVersion()).toBeGreaterThan(v1);
+	});
+});
+
+describe('discardUnflushed', () => {
+	it('drops the store, then retires the claim', async () => {
+		// Order matters: retiring the claim first would leave the mutations
+		// rotting in a store nothing will ever open again if the drop then
+		// failed.
+		const { ledger } = setup();
+		ledger.mark('l/1', 'acct_a');
+
+		/** @type {string[]} */
+		const dropped = [];
+		const result = await discardUnflushed({
+			ledger,
+			accountId: 'acct_a',
+			dropStore: async (dbName) => {
+				// The claim must still be there while the store is being dropped.
+				expect(ledger.accountsFor('l/1')).toContain('acct_a');
+				dropped.push(dbName);
+			}
+		});
+
+		expect(result).toEqual(['l/1']);
+		expect(ledger.accountsFor('l/1')).toEqual([]);
+		// Derived from the same storeName + SCHEMA_VERSION the client is
+		// built with. Pinned because a drift here means "remove all unsaved
+		// changes" silently misses the store it was supposed to destroy —
+		// the user is told the work is gone while it quietly isn't.
+		// (`rep:<name>:<format>:<schemaVersion>` is Replicache's own
+		// makeIDBName shape; `acct_a:l/1` is our storeName, `1` our schema.)
+		expect(dropped).toEqual(['rep:acct_a:l/1:7:1']);
+	});
+
+	it('leaves other accounts stores alone', async () => {
+		const { ledger } = setup();
+		ledger.mark('l/1', 'acct_a');
+		ledger.mark('l/2', 'acct_b');
+
+		const dropStore = vi.fn(async () => {});
+		await discardUnflushed({ ledger, accountId: 'acct_a', dropStore });
+
+		expect(dropStore).toHaveBeenCalledTimes(1);
+		expect(ledger.accountsFor('l/2')).toEqual(['acct_b']);
+	});
+
+	it('times out rather than hanging when a store will not close', async () => {
+		// `indexedDB.deleteDatabase` BLOCKS (never fires success) while
+		// another tab holds the database open — it does not reject. Awaiting
+		// it bare would hang forever, and by then the user is already signed
+		// out, so they'd be stuck on a spinner with nothing to catch.
+		const { ledger } = setup();
+		ledger.mark('l/1', 'acct_a');
+
+		const err = await discardUnflushed({
+			ledger,
+			accountId: 'acct_a',
+			timeoutMs: 10,
+			dropStore: () => new Promise(() => {}) // never settles, like a blocked delete
+		}).catch((e) => e);
+
+		expect(err).toBeInstanceOf(UnflushedDiscardError);
+		expect(err.blocked).toEqual(['l/1']);
+		// The work is still there, so the claim must be too — saying
+		// otherwise would strand it silently.
+		expect(ledger.accountsFor('l/1')).toEqual(['acct_a']);
+	});
+
+	it('reports partial success rather than failing silently', async () => {
+		const { ledger } = setup();
+		ledger.mark('l/ok', 'acct_a');
+		ledger.mark('l/stuck', 'acct_a');
+
+		const err = await discardUnflushed({
+			ledger,
+			accountId: 'acct_a',
+			timeoutMs: 10,
+			dropStore: (dbName) =>
+				dbName.includes('l/stuck')
+					? new Promise(() => {})
+					: Promise.resolve()
+		}).catch((e) => e);
+
+		expect(err).toBeInstanceOf(UnflushedDiscardError);
+		expect(err.dropped).toEqual(['l/ok']);
+		expect(err.blocked).toEqual(['l/stuck']);
+		expect(ledger.accountsFor('l/ok')).toEqual([]);
+		expect(ledger.accountsFor('l/stuck')).toEqual(['acct_a']);
 	});
 });

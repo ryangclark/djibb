@@ -48,7 +48,9 @@ function setup({ pending = 0, authFailureThreshold = 2 } = {}) {
 	const tracker = createSyncTracker({
 		onChange,
 		authFailureThreshold,
-		onDrained
+		onDrained,
+		markVersion: () => 0,
+		inFlight: () => 0
 	});
 	tracker.attach(/** @type {any} */ (client));
 	return { client, onChange, onDrained, tracker };
@@ -170,6 +172,70 @@ describe('drain signal (retires the unflushed-work claim, GH #43)', () => {
 		const { onDrained } = setup({ pending: 0 });
 		await settle();
 		expect(onDrained).toHaveBeenCalled();
+	});
+
+	it('does not retire a claim staked while the read was in flight', async () => {
+		// The stale-read orphan. `readSeq` only guards against a *later
+		// read* superseding this one; it says nothing about a mark landing
+		// mid-read, and marks don't go through refreshPending at all. So:
+		//
+		//   1. a read starts while the queue is empty
+		//   2. the user mutates — claim stamped, mutation persists async
+		//   3. the read resolves with the PRE-mutation snapshot (pending 0)
+		//   4. without the mark-version check, we retire the claim here
+		//   5. the mutation lands: durable, and unclaimed → orphaned
+		//
+		// No tab death required — just a push completing while someone
+		// types. Under-claiming costs data, so the read must be treated as
+		// stale for retirement purposes.
+		const client = fakeClient({ pending: 0 });
+		const onDrained = vi.fn();
+		let marks = 0;
+
+		// Model the real timing: the mark happens (synchronously, in
+		// wrapMutators) while the pending-count read is outstanding, and the
+		// queue only reflects it afterwards.
+		client.experimentalPendingMutations = () =>
+			Promise.resolve([]).then((empty) => {
+				marks += 1; // a claim is staked mid-read
+				client.pending = 1;
+				return empty; // ...but this snapshot predates it
+			});
+
+		const tracker = createSyncTracker({
+			onChange: () => {},
+			onDrained,
+			markVersion: () => marks
+		});
+		tracker.attach(/** @type {any} */ (client));
+		await settle();
+
+		expect(onDrained).not.toHaveBeenCalled();
+	});
+
+	it('does not retire a claim whose write has not landed yet', async () => {
+		// The race that actually bit in the browser, and the one a mark
+		// counter alone does NOT catch: the mark happened *before* the read
+		// started, so the counter is unchanged across it — but Replicache
+		// persists asynchronously, so the queue this read observes still
+		// doesn't contain the mutation. Retiring here orphans it.
+		//
+		// (Found by the e2e: the ledger came back empty after an
+		// expired-session edit, and the reload then opened the anonymous
+		// store — exactly bug #43, reintroduced through the back door.)
+		const client = fakeClient({ pending: 0 });
+		const onDrained = vi.fn();
+
+		const tracker = createSyncTracker({
+			onChange: () => {},
+			onDrained,
+			markVersion: () => 1, // marked already; stable across the read
+			inFlight: () => 1 // ...but the write hasn't landed
+		});
+		tracker.attach(/** @type {any} */ (client));
+		await settle();
+
+		expect(onDrained).not.toHaveBeenCalled();
 	});
 
 	it('does not fire while work is still queued', async () => {

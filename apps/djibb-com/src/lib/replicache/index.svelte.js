@@ -84,7 +84,14 @@ export function initList({
 			if (effectiveAccountId) {
 				unflushedLedger.clear(listId, effectiveAccountId);
 			}
-		}
+		},
+		// Lets the tracker tell an empty queue apart from a stale read of
+		// one: a claim staked while its pending-count read was in flight
+		// must not be retired by that read (see `refreshPending`).
+		markVersion: unflushedLedger.markVersion,
+		// ...and a mutation claimed but not yet written is equally a reason
+		// not to trust an empty-queue read.
+		inFlight: unflushedLedger.inFlight
 	});
 
 	const replicacheClient = InitReplicacheClient({

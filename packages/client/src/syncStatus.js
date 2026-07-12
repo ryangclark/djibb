@@ -131,11 +131,24 @@ export function diagnoseAuthBlock({ actingAccountId, sessionAccounts }) {
  *   observed-empty read, not just on a transition, so a claim left over
  *   from a previous session (tab died between the stamp and the mutate)
  *   is cleaned up on the next load rather than lingering forever.
+ * @param {() => number} [input.markVersion]
+ *   The ledger's monotonic mark counter (`ledger.markVersion`). Sampled
+ *   across the async pending-count read so a claim staked mid-read is
+ *   never retired by a snapshot taken before it existed.
+ * @param {() => number} [input.inFlight]
+ *   The ledger's count of claimed-but-not-yet-persisted mutations
+ *   (`ledger.inFlight`). A read that begins while one is in flight sees a
+ *   queue that does not contain it yet, so that read cannot be used to
+ *   retire anything either. Together these two make retirement safe;
+ *   retiring a claim for a still-pending mutation orphans it, which is
+ *   the one failure this design refuses to accept.
  */
 export function createSyncTracker({
 	onChange,
 	authFailureThreshold = 2,
-	onDrained
+	onDrained,
+	markVersion,
+	inFlight
 }) {
 	let pending = 0;
 	let syncing = false;
@@ -181,12 +194,50 @@ export function createSyncTracker({
 	async function refreshPending() {
 		if (!client || closed) return;
 		const seq = ++readSeq;
+
+		// Sampled either side of the await. `readSeq` only catches a
+		// *later read* superseding this one; it says nothing about a claim
+		// staked while this read was in flight — and marks don't go
+		// through here. Without this, the sequence
+		//
+		//   1. read starts (queue is empty)
+		//   2. user mutates: claim stamped, mutation persists async
+		//   3. read resolves with the PRE-mutation snapshot → pending 0
+		//   4. we retire the claim
+		//   5. the mutation lands, now durable and unclaimed
+		//
+		// leaves exactly the orphan this module exists to prevent — no tab
+		// death required, just a push completing while someone types. If
+		// anything was claimed during the read, the read is stale for the
+		// purpose of retiring claims, so decline to retire.
+		const marksBefore = markVersion?.();
+		const inFlightBefore = inFlight?.() ?? 0;
 		const mutations = await client.experimentalPendingMutations();
+
 		// A later read already landed (or we've been closed) — drop this one.
 		if (seq !== readSeq || closed) return;
 		pending = mutations.length;
 		emit();
-		if (pending === 0) onDrained?.();
+
+		// Three conditions, and all three are load-bearing:
+		//
+		//   pending === 0        the queue really is empty, and
+		//   marks unchanged      nothing was claimed while we were reading, and
+		//   nothing in flight    nothing was claimed just BEFORE we started
+		//                        reading and is still being written.
+		//
+		// The third is the subtle one. A mutation is claimed synchronously
+		// but persisted asynchronously, so a read that starts in that gap
+		// returns an empty queue for work that is about to exist — and the
+		// mark counter is no help, because the mark already happened before
+		// the read began. Retiring on such a read orphans the mutation,
+		// which is the one outcome this design refuses.
+		const quiet =
+			markVersion?.() === marksBefore &&
+			inFlightBefore === 0 &&
+			(inFlight?.() ?? 0) === 0;
+
+		if (pending === 0 && quiet) onDrained?.();
 	}
 
 	return {

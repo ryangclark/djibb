@@ -137,6 +137,7 @@ export function entityPath(entityId) {
  * @param {string | null} envelope.accountId
  * @param {string} [envelope.listId] Entity being mutated; required to mark
  * @param {import('./unflushed.js').UnflushedLedger} [envelope.ledger]
+ *   Stamped synchronously with each mutation, and told when it settles.
  * @returns {M}
  */
 export function wrapMutators(rawMutate, { accountId, listId, ledger }) {
@@ -148,16 +149,32 @@ export function wrapMutators(rawMutate, { accountId, listId, ledger }) {
 					const raw = rawMutate[/** @type {string} */ (name)];
 					if (typeof raw !== 'function') return undefined;
 					return (/** @type {Record<string, unknown>} */ body) => {
-						// Anonymous mutations have no owner to recover them
+						// Claim FIRST, synchronously, before Replicache is told
+						// anything. Anonymous mutations have no owner to recover them
 						// for, so there is nothing to claim.
-						if (ledger && accountId && listId) {
-							ledger.mark(listId, accountId);
+						const claimed = Boolean(ledger && accountId && listId);
+						if (claimed) {
+							ledger?.mark(
+								/** @type {string} */ (listId),
+								/** @type {string} */ (accountId)
+							);
 						}
-						return raw({
+
+						const settled = raw({
 							...body,
 							accountId,
 							timestamp_client: new Date()
 						});
+
+						// `raw()` only *starts* the mutation — Replicache persists
+						// asynchronously. Until that settles the queue does not yet
+						// contain this mutation, so a pending-count read taken in the
+						// gap would see an empty queue and retire the claim we just
+						// staked, orphaning it. Hand the ledger the promise so it can
+						// hold the claim un-retirable until the write lands.
+						if (claimed) ledger?.trackMutation(settled);
+
+						return settled;
 					};
 				}
 			}
