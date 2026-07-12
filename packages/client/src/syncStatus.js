@@ -195,49 +195,55 @@ export function createSyncTracker({
 		if (!client || closed) return;
 		const seq = ++readSeq;
 
-		// Sampled either side of the await. `readSeq` only catches a
-		// *later read* superseding this one; it says nothing about a claim
-		// staked while this read was in flight — and marks don't go
-		// through here. Without this, the sequence
-		//
-		//   1. read starts (queue is empty)
-		//   2. user mutates: claim stamped, mutation persists async
-		//   3. read resolves with the PRE-mutation snapshot → pending 0
-		//   4. we retire the claim
-		//   5. the mutation lands, now durable and unclaimed
-		//
-		// leaves exactly the orphan this module exists to prevent — no tab
-		// death required, just a push completing while someone types. If
-		// anything was claimed during the read, the read is stale for the
-		// purpose of retiring claims, so decline to retire.
+		// Sampled either side of the await — see the trustworthiness check
+		// below, which is where these actually earn their keep.
 		const marksBefore = markVersion?.();
 		const inFlightBefore = inFlight?.() ?? 0;
 		const mutations = await client.experimentalPendingMutations();
 
 		// A later read already landed (or we've been closed) — drop this one.
 		if (seq !== readSeq || closed) return;
-		pending = mutations.length;
-		emit();
 
-		// Three conditions, and all three are load-bearing:
+		const count = mutations.length;
+
+		// Is this read trustworthy? Three conditions, all load-bearing:
 		//
-		//   pending === 0        the queue really is empty, and
 		//   marks unchanged      nothing was claimed while we were reading, and
 		//   nothing in flight    nothing was claimed just BEFORE we started
-		//                        reading and is still being written.
+		//   (before and after)   reading and is still being written.
 		//
-		// The third is the subtle one. A mutation is claimed synchronously
-		// but persisted asynchronously, so a read that starts in that gap
-		// returns an empty queue for work that is about to exist — and the
+		// The in-flight pair is the subtle one. A mutation is claimed
+		// synchronously but persisted asynchronously, so a read that starts
+		// in that gap sees a queue that does not yet contain it — and the
 		// mark counter is no help, because the mark already happened before
-		// the read began. Retiring on such a read orphans the mutation,
-		// which is the one outcome this design refuses.
+		// the read began.
+		//
+		// These counters are ledger-wide, not per-entity, so a mutation on
+		// list B makes list A's tracker treat its read as stale too. That
+		// only ever means A holds its claim a beat longer than strictly
+		// necessary — it over-claims, which is the safe direction — so it is
+		// not worth per-entity bookkeeping to avoid.
 		const quiet =
 			markVersion?.() === marksBefore &&
 			inFlightBefore === 0 &&
 			(inFlight?.() ?? 0) === 0;
 
-		if (pending === 0 && quiet) onDrained?.();
+		// An untrustworthy zero is not just unusable for retiring a claim —
+		// it is unusable, full stop. Publishing it would set the indicator to
+		// "All changes saved" over work that is a tick away from existing:
+		// the exact sentence #6/#7 exist to prevent the app from saying. It
+		// self-corrects on the next watch tick, but a sub-second flash of
+		// "saved" over unsaved work is still a lie. Drop the read entirely;
+		// the write that made it stale will trigger a fresh one.
+		//
+		// Only a *zero* is suspect. A non-zero count can't be an
+		// under-report caused by a not-yet-persisted write.
+		if (count === 0 && !quiet) return;
+
+		pending = count;
+		emit();
+
+		if (pending === 0) onDrained?.();
 	}
 
 	return {

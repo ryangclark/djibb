@@ -238,6 +238,35 @@ describe('drain signal (retires the unflushed-work claim, GH #43)', () => {
 		expect(onDrained).not.toHaveBeenCalled();
 	});
 
+	it('never publishes an untrustworthy zero to the UI', async () => {
+		// Declining to *retire* on a stale read is not enough: the same read
+		// must not be allowed to set pending = 0 either, because that is
+		// what the indicator renders as "All changes saved" — over work that
+		// is a tick away from existing. It self-corrects on the next watch
+		// tick, so it's a sub-second flash rather than a stranding, but a
+		// flash of exactly the sentence #6/#7 exist to prevent is still a
+		// lie, and step 3 of the e2e asserts against that very string.
+		const client = fakeClient({ pending: 2 });
+		/** @type {number[]} */
+		const published = [];
+
+		const tracker = createSyncTracker({
+			onChange: (s) => published.push(s.pending),
+			markVersion: () => 1,
+			inFlight: () => 1 // a claimed write is still landing
+		});
+		tracker.attach(/** @type {any} */ (client));
+		await settle();
+
+		// The queue momentarily reads empty while that write is in flight.
+		client.pending = 0;
+		client.emitLocalChange();
+		await settle();
+
+		expect(published).not.toContain(0);
+		expect(tracker.status.pending).toBe(2);
+	});
+
 	it('does not fire while work is still queued', async () => {
 		const { client, onDrained } = setup({ pending: 0 });
 		await settle();

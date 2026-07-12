@@ -298,6 +298,14 @@ export function resolveEffectiveAccount({ accountId, entityId, ledger }) {
  * lie, and a surviving claim is recoverable while a false "removed" is
  * not.
  *
+ * Note that a timed-out delete is not cancelled — it stays queued in the
+ * browser and may well land later, once the tab holding the store closes.
+ * The kept claim then points at a store that is empty (or gone). That is
+ * benign and self-healing: the next load opens it, finds nothing pending,
+ * and the tracker retires the claim on its own. We deliberately do not
+ * try to detect this — a claim outliving its work costs a stale store
+ * name for one load, which is the cheap direction to be wrong in.
+ *
  * @param {object} input
  * @param {ReturnType<typeof createUnflushedLedger>} input.ledger
  * @param {string} input.accountId
