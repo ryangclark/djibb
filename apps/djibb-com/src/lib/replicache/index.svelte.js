@@ -1,6 +1,7 @@
 import { createReplicacheClient, wrapMutators } from '@djibb/client/replicache';
 import { replicacheHost, replicacheSecure } from '$lib/config';
 import { createUndoRuntime } from './withUndo.svelte.js';
+import { createSyncStatusState } from './syncStatus.svelte.js';
 
 /**
  * Initializes the Replicache Client stuff.
@@ -47,7 +48,18 @@ export function initList({
 		throw new Error('Missing List Id!');
 	}
 
-	const replicacheClient = InitReplicacheClient({ accountId, listId });
+	// Built before the client because the client needs `notifyPush` at
+	// construction time — it's wired into the pusher, which is where a
+	// session expiry becomes visible (persistent push 401/403).
+	const syncStatus = createSyncStatusState();
+
+	const replicacheClient = InitReplicacheClient({
+		accountId,
+		listId,
+		onPushStatus: syncStatus.notifyPush
+	});
+	syncStatus.attach(replicacheClient);
+
 	const mutate = wrapMutators(replicacheClient.mutate, { accountId });
 
 	// Undo runtime layered on top of `mutate`. Both firing paths
@@ -116,6 +128,7 @@ export function initList({
 		mutate,
 		mutateWithUndo: undoRuntime.mutateWithUndo,
 		undoRuntime,
+		syncStatus,
 		get list() {
 			return listData;
 		}
@@ -132,12 +145,14 @@ export function initList({
  * @param {object} input List ID
  * @param {string | null} input.accountId Account ID
  * @param {string} input.listId List ID
+ * @param {(httpStatusCode: number) => void} [input.onPushStatus]
  */
-export function InitReplicacheClient({ accountId, listId }) {
+export function InitReplicacheClient({ accountId, listId, onPushStatus }) {
 	return createReplicacheClient({
 		accountId,
 		listId,
 		baseUrl: replicacheHost,
-		secure: replicacheSecure
+		secure: replicacheSecure,
+		onPushStatus
 	});
 }

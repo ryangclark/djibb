@@ -13,6 +13,8 @@
 	import ConfirmToast from '$lib/components/ConfirmToast.svelte';
 	import InviteBanner from '$lib/components/InviteBanner.svelte';
 	import List from '$lib/components/List.svelte';
+	import SessionExpiredBanner from '$lib/components/SessionExpiredBanner.svelte';
+	import SyncIndicator from '$lib/components/SyncIndicator.svelte';
 	import UndoToast from '$lib/components/UndoToast.svelte';
 	import { getSessionState } from '$lib/session.svelte.js';
 	import z, { ZodError } from 'zod';
@@ -38,6 +40,11 @@
 
 	/** @type {any} */
 	let undoRuntime = $state.raw();
+
+	// $state.raw: `status` is a getter over an inner `$state`, which the
+	// deep-reactive proxy would shadow. See /l/[id]/+page.svelte.
+	/** @type {ReturnType<typeof import('$lib/replicache/syncStatus.svelte.js').createSyncStatusState> | undefined} */
+	let syncStatus = $state.raw();
 
 	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
 	let toastEvent = $state(null);
@@ -92,6 +99,7 @@
 		mutators = replicacheList.mutate;
 		mutateWithUndo = replicacheList.mutateWithUndo;
 		undoRuntime = replicacheList.undoRuntime;
+		syncStatus = replicacheList.syncStatus;
 
 		// Marker consumed (see /l/[id]/+page.svelte): strip it so a copied
 		// or refreshed URL can't re-fire a doomed init against the
@@ -132,10 +140,16 @@
 
 		return () => {
 			unbindKeymap();
+			replicacheList.syncStatus.close();
 			replicacheList.client.close();
 			ws?.close(1000);
 		};
 	});
+
+	// Come back here after signing in — this is where the queue drains.
+	let signInHref = $derived(
+		`/accounts?next=${encodeURIComponent(page.url.pathname)}`
+	);
 </script>
 
 {#if page.url.searchParams.get('from_invite') === '1' && sessionState.hasLoaded}
@@ -154,6 +168,17 @@
 	/>
 {/if}
 
+{#if syncStatus}
+	<SessionExpiredBanner
+		status={syncStatus.status}
+		{signInHref}
+		onRetry={() => syncStatus?.retry()}
+	/>
+	<div class="sync-bar">
+		<SyncIndicator status={syncStatus.status} {signInHref} />
+	</div>
+{/if}
+
 <svelte:boundary {failed}>
 	{#if list && mutators && mutateWithUndo && undoRuntime}
 		<List data={list_data} {list} {mutators} {mutateWithUndo} {undoRuntime}
@@ -168,6 +193,15 @@
 	pending={pendingConfirm}
 	setPending={(p) => (pendingConfirm = p)}
 />
+
+<style>
+	/* See /l/[id]/+page.svelte. */
+	.sync-bar {
+		display: flex;
+		justify-content: flex-end;
+		margin-bottom: 0.25rem;
+	}
+</style>
 
 {#snippet failed(
 	/** @type {unknown} */
