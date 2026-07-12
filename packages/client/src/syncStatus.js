@@ -63,6 +63,58 @@ export const INITIAL_STATUS = Object.freeze({
 });
 
 /**
+ * @typedef {'expired' | 'signed-out'} AuthBlockCause
+ */
+
+/**
+ * Why the pushes are being refused.
+ *
+ * `authBlocked` says only that pushes are persistently 401/403'd. That
+ * is a *symptom*, and there are two conditions behind it that a user
+ * experiences completely differently:
+ *
+ *  - **`expired`** — there is no session. Nothing to act as, so "your
+ *    session expired, sign in" is both true and actionable.
+ *
+ *  - **`signed-out`** — there IS a live session, but not as the account
+ *    this client pushes as. Sessions are multi-account, and signing out
+ *    of one leaves the others alive; a client built while that account
+ *    was present keeps stamping it into every mutation envelope, and the
+ *    DO's cross-account check throws outright (unlike a role denial,
+ *    which is skip-and-acked per ADR 0020 so it can't wedge a push). The
+ *    session is fine. Telling this user their session expired is a claim
+ *    they can see is false, on a banner that cannot be dismissed.
+ *
+ * Lives here, in the client package, rather than in the Svelte component
+ * that renders it: it is an authorization inference — it decides what we
+ * assert to a user about the state of their session — and that is worth
+ * testing directly, in one place, rather than trusting a `$derived` in a
+ * component with no test harness.
+ *
+ * `expired` is the deliberate fallback for every ambiguous input (no
+ * acting account, no visible session, an account list we can't match
+ * against). It is the claim that is safe to be wrong about: it never
+ * asserts a live session that isn't there, and its call to action —
+ * sign in — is correct either way.
+ *
+ * @param {object} input
+ * @param {string | null} input.actingAccountId
+ *   The account the client PUSHES AS: stamped into every mutation
+ *   envelope and fixed when the client is built. Deliberately not the
+ *   session's current account — the session can change out from under a
+ *   running client, and that gap is the entire reason this exists.
+ * @param {readonly { id: string }[]} input.sessionAccounts
+ *   Accounts on the live session. Empty means no session at all.
+ * @returns {AuthBlockCause}
+ */
+export function diagnoseAuthBlock({ actingAccountId, sessionAccounts }) {
+	if (sessionAccounts.length === 0) return 'expired';
+	if (!actingAccountId) return 'expired';
+	const onSession = sessionAccounts.some(a => a.id === actingAccountId);
+	return onSession ? 'expired' : 'signed-out';
+}
+
+/**
  * @param {object} input
  * @param {(status: SyncStatus) => void} input.onChange
  *   Called with a fresh snapshot whenever any field changes.

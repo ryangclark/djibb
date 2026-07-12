@@ -1,7 +1,7 @@
 // @ts-check
 
 import { describe, expect, it, vi } from 'vitest';
-import { createSyncTracker } from './syncStatus.js';
+import { createSyncTracker, diagnoseAuthBlock } from './syncStatus.js';
 
 /**
  * Minimal stand-in for the bits of the Replicache client the tracker
@@ -177,5 +177,67 @@ describe('lifecycle', () => {
 		expect(onChange.mock.calls.length).toBe(calls);
 		expect(client.pushes).toBe(0);
 		expect(client.watcherCount()).toBe(0);
+	});
+});
+
+describe('diagnoseAuthBlock — why the pushes are refused', () => {
+	// The banner this feeds is non-dismissible, so a wrong diagnosis is a
+	// claim the user can see is false and cannot make go away. These pin
+	// which claim we make.
+
+	it('no session at all is an expiry', () => {
+		expect(
+			diagnoseAuthBlock({ actingAccountId: 'a/1', sessionAccounts: [] })
+		).toBe('expired');
+	});
+
+	it('a live session that lacks the acting account is a sign-out', () => {
+		// THE bug: sessions are multi-account, so signing out of one leaves
+		// the others alive while a client keeps pushing as the account that
+		// left. The session did not expire, and saying so is a lie.
+		expect(
+			diagnoseAuthBlock({
+				actingAccountId: 'a/1',
+				sessionAccounts: [{ id: 'a/2' }]
+			})
+		).toBe('signed-out');
+	});
+
+	it('names the sign-out even when several accounts are signed in', () => {
+		expect(
+			diagnoseAuthBlock({
+				actingAccountId: 'a/1',
+				sessionAccounts: [{ id: 'a/2' }, { id: 'a/3' }]
+			})
+		).toBe('signed-out');
+	});
+
+	it('an anonymous client falls back to expiry', () => {
+		// Nothing was signed out — there was never an account to sign out
+		// of. "Sign in to save" is the right prompt regardless, and it is
+		// the claim that is safe to be wrong about.
+		expect(
+			diagnoseAuthBlock({ actingAccountId: null, sessionAccounts: [] })
+		).toBe('expired');
+		expect(
+			diagnoseAuthBlock({
+				actingAccountId: null,
+				sessionAccounts: [{ id: 'a/2' }]
+			})
+		).toBe('expired');
+	});
+
+	it('falls back to expiry when the acting account IS on the session', () => {
+		// Shouldn't happen: an authorized account whose role can't run the
+		// mutation is skip-and-ack'd (ADR 0020), not 403'd, so this state
+		// has no known producer. Pinned anyway — an undefined answer here
+		// is how a "shouldn't happen" becomes a crash or a blank banner.
+		// `expired` at least prompts the one recovery that exists.
+		expect(
+			diagnoseAuthBlock({
+				actingAccountId: 'a/1',
+				sessionAccounts: [{ id: 'a/1' }, { id: 'a/2' }]
+			})
+		).toBe('expired');
 	});
 });

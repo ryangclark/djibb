@@ -47,8 +47,15 @@
 	 * Both want the same *action* — an interactive sign-in as the
 	 * account that owns the work — so the destination is unchanged. Only
 	 * the diagnosis and the button's promise differ.
+	 *
+	 * The inference itself lives in `@djibb/client` (`diagnoseAuthBlock`),
+	 * not here: deciding what we assert to a user about the state of their
+	 * session is authorization reasoning, and it belongs somewhere it can
+	 * be tested directly rather than inside an untested `$derived`. This
+	 * component only renders the answer.
 	 */
 	import { onMount } from 'svelte';
+	import { diagnoseAuthBlock } from '@djibb/client/syncStatus';
 
 	/**
 	 * @typedef {Object} Props
@@ -76,19 +83,8 @@
 
 	let visible = $derived(status.authBlocked);
 
-	/**
-	 * Which of the two causes we're looking at. `signed-out` is only
-	 * claimable when we can see accounts on the session AND the account
-	 * we're pushing as isn't among them — anything else falls back to
-	 * `expired`, which is the safe answer: it never asserts a live
-	 * session that isn't there.
-	 */
 	let cause = $derived(
-		sessionAccounts.length > 0 &&
-			actingAccountId &&
-			!sessionAccounts.some((a) => a.id === actingAccountId)
-			? 'signed-out'
-			: 'expired'
+		diagnoseAuthBlock({ actingAccountId, sessionAccounts })
 	);
 
 	// The count is Replicache's real queue depth, so it's honest even
