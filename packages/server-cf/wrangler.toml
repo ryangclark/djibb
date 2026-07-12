@@ -38,6 +38,17 @@ name = "EMAIL"
 # remote = true
 
 [vars]
+# Which environment the Worker thinks it's in. Read by the cookie
+# guards (`secure: c.env.ENV !== 'dev'`) for both the session cookie
+# and the OAuth state cookie. `.dev.vars` overrides this with "dev"
+# for `wrangler dev`, which serves plain http and so must NOT get
+# `Secure`. Deployed Workers get this value.
+#
+# It was previously unset for deploys, so `c.env.ENV` was `undefined`
+# in production and the guards worked only because `undefined !== 'dev'`
+# — the right answer for the wrong reason. Set it explicitly (GH #38).
+ENV = "production"
+
 # Sender for all outbound mail (invites, magic links, ownership
 # transfers). Read via `resolveEmailFrom(env)` — the single source of
 # truth, so the address lives in config, not hardcoded across the email
