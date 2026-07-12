@@ -52,6 +52,14 @@
 	/** @type {ReturnType<typeof import('$lib/replicache/syncStatus.svelte.js').createSyncStatusState> | undefined} */
 	let syncStatus = $state.raw();
 
+	// The account the live client pushes as, captured at init. Held apart
+	// from `sessionState.currentAccountId` on purpose: the session can
+	// change out from under a running client (signing out of one of
+	// several accounts), and the gap between the two is what the banner
+	// reads to tell "expired" from "signed out of that account".
+	/** @type {string | null} */
+	let actingAccountId = $state.raw(null);
+
 	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
 	let toastEvent = $state(null);
 
@@ -120,6 +128,7 @@
 		mutateWithUndo = replicacheList.mutateWithUndo;
 		undoRuntime = replicacheList.undoRuntime;
 		syncStatus = replicacheList.syncStatus;
+		actingAccountId = replicacheList.actingAccountId;
 
 		// The marker has now been consumed by the init decision above (its
 		// only job), whether or not an optimistic write actually fired —
@@ -201,6 +210,8 @@
 		status={syncStatus.status}
 		{signInHref}
 		onRetry={() => syncStatus?.retry()}
+		{actingAccountId}
+		sessionAccounts={sessionState.accounts}
 	/>
 	<div class="sync-bar">
 		<SyncIndicator status={syncStatus.status} {signInHref} />

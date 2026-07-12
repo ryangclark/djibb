@@ -46,6 +46,10 @@
 	/** @type {ReturnType<typeof import('$lib/replicache/syncStatus.svelte.js').createSyncStatusState> | undefined} */
 	let syncStatus = $state.raw();
 
+	// The account the live client pushes as. See /l/[id]/+page.svelte.
+	/** @type {string | null} */
+	let actingAccountId = $state.raw(null);
+
 	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
 	let toastEvent = $state(null);
 
@@ -100,6 +104,7 @@
 		mutateWithUndo = replicacheList.mutateWithUndo;
 		undoRuntime = replicacheList.undoRuntime;
 		syncStatus = replicacheList.syncStatus;
+		actingAccountId = replicacheList.actingAccountId;
 
 		// Marker consumed (see /l/[id]/+page.svelte): strip it so a copied
 		// or refreshed URL can't re-fire a doomed init against the
@@ -173,6 +178,8 @@
 		status={syncStatus.status}
 		{signInHref}
 		onRetry={() => syncStatus?.retry()}
+		{actingAccountId}
+		sessionAccounts={sessionState.accounts}
 	/>
 	<div class="sync-bar">
 		<SyncIndicator status={syncStatus.status} {signInHref} />

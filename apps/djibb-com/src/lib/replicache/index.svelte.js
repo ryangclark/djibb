@@ -129,6 +129,14 @@ export function initList({
 		mutateWithUndo: undoRuntime.mutateWithUndo,
 		undoRuntime,
 		syncStatus,
+		// The account this client PUSHES AS — stamped into every mutation
+		// envelope and fixed for the client's lifetime. Deliberately
+		// surfaced rather than left implicit: it is not the same thing as
+		// the session's current account (the session can change under a
+		// live client), and that difference is precisely what
+		// `SessionExpiredBanner` needs to tell an expired session apart
+		// from an account that was signed out from under a running client.
+		actingAccountId: accountId,
 		get list() {
 			return listData;
 		}
