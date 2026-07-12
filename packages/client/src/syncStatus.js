@@ -46,12 +46,21 @@
  *   necessarily an interactive sign-in.
  */
 
-/** @type {SyncStatus} */
-export const INITIAL_STATUS = {
+/**
+ * Frozen because it is a shared module-level value that consumers seed
+ * their reactive state with (`$state(INITIAL_STATUS)` in the webapp).
+ * Svelte deep-proxies what it's given, so an accidental field write
+ * through that proxy would mutate this object for every tracker created
+ * afterwards in the same page. Nothing does that today; freezing means
+ * nothing quietly can.
+ *
+ * @type {Readonly<SyncStatus>}
+ */
+export const INITIAL_STATUS = Object.freeze({
 	pending: 0,
 	syncing: false,
 	authBlocked: false
-};
+});
 
 /**
  * @param {object} input
