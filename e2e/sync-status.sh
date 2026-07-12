@@ -212,9 +212,33 @@ wait_for banner "Session expired" "banner appears on persistent push 403"
 wait_for banner "1 unsaved change" "banner names the pending count"
 wait_for indicator "Can't sync" "indicator flips to can't-sync"
 
-# ─── Step 3: re-auth flushes the queue, and the server has the edit ───────
+# ─── Step 3: a reload must not strand the queue (#43) ──────────────────────
 
-log "step 3: re-auth → flush → confirm server-side (no data loss)"
+log "step 3: reload during an expired session keeps the queue visible (#43)"
+
+# The regression this guards: the Replicache store is named
+# `<accountId>:<listId>`, and the page used to read that account id from
+# *live session state*. On reload with a dead session it read `null`,
+# opened a `null:<listId>` store, and left the queued mutation stranded
+# in a store nobody was looking at — while the (empty, anonymous) new
+# store pushed successfully and the indicator reported "All changes
+# saved" over the top of work that was going nowhere.
+#
+# The unflushed-work ledger is what survives the reload. If it ever
+# stops doing so, this assertion is what says so.
+ab reload > /dev/null
+wait_for banner "Session expired" "banner survives the reload"
+wait_for banner "1 unsaved change" "the pending count survives the reload"
+
+# The failure mode was not just a missing banner — it was the app
+# actively asserting the opposite. Guard the lie directly.
+[[ "$(indicator)" != *"All changes saved"* ]] ||
+    fail "indicator claims 'All changes saved' while a mutation is stranded (#43)"
+ok "indicator does not claim saved while work is stranded"
+
+# ─── Step 4: re-auth flushes the queue, and the server has the edit ───────
+
+log "step 4: re-auth → flush → confirm server-side (no data loss)"
 
 sign_in
 ab open "$list_url" > /dev/null

@@ -44,9 +44,14 @@ function fakeClient({ pending = 0 } = {}) {
 function setup({ pending = 0, authFailureThreshold = 2 } = {}) {
 	const client = fakeClient({ pending });
 	const onChange = vi.fn();
-	const tracker = createSyncTracker({ onChange, authFailureThreshold });
+	const onDrained = vi.fn();
+	const tracker = createSyncTracker({
+		onChange,
+		authFailureThreshold,
+		onDrained
+	});
 	tracker.attach(/** @type {any} */ (client));
-	return { client, onChange, tracker };
+	return { client, onChange, onDrained, tracker };
 }
 
 // Lets the tracker's in-flight `experimentalPendingMutations()` reads settle.
@@ -141,6 +146,42 @@ describe('auth-blocked', () => {
 		tracker.notifyPush(401);
 		await settle();
 		expect(tracker.status.authBlocked).toBe(true);
+	});
+});
+
+describe('drain signal (retires the unflushed-work claim, GH #43)', () => {
+	it('fires when the queue empties', async () => {
+		const { client, onDrained } = setup({ pending: 1 });
+		await settle();
+		expect(onDrained).not.toHaveBeenCalled();
+
+		client.pending = 0;
+		client.onSync?.(false);
+		await settle();
+
+		expect(onDrained).toHaveBeenCalled();
+	});
+
+	it('fires on a cold start with an empty queue', async () => {
+		// This is what cleans up an over-claimed entry — one written just
+		// before a tab died, so the mutation never actually landed. If the
+		// signal only fired on a 1→0 *transition*, that claim would linger
+		// forever and keep resolving the store to a stale account.
+		const { onDrained } = setup({ pending: 0 });
+		await settle();
+		expect(onDrained).toHaveBeenCalled();
+	});
+
+	it('does not fire while work is still queued', async () => {
+		const { client, onDrained } = setup({ pending: 0 });
+		await settle();
+		onDrained.mockClear();
+
+		client.pending = 2;
+		client.emitLocalChange();
+		await settle();
+
+		expect(onDrained).not.toHaveBeenCalled();
 	});
 });
 

@@ -123,8 +123,20 @@ export function diagnoseAuthBlock({ actingAccountId, sessionAccounts }) {
  *   auth-blocked. Two, not one, so a transient failure can't flash
  *   the banner; Replicache's push retry backoff means the second
  *   attempt lands within seconds.
+ * @param {() => void} [input.onDrained]
+ *   Fired whenever the queue is observed empty. This is the
+ *   self-healing half of the unflushed-work ledger (GH #43): claims are
+ *   written optimistically before each mutation, so the only thing that
+ *   retires them is watching the real queue reach zero. Called on every
+ *   observed-empty read, not just on a transition, so a claim left over
+ *   from a previous session (tab died between the stamp and the mutate)
+ *   is cleaned up on the next load rather than lingering forever.
  */
-export function createSyncTracker({ onChange, authFailureThreshold = 2 }) {
+export function createSyncTracker({
+	onChange,
+	authFailureThreshold = 2,
+	onDrained
+}) {
 	let pending = 0;
 	let syncing = false;
 	let authFailures = 0;
@@ -174,6 +186,7 @@ export function createSyncTracker({ onChange, authFailureThreshold = 2 }) {
 		if (seq !== readSeq || closed) return;
 		pending = mutations.length;
 		emit();
+		if (pending === 0) onDrained?.();
 	}
 
 	return {

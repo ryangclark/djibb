@@ -9,6 +9,7 @@
         "./undoStack": "./src/undoStack.js",
         "./replicache": "./src/replicache.js",
         "./syncStatus": "./src/syncStatus.js",
+        "./unflushed": "./src/unflushed.js",
         "./transport": "./src/transport.js",
         "./oneshot": "./src/oneshot.js",
         "./origins": "./src/origins.js",

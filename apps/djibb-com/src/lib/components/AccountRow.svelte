@@ -3,6 +3,8 @@
 	import { getSessionState, STATUSES } from '$lib/session.svelte';
 	import { setAccountUsername } from '$lib/api/account';
 	import { api, DjibbHttpError } from '$lib/api/client';
+	import { discardUnflushed } from '@djibb/client/unflushed';
+	import { unflushedLedger } from '$lib/replicache/ledger.js';
 
 	/**
 	 * @type {{account: import("@djibb/protocol/account").Account}}
@@ -21,16 +23,62 @@
 	let usernameError = $state('');
 	let usernameDetail = $state('');
 
-	async function handleSignOut() {
+	// Entities this account has work for that never reached the server
+	// (GH #43). Signing out does NOT strand them — the ledger outlives
+	// the session, so signing back in reopens the same store and the
+	// queue flushes. But the user deserves to know before they walk
+	// away from a browser, and to be able to say "no, throw it out".
+	/** @type {string[]} */
+	let stuckEntities = $state([]);
+	let confirmingSignOut = $state(false);
+	let discarding = $state(false);
+
+	function handleSignOut() {
+		if (signingOut) return;
+		stuckEntities = unflushedLedger.entitiesFor(account.id);
+		if (stuckEntities.length > 0) {
+			// Don't surprise anyone: unsaved work turns sign-out into a
+			// decision rather than a button.
+			confirmingSignOut = true;
+			return;
+		}
+		void signOut();
+	}
+
+	/**
+	 * @param {{ discard?: boolean }} [opts]
+	 */
+	async function signOut({ discard = false } = {}) {
 		if (signingOut) return;
 		signingOut = true;
+		confirmingSignOut = false;
 
 		try {
+			// Sign out FIRST, discard second — the order is load-bearing.
+			// Discarding is irreversible, and this request is exactly the
+			// one that fails when the user is offline, which is exactly
+			// when they have unflushed work in the first place. Discarding
+			// up front would destroy their changes and then leave them
+			// still signed in when the request threw: the worst of both.
+			//
 			// 204 when the account wasn't on the session; a re-minted session
 			// JSON otherwise. Either way there's nothing here to read.
 			await api.del('/auth/session/accounts', {
 				json: { account_id: account.id }
 			});
+
+			if (discard) {
+				// Deliberately more than a ledger delete: dropping only the
+				// claim would leave the mutations rotting in an IndexedDB
+				// store nothing will ever open again. If the user says
+				// discard, actually discard.
+				discarding = true;
+				await discardUnflushed({
+					ledger: unflushedLedger,
+					accountId: account.id
+				});
+				discarding = false;
+			}
 
 			if (sessionState.status === STATUSES.idle) {
 				await sessionState.fetchSession();
@@ -43,6 +91,7 @@
 			}
 		}
 
+		discarding = false;
 		signingOut = false;
 	}
 
@@ -160,3 +209,103 @@
 		{signingOut ? 'Signing out...' : 'Sign out'}
 	</button>
 </div>
+
+{#if confirmingSignOut}
+	<div class="unsynced-confirm" role="alertdialog" aria-label="Unsaved changes">
+		<p>
+			<strong
+				>{stuckEntities.length}
+				{stuckEntities.length === 1 ? 'list has' : 'lists have'} unsaved changes</strong
+			>
+			that haven't reached the server yet.
+		</p>
+		<!-- Lead with the reassuring truth: signing out is not
+		     destructive here. The queue outlives the session, so this is
+		     a "come back and finish" state, not a "lose your work" one. -->
+		<p class="hint">
+			They're kept on this device. Sign back in as this account and they'll
+			finish saving on their own.
+		</p>
+		<div class="actions">
+			<button
+				type="button"
+				class="primary"
+				disabled={signingOut}
+				onclick={() => signOut()}
+			>
+				Sign out, keep changes
+			</button>
+			<button
+				type="button"
+				class="danger"
+				disabled={signingOut}
+				onclick={() => signOut({ discard: true })}
+			>
+				{discarding ? 'Removing…' : 'Sign out and remove unsaved changes'}
+			</button>
+			<button
+				type="button"
+				class="cancel"
+				disabled={signingOut}
+				onclick={() => (confirmingSignOut = false)}
+			>
+				Cancel
+			</button>
+		</div>
+		<p class="hint danger-hint">
+			Removing can't be undone — those changes exist nowhere else.
+		</p>
+	</div>
+{/if}
+
+<style>
+	.unsynced-confirm {
+		border: 1px solid #fed7aa;
+		background: #fff7ed;
+		color: #7c2d12;
+		padding: 0.75rem 1rem;
+		border-radius: 0.5rem;
+		margin: 0.5rem 0 1rem;
+	}
+	.unsynced-confirm p {
+		margin: 0 0 0.5rem;
+	}
+	.unsynced-confirm .hint {
+		font-size: 0.85rem;
+		color: #9a3412;
+	}
+	.unsynced-confirm .actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		margin: 0.75rem 0 0.5rem;
+	}
+	.unsynced-confirm button {
+		padding: 0.4rem 0.9rem;
+		border-radius: 0.35rem;
+		cursor: pointer;
+	}
+	.unsynced-confirm button:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+	.unsynced-confirm button.primary {
+		background: #9a3412;
+		color: white;
+		border: none;
+	}
+	.unsynced-confirm button.danger {
+		background: transparent;
+		border: 1px solid #dc2626;
+		color: #b91c1c;
+	}
+	.unsynced-confirm button.cancel {
+		background: transparent;
+		border: 1px solid #d6d3d1;
+		color: #57534e;
+	}
+	.unsynced-confirm .danger-hint {
+		margin: 0;
+		font-size: 0.8rem;
+	}
+</style>

@@ -1,7 +1,9 @@
 import { createReplicacheClient, wrapMutators } from '@djibb/client/replicache';
+import { resolveEffectiveAccount } from '@djibb/client/unflushed';
 import { replicacheHost, replicacheSecure } from '$lib/config';
 import { createUndoRuntime } from './withUndo.svelte.js';
 import { createSyncStatusState } from './syncStatus.svelte.js';
+import { unflushedLedger } from './ledger.js';
 
 /**
  * Initializes the Replicache Client stuff.
@@ -48,19 +50,55 @@ export function initList({
 		throw new Error('Missing List Id!');
 	}
 
+	// Who this client ACTS AS, which is not always who the session says
+	// we are (GH #43). A dead session reports `accountId: null`, but a
+	// null session is not an anonymous client: if this account left
+	// unflushed mutations for this entity, they're sitting in that
+	// account's store, and opening the anonymous one instead would
+	// strand them — and then cheerfully report "All changes saved" over
+	// the top of them. The ledger remembers what the session forgot.
+	//
+	// Resolved exactly once and threaded through all three consumers,
+	// because they must agree: the store we open, the account our
+	// mutations claim, and the claim we retire on drain. If the store
+	// said "account X" while the envelope said "anonymous", the queued
+	// work would push as nobody and quietly apply to the wrong actor.
+	//
+	// Note this deliberately does NOT touch `sessionState` — the app at
+	// large still correctly believes it is signed out. This is a
+	// statement about which local store holds our work, nothing more.
+	const effectiveAccountId = resolveEffectiveAccount({
+		accountId,
+		entityId: listId,
+		ledger: unflushedLedger
+	});
+
 	// Built before the client because the client needs `notifyPush` at
 	// construction time — it's wired into the pusher, which is where a
 	// session expiry becomes visible (persistent push 401/403).
-	const syncStatus = createSyncStatusState();
+	const syncStatus = createSyncStatusState({
+		// Retires the ledger claim once the work has actually landed.
+		// Claims are written optimistically (before each mutation), so
+		// observing an empty queue is the only thing that can retire one.
+		onDrained: () => {
+			if (effectiveAccountId) {
+				unflushedLedger.clear(listId, effectiveAccountId);
+			}
+		}
+	});
 
 	const replicacheClient = InitReplicacheClient({
-		accountId,
+		accountId: effectiveAccountId,
 		listId,
 		onPushStatus: syncStatus.notifyPush
 	});
 	syncStatus.attach(replicacheClient);
 
-	const mutate = wrapMutators(replicacheClient.mutate, { accountId });
+	const mutate = wrapMutators(replicacheClient.mutate, {
+		accountId: effectiveAccountId,
+		listId,
+		ledger: unflushedLedger
+	});
 
 	// Undo runtime layered on top of `mutate`. Both firing paths
 	// (`mutate.foo` / `mutateWithUndo.foo`) flow through the same
@@ -68,7 +106,12 @@ export function initList({
 	const undoRuntime = createUndoRuntime({
 		client: replicacheClient,
 		mutate,
-		accountId,
+		// Effective, not session: the undo stack is keyed by
+		// (account, entity) too (`stackStorageKey`), so a dead session
+		// would point it at a different stack for the same reason it
+		// pointed Replicache at a different store. Same question, same
+		// answer — keep the two identities in lockstep.
+		accountId: effectiveAccountId,
 		listId,
 		onToast,
 		onConfirm
