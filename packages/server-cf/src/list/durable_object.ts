@@ -986,7 +986,6 @@ export class DjibbList extends DurableObject {
         pushRequest: PushRequestV1;
         actingCredentialId?: string | null;
     }) {
-        // TODO: auth check?
         // console.log('args:', arguments);
 
         // let list: List;

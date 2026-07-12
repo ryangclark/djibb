@@ -8,13 +8,17 @@ import type { HonoEnv } from '..';
 
 export const SESSION_EXPIRATION = new TimeSpan(30, 'd');
 
-export const BaseSessionCookieAttributes: CookieOptions = {
-    httpOnly: true,
-    maxAge: SESSION_EXPIRATION.seconds(),
-    // path: '/',
-    sameSite: 'lax',
-    // secure: true, // TODO: check whether this should be changed for Prod
-};
+export function sessionCookieAttributes(
+    c: Context<HonoEnv>
+): CookieOptions {
+    return {
+        httpOnly: true,
+        maxAge: SESSION_EXPIRATION.seconds(),
+        // path: '/',
+        sameSite: 'lax',
+        secure: c.env.ENV !== 'dev', // set to false in localhost
+    };
+}
 
 export const CookieNames = {
     GoogleState: 'google_oauth_state',

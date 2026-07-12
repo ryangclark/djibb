@@ -43,7 +43,7 @@ import {
 import { randomString } from '@djibb/protocol/id';
 import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
 import {
-    BaseSessionCookieAttributes,
+    sessionCookieAttributes,
     CookieNames,
 } from './constants';
 
@@ -405,7 +405,7 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
         throw new UnexpectedError();
     }
 
-    setCookie(c, CookieNames.Session, session.id, BaseSessionCookieAttributes);
+    setCookie(c, CookieNames.Session, session.id, sessionCookieAttributes(c));
 
     const frontendOrigin = pickFrontendOrigin(c);
     if (!frontendOrigin) {

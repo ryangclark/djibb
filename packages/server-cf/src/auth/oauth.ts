@@ -11,7 +11,7 @@ import { GetAccountByEmail, GetAccountByGoogleId } from './d1';
 import { CreateSession } from './d1';
 import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
 import {
-    BaseSessionCookieAttributes,
+    sessionCookieAttributes,
     CookieNames,
     OAUTH_REDIRECT_URI,
 } from './constants';
@@ -65,7 +65,7 @@ export async function handleGetMockSession(c: Context<HonoEnv>) {
         throw new UnexpectedError();
     }
 
-    setCookie(c, CookieNames.Session, session.id, BaseSessionCookieAttributes);
+    setCookie(c, CookieNames.Session, session.id, sessionCookieAttributes(c));
 
     return c.json({ accounts: session.accounts });
 }
@@ -268,7 +268,7 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
         throw new UnexpectedError();
     }
 
-    setCookie(c, CookieNames.Session, session.id, BaseSessionCookieAttributes);
+    setCookie(c, CookieNames.Session, session.id, sessionCookieAttributes(c));
 
     // Pending-invite handling: cookie wins, fall back to token appended
     // to `state` (after the first `.`). Either way, we attempt the

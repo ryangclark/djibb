@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 import type { HonoEnv } from '..';
 import {
-    BaseSessionCookieAttributes,
+    sessionCookieAttributes,
     CookieNames,
     OAUTH_REDIRECT_URI,
 } from './constants';
@@ -96,7 +96,7 @@ Auth_App.delete('/session/accounts', async c => {
             throw new UnexpectedError();
         }
 
-        setCookie(c, CookieNames.Session, '', BaseSessionCookieAttributes);
+        setCookie(c, CookieNames.Session, '', sessionCookieAttributes(c));
 
         return new Response(null, { status: 204 });
     }
@@ -121,7 +121,7 @@ Auth_App.delete('/session/accounts', async c => {
         throw new UnexpectedError();
     }
 
-    setCookie(c, CookieNames.Session, session.id, BaseSessionCookieAttributes);
+    setCookie(c, CookieNames.Session, session.id, sessionCookieAttributes(c));
 
     return c.json(session);
 });

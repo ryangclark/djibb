@@ -2,7 +2,7 @@ import type { Context, Next } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 
 import type { HonoEnv } from '..';
-import { BaseSessionCookieAttributes, CookieNames } from './constants';
+import { sessionCookieAttributes, CookieNames } from './constants';
 import { resolvePrincipal } from './principal';
 
 /**
@@ -32,10 +32,10 @@ export async function HandleSession(c: Context<HonoEnv>, next: Next) {
             c,
             CookieNames.Session,
             principal.sessionId,
-            BaseSessionCookieAttributes,
+            sessionCookieAttributes(c),
         );
     } else if (cookie === 'clear') {
-        setCookie(c, CookieNames.Session, '', BaseSessionCookieAttributes);
+        setCookie(c, CookieNames.Session, '', sessionCookieAttributes(c));
     }
 
     c.set('principal', principal);
