@@ -14,9 +14,11 @@
 	import InviteBanner from '$lib/components/InviteBanner.svelte';
 	import List from '$lib/components/List.svelte';
 	import SessionExpiredBanner from '$lib/components/SessionExpiredBanner.svelte';
+	import StrandedWorkBanner from '$lib/components/StrandedWorkBanner.svelte';
 	import SyncIndicator from '$lib/components/SyncIndicator.svelte';
 	import UndoToast from '$lib/components/UndoToast.svelte';
 	import { getSessionState } from '$lib/session.svelte.js';
+	import { createStrandedState } from '$lib/replicache/stranded.svelte.js';
 	import z, { ZodError } from 'zod';
 
 	let data = $derived(page.data);
@@ -185,6 +187,21 @@
 	let signInHref = $derived(
 		`/accounts?next=${encodeURIComponent(page.url.pathname)}`
 	);
+
+	// Unflushed work on this entity belonging to an account we are NOT
+	// acting as (GH #46). Invisible to the sync tracker by construction —
+	// it watches the queue of the store we have open, and this is work in
+	// a store we don't. Fed to both surfaces from one place so they can't
+	// disagree about whether the app is lying: the banner offers the way
+	// out, the indicator merely stops claiming "All changes saved" over
+	// the top of it.
+	//
+	// Keyed on `actingAccountId`, not the session's current account: the
+	// two differ on exactly the path this exists for.
+	const stranded = createStrandedState({
+		entityId: () => data.list_id,
+		actingAccountId: () => actingAccountId
+	});
 </script>
 
 {#if page.url.searchParams.get('from_invite') === '1' && sessionState.hasLoaded}
@@ -213,8 +230,19 @@
 		{actingAccountId}
 		sessionAccounts={sessionState.accounts}
 	/>
+	<StrandedWorkBanner
+		{stranded}
+		sessionAccounts={sessionState.accounts}
+		canSwitch={(id) => sessionState.canSwitchToAccount(id)}
+		onSwitch={(id) => sessionState.switchToAccount(id)}
+		{signInHref}
+	/>
 	<div class="sync-bar">
-		<SyncIndicator status={syncStatus.status} {signInHref} />
+		<SyncIndicator
+			status={syncStatus.status}
+			{signInHref}
+			stranded={stranded.claimants.reduce((n, c) => n + c.count, 0)}
+		/>
 	</div>
 {/if}
 

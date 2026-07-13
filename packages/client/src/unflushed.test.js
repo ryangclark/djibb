@@ -4,7 +4,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
 	createUnflushedLedger,
 	discardUnflushed,
+	probeUnflushed,
 	resolveEffectiveAccount,
+	strandedClaims,
 	UnflushedDiscardError
 } from './unflushed.js';
 
@@ -242,5 +244,167 @@ describe('discardUnflushed', () => {
 		expect(err.blocked).toEqual(['l/stuck']);
 		expect(ledger.accountsFor('l/ok')).toEqual([]);
 		expect(ledger.accountsFor('l/stuck')).toEqual(['acct_a']);
+	});
+
+	it('scoped to entityIds, leaves the account other lists alone', async () => {
+		// The stranded-work banner speaks for ONE list. Discarding from it
+		// must not throw away the same account's work on lists the user
+		// isn't even looking at.
+		const { ledger } = setup();
+		ledger.mark('l/1', 'acct_a');
+		ledger.mark('l/2', 'acct_a');
+
+		const result = await discardUnflushed({
+			ledger,
+			accountId: 'acct_a',
+			entityIds: ['l/1'],
+			dropStore: async () => {}
+		});
+
+		expect(result).toEqual(['l/1']);
+		expect(ledger.accountsFor('l/1')).toEqual([]);
+		expect(ledger.accountsFor('l/2')).toEqual(['acct_a']);
+	});
+
+	it('ignores entityIds this account has no claim on', async () => {
+		// A stale prop must not be able to delete a store we never claimed —
+		// that would be destroying someone else's work on our say-so.
+		const { ledger } = setup();
+		ledger.mark('l/1', 'acct_b');
+
+		const dropStore = vi.fn(async () => {});
+		const result = await discardUnflushed({
+			ledger,
+			accountId: 'acct_a',
+			entityIds: ['l/1'],
+			dropStore
+		});
+
+		expect(result).toEqual([]);
+		expect(dropStore).not.toHaveBeenCalled();
+		expect(ledger.accountsFor('l/1')).toEqual(['acct_b']);
+	});
+});
+
+describe('probeUnflushed', () => {
+	/**
+	 * @param {object} opts
+	 * @param {unknown[]} [opts.pending]
+	 * @param {Error} [opts.throws] Thrown from the pending read.
+	 */
+	function fakeClient({ pending = [], throws } = {}) {
+		const client = {
+			closed: false,
+			name: '',
+			clientID: Promise.resolve('c1'),
+			query: async () => undefined,
+			experimentalPendingMutations: async () => {
+				if (throws) throw throws;
+				return pending;
+			},
+			close: async () => {
+				client.closed = true;
+			}
+		};
+		return client;
+	}
+
+	it('counts the durable queue in another account store', async () => {
+		const client = fakeClient({ pending: [{}, {}, {}] });
+		const count = await probeUnflushed({
+			accountId: 'acct_a',
+			entityId: 'l/1',
+			mutators: {},
+			openStore: (name) => {
+				// The probe must look in the CLAIMANT's store, not ours. Getting
+				// this wrong would read an empty queue every time and silence the
+				// banner permanently.
+				expect(name).toBe('acct_a:l/1');
+				return client;
+			}
+		});
+
+		expect(count).toBe(3);
+		expect(client.closed).toBe(true);
+	});
+
+	it('propagates a failed read rather than reporting zero', async () => {
+		// `experimentalPendingMutations()` throws ("Missing head main") on a
+		// client that isn't ready yet. Swallowing that into a 0 would report
+		// "nothing here" about a queue we never managed to read — and the
+		// caller would go quiet over real, recoverable work. Unknown is not
+		// zero.
+		const client = fakeClient({ throws: new Error('Missing head main') });
+
+		await expect(
+			probeUnflushed({
+				accountId: 'acct_a',
+				entityId: 'l/1',
+				mutators: {},
+				openStore: () => client
+			})
+		).rejects.toThrow('Missing head main');
+
+		// ...and it still closes. A leaked connection blocks `dropDatabase`,
+		// which would hang the very "Discard them" button this count offers.
+		expect(client.closed).toBe(true);
+	});
+});
+
+describe('strandedClaims', () => {
+	it('reports a claim the effective account will never drain', () => {
+		// GH #46: signed in as A and B, A left unflushed work on l/1, B is
+		// current. Resolution correctly hands us B — and B's store is empty,
+		// pushes fine, and says "All changes saved" over A's stranded queue.
+		// This is the fact that makes the honest banner possible.
+		const { ledger } = setup();
+		ledger.mark('l/1', 'acct_a');
+
+		expect(
+			strandedClaims({ ledger, entityId: 'l/1', effectiveAccountId: 'acct_b' })
+		).toEqual(['acct_a']);
+	});
+
+	it('says nothing about the account we are already acting as', () => {
+		// Its queue is open in front of us; the sync indicator already speaks
+		// for it. A banner here would be pure noise.
+		const { ledger } = setup();
+		ledger.mark('l/1', 'acct_a');
+
+		expect(
+			strandedClaims({ ledger, entityId: 'l/1', effectiveAccountId: 'acct_a' })
+		).toEqual([]);
+	});
+
+	it('reports a claim even when this client is anonymous', () => {
+		// No session and no claim we could adopt for THIS entity would leave
+		// `effectiveAccountId` null — but a claim by someone else is still a
+		// claim, and still worth surfacing.
+		const { ledger } = setup();
+		ledger.mark('l/1', 'acct_a');
+
+		expect(
+			strandedClaims({ ledger, entityId: 'l/1', effectiveAccountId: null })
+		).toEqual(['acct_a']);
+	});
+
+	it('is silent on the ordinary path', () => {
+		const { ledger } = setup();
+		expect(
+			strandedClaims({ ledger, entityId: 'l/1', effectiveAccountId: 'acct_a' })
+		).toEqual([]);
+	});
+
+	it('reports every other claimant, not just the most recent', () => {
+		// `resolveEffectiveAccount` picks one claimant on a dead session; the
+		// rest are still stranded and must not vanish from the disclosure.
+		const { ledger } = setup();
+		ledger.mark('l/1', 'acct_a');
+		ledger.mark('l/1', 'acct_b');
+		ledger.mark('l/1', 'acct_c');
+
+		expect(
+			strandedClaims({ ledger, entityId: 'l/1', effectiveAccountId: 'acct_c' })
+		).toEqual(['acct_a', 'acct_b']);
 	});
 });
