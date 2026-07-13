@@ -295,8 +295,11 @@ ab_retry open "$list_url"
 # B's own sync is *healthy* here — its store is empty, its pushes
 # succeed. That is precisely why this used to read "All changes saved":
 # every word of it was true about B and a lie about the list.
-wait_for stranded_banner "Another account has unsaved changes" \
-    "the stranded-work banner names the other account's queue (#46)"
+wait_for stranded_banner "1 unsaved change" \
+    "the stranded-work banner counts the other account's queue (#46)"
+[[ "$(stranded_banner)" == *"Another account has"* ]] ||
+    fail "banner does not name the other account. saw: $(stranded_banner)"
+ok "banner names the other account"
 
 # The regression guard that matters. A missing banner would be a gap; an
 # app actively asserting the opposite over stranded work is the trap #43
@@ -305,8 +308,8 @@ wait_for stranded_banner "Another account has unsaved changes" \
     fail "indicator claims 'All changes saved' while another account's work is stranded (#46)"
 ok "indicator does not claim saved over the other account's work"
 
-wait_for indicator "Unsaved changes from another account" \
-    "indicator says whose work is unsaved"
+wait_for indicator "1 unsaved change from another account" \
+    "indicator counts whose work is unsaved"
 
 # ─── Step 4: the banner's advice actually works ──────────────────────────
 
@@ -347,5 +350,50 @@ server_copy="$(
 [[ "$server_copy" == *"Stranded Edit"* ]] ||
     fail "the server does not have the once-stranded edit — the work was lost. server said: ${server_copy}"
 ok "the server has the once-stranded edit (read straight from the DO, not IndexedDB)"
+
+# ─── Step 5: a stale claim must produce SILENCE, not a false alarm ────────
+
+log "step 5: a claim with no work behind it says nothing"
+
+# The ledger over-claims BY DESIGN: claims are stamped before the mutation
+# fires, and only a client acting as the claimant ever retires one — which,
+# on the #46 path, is the one account that is not here. So a claim can
+# outlive its work, and the banner would be shouting about nothing.
+#
+# The fix is not to trust the claim: open that account's store and count
+# what is actually in it (`probeUnflushed`). Here we forge the worst case —
+# a claim for an account with no store at all — and require silence.
+#
+# Note we forge a claim for the SIGNED-OUT-OF shape (an account id that
+# owns nothing here), which is exactly what a stale claim looks like after
+# a discard timed out or a tab died between the stamp and the mutate.
+ab eval "localStorage.setItem(
+    'djibb.unflushed.${list_id}',
+    JSON.stringify(['acct_ghost'])
+)" > /dev/null
+
+ab_retry reload
+wait_for indicator "All changes saved" "the page settles after the reload"
+
+# Give a banner every chance to appear before declaring silence — an
+# assertion that races the probe would pass for the wrong reason.
+sleep 3
+[[ "$(stranded_banner)" == "" ]] ||
+    fail "banner appeared for a claim with no work behind it. saw: $(stranded_banner)"
+ok "no banner for a claim with nothing behind it"
+
+[[ "$(indicator)" == *"All changes saved"* ]] ||
+    fail "indicator contradicted itself over a phantom claim. saw: $(indicator)"
+ok "indicator still reports the truth (all saved)"
+
+# And the claim is LEFT ALONE. A zero probe cannot tell a stale claim from
+# a live tab whose mutation hasn't been persisted yet, so deleting on that
+# ambiguity would orphan work about to become durable — GH #43, rebuilt by
+# hand. Silence is the fix; deletion is not.
+ghost="$(ab eval "localStorage.getItem('djibb.unflushed.${list_id}') ?? ''" |
+    tr -d '"' | tr -d '\n')"
+[[ "$ghost" == *"acct_ghost"* ]] ||
+    fail "the phantom claim was deleted — a zero probe must not retire a claim (saw: '${ghost}')"
+ok "the claim survives: silence, not deletion"
 
 log "✅ stranded-work E2E passed (${STAMP})"

@@ -115,10 +115,10 @@ describe('SPIKE: can a second client see the first client’s pending queue?', (
 		const probe = openStore();
 		// The read must not race the open: `experimentalPendingMutations()`
 		// on a not-yet-opened client throws "Missing head main" rather than
-		// returning empty. A probe that treats that as zero would retire a
-		// live claim, so the real `probeUnflushed` must await readiness (and
-		// must NOT swallow the throw).
-		await probe.clientID;
+		// returning empty. A probe that treats that as zero would silence a
+		// banner over real work, so the real `probeUnflushed` awaits
+		// readiness (and does NOT swallow the throw). The query IS the wait
+		// — `clientID` is a plain string, so awaiting it does nothing.
 		await probe.query((tx) => tx.get('nothing'));
 		const seen = await probe.experimentalPendingMutations();
 
@@ -138,7 +138,6 @@ describe('SPIKE: can a second client see the first client’s pending queue?', (
 
 		// Probe it, with an inert pusher that reports HTTP 200.
 		const probe = openStore();
-		await probe.clientID;
 		await probe.query((tx) => tx.get('nothing'));
 		await probe.experimentalPendingMutations();
 		// Give the probe's own push loop every chance to misbehave.
@@ -157,7 +156,6 @@ describe('SPIKE: can a second client see the first client’s pending queue?', (
 		};
 
 		const after = openStore({ pusher: recording });
-		await after.clientID;
 		await after.query((tx) => tx.get('nothing'));
 		const stillPending = await after.experimentalPendingMutations();
 		expect(stillPending.length).toBeGreaterThan(0);

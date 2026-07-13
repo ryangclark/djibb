@@ -5,8 +5,10 @@
 	import { api, DjibbHttpError } from '$lib/api/client';
 	import {
 		discardUnflushed,
+		probeUnflushed,
 		UnflushedDiscardError
 	} from '@djibb/client/unflushed';
+	import { mutators } from '@djibb/protocol/list/mutators/client';
 	import { unflushedLedger } from '$lib/replicache/ledger.js';
 
 	/**
@@ -50,9 +52,42 @@
 		sessionState.accounts.some((a) => a.id !== account.id)
 	);
 
-	function handleSignOut() {
+	async function handleSignOut() {
 		if (signingOut) return;
-		stuckEntities = unflushedLedger.entitiesFor(account.id);
+
+		// The ledger is an index of stores worth opening, not an answer: a
+		// claim is stamped before its mutation fires and can outlive it. So
+		// don't turn sign-out into a decision on the strength of a claim —
+		// open each store and count what's actually in it. A prompt that
+		// warns about work that isn't there trains people to click through
+		// the one time it is.
+		//
+		// A store we cannot read is treated as stuck (the `catch`): warning
+		// about work that might not exist is recoverable; skipping the
+		// prompt for work that does is not.
+		signingOut = true;
+		try {
+			const claimed = unflushedLedger.entitiesFor(account.id);
+			/** @type {string[]} */
+			const confirmed = [];
+			for (const entityId of claimed) {
+				try {
+					const count = await probeUnflushed({
+						accountId: account.id,
+						entityId,
+						mutators
+					});
+					if (count > 0) confirmed.push(entityId);
+				} catch (err) {
+					console.error('Could not probe unflushed work:', entityId, err);
+					confirmed.push(entityId);
+				}
+			}
+			stuckEntities = confirmed;
+		} finally {
+			signingOut = false;
+		}
+
 		if (stuckEntities.length > 0) {
 			// Don't surprise anyone: unsaved work turns sign-out into a
 			// decision rather than a button.

@@ -80,8 +80,9 @@
 	}
 </script>
 
-{#each stranded.claimants as accountId (accountId)}
+{#each stranded.claimants as { accountId, count } (accountId)}
 	{@const name = nameFor(accountId)}
+	{@const changes = count === 1 ? '1 unsaved change' : `${count} unsaved changes`}
 	<!-- assertive, like SessionExpiredBanner and for the same reason:
 	     there is unsaved work here that the account in front of us cannot
 	     save, and the indicator beside it would otherwise say everything
@@ -93,11 +94,16 @@
 		data-testid="stranded-work-banner"
 		data-account={accountId}
 	>
+		<!-- The count is read from that account's real queue, not inferred
+		     from a claim — see `probeUnflushed`. It is the same standard of
+		     evidence the sync indicator meets for the current account, and
+		     the reason this banner is allowed to interrupt at all. -->
 		<p>
-			<strong>Another account has unsaved changes on this list.</strong>
-			Changes made {#if name}as {name}{:else}by an account you've since signed
-				out of{/if} never reached the server. They're safe on this device, but only
-			that account can save them — nothing you do here will.
+			<strong>Another account has {changes} on this list.</strong>
+			{count === 1 ? 'It was' : 'They were'} made {#if name}as {name}{:else}by
+				an account you've since signed out of{/if} and never reached the
+			server. {count === 1 ? "It's" : "They're"} safe on this device, but only that
+			account can save {count === 1 ? 'it' : 'them'} — nothing you do here will.
 		</p>
 		<div class="actions">
 			{#if canSwitch(accountId)}

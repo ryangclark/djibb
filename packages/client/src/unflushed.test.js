@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
 	createUnflushedLedger,
 	discardUnflushed,
+	probeUnflushed,
 	resolveEffectiveAccount,
 	strandedClaims,
 	UnflushedDiscardError
@@ -282,6 +283,71 @@ describe('discardUnflushed', () => {
 		expect(result).toEqual([]);
 		expect(dropStore).not.toHaveBeenCalled();
 		expect(ledger.accountsFor('l/1')).toEqual(['acct_b']);
+	});
+});
+
+describe('probeUnflushed', () => {
+	/**
+	 * @param {object} opts
+	 * @param {unknown[]} [opts.pending]
+	 * @param {Error} [opts.throws] Thrown from the pending read.
+	 */
+	function fakeClient({ pending = [], throws } = {}) {
+		const client = {
+			closed: false,
+			name: '',
+			clientID: Promise.resolve('c1'),
+			query: async () => undefined,
+			experimentalPendingMutations: async () => {
+				if (throws) throw throws;
+				return pending;
+			},
+			close: async () => {
+				client.closed = true;
+			}
+		};
+		return client;
+	}
+
+	it('counts the durable queue in another account store', async () => {
+		const client = fakeClient({ pending: [{}, {}, {}] });
+		const count = await probeUnflushed({
+			accountId: 'acct_a',
+			entityId: 'l/1',
+			mutators: {},
+			openStore: (name) => {
+				// The probe must look in the CLAIMANT's store, not ours. Getting
+				// this wrong would read an empty queue every time and silence the
+				// banner permanently.
+				expect(name).toBe('acct_a:l/1');
+				return client;
+			}
+		});
+
+		expect(count).toBe(3);
+		expect(client.closed).toBe(true);
+	});
+
+	it('propagates a failed read rather than reporting zero', async () => {
+		// `experimentalPendingMutations()` throws ("Missing head main") on a
+		// client that isn't ready yet. Swallowing that into a 0 would report
+		// "nothing here" about a queue we never managed to read — and the
+		// caller would go quiet over real, recoverable work. Unknown is not
+		// zero.
+		const client = fakeClient({ throws: new Error('Missing head main') });
+
+		await expect(
+			probeUnflushed({
+				accountId: 'acct_a',
+				entityId: 'l/1',
+				mutators: {},
+				openStore: () => client
+			})
+		).rejects.toThrow('Missing head main');
+
+		// ...and it still closes. A leaked connection blocks `dropDatabase`,
+		// which would hang the very "Discard them" button this count offers.
+		expect(client.closed).toBe(true);
 	});
 });
 

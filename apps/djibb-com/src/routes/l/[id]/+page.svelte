@@ -241,7 +241,7 @@
 		<SyncIndicator
 			status={syncStatus.status}
 			{signInHref}
-			stranded={stranded.claimants.length > 0}
+			stranded={stranded.claimants.reduce((n, c) => n + c.count, 0)}
 		/>
 	</div>
 {/if}

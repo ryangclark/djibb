@@ -1,5 +1,10 @@
 // @ts-check
-import { discardUnflushed, strandedClaims } from '@djibb/client/unflushed';
+import { mutators } from '@djibb/protocol/list/mutators/client';
+import {
+	discardUnflushed,
+	probeUnflushed,
+	strandedClaims
+} from '@djibb/client/unflushed';
 import { unflushedLedger } from './ledger.js';
 
 /**
@@ -48,6 +53,11 @@ export function createStrandedState({ entityId, actingAccountId }) {
 	let discarding = $state(null);
 	let error = $state('');
 
+	// Candidates, from the ledger — an INDEX of stores worth opening, not
+	// an answer. Claims are stamped before their mutation fires and can
+	// only be retired by a client acting as the claimant (who, on this
+	// path, is by definition not here), so a claim can outlive its work
+	// and nobody can tell. We do not interrupt a human on that.
 	const claimants = $derived.by(() => {
 		revision;
 		return strandedClaims({
@@ -55,6 +65,63 @@ export function createStrandedState({ entityId, actingAccountId }) {
 			entityId: entityId(),
 			effectiveAccountId: actingAccountId()
 		});
+	});
+
+	// The answer, from the stores themselves: `{ accountId, count }` for
+	// the claimants that turn out to have durable work. Starts empty and
+	// stays empty until a probe says otherwise — a banner that appears and
+	// then retracts is worse than either outcome, because it teaches the
+	// user that this banner lies.
+	/** @type {{ accountId: string, count: number }[]} */
+	let verified = $state([]);
+
+	$effect(() => {
+		const candidates = claimants;
+		const entity = entityId();
+
+		if (candidates.length === 0) {
+			verified = [];
+			return;
+		}
+
+		// Probes are async and the inputs can change under them (the user
+		// switches account, another tab drains a queue). Only the newest run
+		// may publish — a stale result landing last would resurrect a banner
+		// for work that is already saved.
+		let current = true;
+
+		(async () => {
+			/** @type {{ accountId: string, count: number }[]} */
+			const found = [];
+			for (const accountId of candidates) {
+				try {
+					const count = await probeUnflushed({
+						accountId,
+						entityId: entity,
+						mutators
+					});
+					// Zero ⇒ SILENCE, never deletion. A zero probe cannot tell a
+					// stale claim from a live tab whose mutation hasn't been
+					// persisted yet (Replicache persists on its own schedule), and
+					// retiring the claim on that ambiguity would orphan work about
+					// to become durable — GH #43, rebuilt by hand. Say nothing;
+					// leave the claim for its owner to retire.
+					if (count > 0) found.push({ accountId, count });
+				} catch (err) {
+					// A failed read is UNKNOWN, not zero. Staying quiet is the same
+					// outcome as zero here, but the distinction matters at the seam
+					// (`probeUnflushed` deliberately throws rather than returning 0)
+					// and it is worth a log: silence over real work is the failure
+					// mode this whole area exists to prevent.
+					console.error('Could not probe stranded work:', accountId, err);
+				}
+			}
+			if (current) verified = found;
+		})();
+
+		return () => {
+			current = false;
+		};
 	});
 
 	$effect(() => {
@@ -70,8 +137,14 @@ export function createStrandedState({ entityId, actingAccountId }) {
 	});
 
 	return {
+		/**
+		 * Claimants whose work we have actually SEEN on disk, with counts.
+		 * Deliberately the only thing exposed: nothing renders off a raw
+		 * ledger claim any more, which is what makes a stale claim harmless
+		 * rather than a false alarm.
+		 */
 		get claimants() {
-			return claimants;
+			return verified;
 		},
 		get discarding() {
 			return discarding;

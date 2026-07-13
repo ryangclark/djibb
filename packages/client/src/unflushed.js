@@ -55,7 +55,7 @@
  * supplies the API origin.
  */
 
-import { dropDatabase, makeIDBName } from 'replicache';
+import { dropDatabase, makeIDBName, Replicache } from 'replicache';
 import { SCHEMA_VERSION, storeName } from './replicache.js';
 
 /** Namespace for every ledger key. One key per entity. */
@@ -315,6 +315,142 @@ export function strandedClaims({ ledger, entityId, effectiveAccountId }) {
 	return ledger
 		.accountsFor(entityId)
 		.filter(accountId => accountId !== effectiveAccountId);
+}
+
+/**
+ * Ask the store itself how much unflushed work an account actually has
+ * for an entity — without acting as that account.
+ *
+ * ## Why this exists
+ *
+ * `strandedClaims` reads the ledger, and the ledger is a *guess*: claims
+ * are stamped before their mutation fires (they must be — see the
+ * over-claiming note at the top of this file), and only a client acting
+ * as the claimant ever retires one. On the #46 path the claimant is by
+ * definition not here, so a stale claim is not merely possible, it is
+ * unretirable — and #47 renders it to a human as "another account has
+ * unsaved changes on this list". A guess is not good enough to interrupt
+ * someone with.
+ *
+ * The truth was on disk the whole time. `A:<entity>` is a real
+ * Replicache store with a real queue. The only reason we never asked is
+ * that the code which opens that store is a client *acting as A* — and
+ * doing that while B is current is the one thing that must never happen
+ * (it would push as A: the shared-device hazard that makes the
+ * resolution rule in `resolveEffectiveAccount` non-negotiable).
+ *
+ * But opening the store and acting as the account are **separable**.
+ * Open it with a deliberately inert transport, count, close. No network,
+ * therefore no push, therefore none of the hazard.
+ *
+ * ## What a result means (this asymmetry is the whole design)
+ *
+ * - **`n > 0` is trustworthy.** Those mutations are durable. Shout about
+ *   them; count them.
+ * - **`0` is NOT evidence of absence.** Replicache moves mutations from
+ *   its in-memory dag to the persistent one on its own schedule and
+ *   exposes no `persist()`, so work enqueued moments ago by a live tab is
+ *   invisible here. Zero means "nothing durable *yet*".
+ * - **A throw is not a zero.** See `awaitReady` below.
+ *
+ * So callers may go **silent** on zero. They must not *delete* on it:
+ * retiring a claim whose mutation is about to be persisted by another tab
+ * would leave that work durable, unclaimed, and unreachable — which is
+ * GH #43, rebuilt by hand, by the very code meant to be more careful than
+ * #43 was. Retirement stays the claimant's job.
+ *
+ * @param {object} input
+ * @param {string} input.accountId The account whose store to look inside.
+ * @param {string} input.entityId
+ * @param {import('replicache').MutatorDefs} input.mutators
+ *   The real mutator set. Replicache **replays pending mutations on
+ *   open**, and an unknown mutator name throws — so a probe with no
+ *   mutators cannot read a non-empty queue, which is the only queue worth
+ *   reading. Injected rather than imported so this module stays a
+ *   transport-shaped seam (ADR 0014) and the entity kind isn't baked in.
+ * @param {(name: string, mutators: import('replicache').MutatorDefs) => ProbeClient} [input.openStore]
+ *   Seam for tests.
+ * @returns {Promise<number>} durable pending mutations in that store
+ */
+export async function probeUnflushed({
+	accountId,
+	entityId,
+	mutators,
+	openStore = openInertClient
+}) {
+	const client = openStore(storeName(accountId, entityId), mutators);
+	try {
+		await awaitReady(client);
+		const pending = await client.experimentalPendingMutations();
+		return pending.length;
+	} finally {
+		// Not optional, and not merely tidy: `dropDatabase` **blocks rather
+		// than rejects** while any connection to the store is open (see
+		// `discardUnflushed`). A leaked probe connection would hang the
+		// "Discard them" button this very count is used to offer.
+		await client.close();
+	}
+}
+
+/**
+ * A Replicache instance that cannot talk to anything.
+ *
+ * The inert pusher is the safety property of the whole design, so it is
+ * worth being blunt: a probe that pushes is a probe that acts as an
+ * account the user did not choose, on a device that may not be theirs.
+ * It reports HTTP 200 without sending a byte — verified safe by
+ * `probe.spike.test.js`, which proves Replicache does not treat a
+ * pusher's success as confirmation (that only ever arrives via a pull's
+ * `lastMutationID`), so the mutations survive the probe and still flush
+ * afterwards.
+ *
+ * @typedef {{
+ *   query: (fn: (tx: import('replicache').ReadTransaction) => unknown) => Promise<unknown>,
+ *   experimentalPendingMutations: () => Promise<readonly unknown[]>,
+ *   close: () => Promise<void>
+ * }} ProbeClient
+ *
+ * @param {string} name
+ * @param {import('replicache').MutatorDefs} mutators
+ * @returns {ProbeClient}
+ */
+function openInertClient(name, mutators) {
+	const inert = async () => ({
+		httpRequestInfo: { httpStatusCode: 200, errorMessage: '' }
+	});
+
+	return new Replicache({
+		name,
+		// Shared with the create and drop paths so the probe cannot drift
+		// away from the store it is supposed to be probing.
+		schemaVersion: SCHEMA_VERSION,
+		mutators,
+		pusher: inert,
+		puller: inert,
+		pullInterval: null
+	});
+}
+
+/**
+ * Wait for a freshly-constructed client to be usable.
+ *
+ * `experimentalPendingMutations()` on a not-yet-open client **throws**
+ * (`Missing head main`) rather than returning empty — so this is not
+ * politeness, it is the difference between reading the queue and reading
+ * nothing. And when it does throw, that throw must be allowed to
+ * propagate: a probe that caught its way to `0` would report "nothing
+ * here" about a queue it never managed to read, and the caller would go
+ * silent over real, recoverable work. Unknown is not zero.
+ *
+ * A `query()` is the wait: it cannot resolve until the store is open.
+ * (`clientID` looks like the more obvious readiness signal and is not —
+ * it's a plain string, so awaiting it is a no-op. Easy to "fix" this into
+ * a race.)
+ *
+ * @param {ProbeClient} client
+ */
+async function awaitReady(client) {
+	await client.query(tx => tx.get('djibb.probe.ready'));
 }
 
 /**

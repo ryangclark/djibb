@@ -36,21 +36,23 @@
 	 * @typedef {Object} Props
 	 * @property {import('@djibb/client/syncStatus').SyncStatus} status
 	 * @property {string} signInHref
-	 * @property {boolean} [stranded]
-	 *   Another account has unflushed work on this entity. Not derivable
-	 *   from `status` — it is a fact about a store this client does not
-	 *   have open.
+	 * @property {number} [stranded]
+	 *   How many durable, unflushed mutations another account has on this
+	 *   entity. Not derivable from `status` — it is a fact about a store
+	 *   this client does not have open, read by opening that store and
+	 *   counting (`probeUnflushed`). So it is evidence, not a guess, which
+	 *   is what earns it the right to contradict "All changes saved".
 	 */
 
 	/** @type {Props} */
-	let { status, signInHref, stranded = false } = $props();
+	let { status, signInHref, stranded = 0 } = $props();
 
 	let phase = $derived(
 		status.authBlocked
 			? 'blocked'
 			: status.pending > 0
 				? 'pending'
-				: stranded
+				: stranded > 0
 					? 'stranded'
 					: 'saved'
 	);
@@ -63,7 +65,9 @@
 					? 'Syncing…'
 					: `${status.pending} pending`
 				: phase === 'stranded'
-					? 'Unsaved changes from another account'
+					? stranded === 1
+						? '1 unsaved change from another account'
+						: `${stranded} unsaved changes from another account`
 					: 'All changes saved'
 	);
 </script>
