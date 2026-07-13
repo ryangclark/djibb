@@ -123,8 +123,33 @@ export function diagnoseAuthBlock({ actingAccountId, sessionAccounts }) {
  *   auth-blocked. Two, not one, so a transient failure can't flash
  *   the banner; Replicache's push retry backoff means the second
  *   attempt lands within seconds.
+ * @param {() => void} [input.onDrained]
+ *   Fired whenever the queue is observed empty. This is the
+ *   self-healing half of the unflushed-work ledger (GH #43): claims are
+ *   written optimistically before each mutation, so the only thing that
+ *   retires them is watching the real queue reach zero. Called on every
+ *   observed-empty read, not just on a transition, so a claim left over
+ *   from a previous session (tab died between the stamp and the mutate)
+ *   is cleaned up on the next load rather than lingering forever.
+ * @param {() => number} [input.markVersion]
+ *   The ledger's monotonic mark counter (`ledger.markVersion`). Sampled
+ *   across the async pending-count read so a claim staked mid-read is
+ *   never retired by a snapshot taken before it existed.
+ * @param {() => number} [input.inFlight]
+ *   The ledger's count of claimed-but-not-yet-persisted mutations
+ *   (`ledger.inFlight`). A read that begins while one is in flight sees a
+ *   queue that does not contain it yet, so that read cannot be used to
+ *   retire anything either. Together these two make retirement safe;
+ *   retiring a claim for a still-pending mutation orphans it, which is
+ *   the one failure this design refuses to accept.
  */
-export function createSyncTracker({ onChange, authFailureThreshold = 2 }) {
+export function createSyncTracker({
+	onChange,
+	authFailureThreshold = 2,
+	onDrained,
+	markVersion,
+	inFlight
+}) {
 	let pending = 0;
 	let syncing = false;
 	let authFailures = 0;
@@ -169,11 +194,56 @@ export function createSyncTracker({ onChange, authFailureThreshold = 2 }) {
 	async function refreshPending() {
 		if (!client || closed) return;
 		const seq = ++readSeq;
+
+		// Sampled either side of the await — see the trustworthiness check
+		// below, which is where these actually earn their keep.
+		const marksBefore = markVersion?.();
+		const inFlightBefore = inFlight?.() ?? 0;
 		const mutations = await client.experimentalPendingMutations();
+
 		// A later read already landed (or we've been closed) — drop this one.
 		if (seq !== readSeq || closed) return;
-		pending = mutations.length;
+
+		const count = mutations.length;
+
+		// Is this read trustworthy? Three conditions, all load-bearing:
+		//
+		//   marks unchanged      nothing was claimed while we were reading, and
+		//   nothing in flight    nothing was claimed just BEFORE we started
+		//   (before and after)   reading and is still being written.
+		//
+		// The in-flight pair is the subtle one. A mutation is claimed
+		// synchronously but persisted asynchronously, so a read that starts
+		// in that gap sees a queue that does not yet contain it — and the
+		// mark counter is no help, because the mark already happened before
+		// the read began.
+		//
+		// These counters are ledger-wide, not per-entity, so a mutation on
+		// list B makes list A's tracker treat its read as stale too. That
+		// only ever means A holds its claim a beat longer than strictly
+		// necessary — it over-claims, which is the safe direction — so it is
+		// not worth per-entity bookkeeping to avoid.
+		const quiet =
+			markVersion?.() === marksBefore &&
+			inFlightBefore === 0 &&
+			(inFlight?.() ?? 0) === 0;
+
+		// An untrustworthy zero is not just unusable for retiring a claim —
+		// it is unusable, full stop. Publishing it would set the indicator to
+		// "All changes saved" over work that is a tick away from existing:
+		// the exact sentence #6/#7 exist to prevent the app from saying. It
+		// self-corrects on the next watch tick, but a sub-second flash of
+		// "saved" over unsaved work is still a lie. Drop the read entirely;
+		// the write that made it stale will trigger a fresh one.
+		//
+		// Only a *zero* is suspect. A non-zero count can't be an
+		// under-report caused by a not-yet-persisted write.
+		if (count === 0 && !quiet) return;
+
+		pending = count;
 		emit();
+
+		if (pending === 0) onDrained?.();
 	}
 
 	return {

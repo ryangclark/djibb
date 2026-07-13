@@ -55,7 +55,7 @@ export function createReplicacheClient({
 		mutators: mutators,
 		// Template string to create something like `userId123:listId123`.
 		// If no Account ID, it'll be `null:listId123`.
-		name: `${accountId}:${listId}`,
+		name: storeName(accountId, listId),
 		// Event-driven sync: poke via websocket triggers pulls; no polling.
 		pullURL,
 		pushURL,
@@ -65,9 +65,33 @@ export function createReplicacheClient({
 		// trips auth on lists owned by an authed account.
 		pusher: makePusher(pushURL, onPushStatus),
 		puller: makePuller(pullURL),
-		// Bump when stored value shapes change; forces old clients to reset.
-		schemaVersion: '1'
+		schemaVersion: SCHEMA_VERSION
 	});
+}
+
+/** Bump when stored value shapes change; forces old clients to reset. */
+export const SCHEMA_VERSION = '1';
+
+/**
+ * The local store's identity: one store per (account, entity), so two
+ * accounts on one device don't share cached entity data.
+ *
+ * Shared rather than inlined because the ledger's discard path has to
+ * derive the very same IndexedDB name in order to drop it
+ * (`discardUnflushed`). If these two ever computed the name separately
+ * they could drift, and a discard would silently miss the store it was
+ * supposed to destroy — leaving the user's "remove all unsynced
+ * changes" quietly not doing that.
+ *
+ * `null` for the account is a real, meaningful value here: it names the
+ * anonymous store. See `resolveEffectiveAccount` for why a *null
+ * session* is not the same thing as an *anonymous client*.
+ *
+ * @param {string | null} accountId
+ * @param {string} entityId
+ */
+export function storeName(accountId, entityId) {
+	return `${accountId}:${entityId}`;
 }
 
 /**
@@ -98,12 +122,25 @@ export function entityPath(entityId) {
  * per-(account, entity) so it doesn't change for the client's lifetime.
  * `timestamp_client` is stamped at the moment of the call.
  *
+ * This is also where the unflushed-work ledger is stamped (GH #43), and
+ * the ordering is the whole point: the mark is written **synchronously,
+ * before** the mutation is handed to Replicache. Marking afterwards —
+ * from a pending-count observer, say — would leave a window in which a
+ * mutation is durable but unclaimed, and a tab closed in that window
+ * strands it forever. Marking first can only over-claim, and a stale
+ * claim is self-healing (the sync tracker clears it as soon as it sees
+ * an empty queue).
+ *
  * @template {Record<string, (args: any) => any>} M
  * @param {M} rawMutate
- * @param {{ accountId: string | null }} envelope
+ * @param {object} envelope
+ * @param {string | null} envelope.accountId
+ * @param {string} [envelope.listId] Entity being mutated; required to mark
+ * @param {import('./unflushed.js').UnflushedLedger} [envelope.ledger]
+ *   Stamped synchronously with each mutation, and told when it settles.
  * @returns {M}
  */
-export function wrapMutators(rawMutate, { accountId }) {
+export function wrapMutators(rawMutate, { accountId, listId, ledger }) {
 	return /** @type {M} */ (
 		new Proxy(
 			{},
@@ -111,12 +148,34 @@ export function wrapMutators(rawMutate, { accountId }) {
 				get(_, name) {
 					const raw = rawMutate[/** @type {string} */ (name)];
 					if (typeof raw !== 'function') return undefined;
-					return (/** @type {Record<string, unknown>} */ body) =>
-						raw({
+					return (/** @type {Record<string, unknown>} */ body) => {
+						// Claim FIRST, synchronously, before Replicache is told
+						// anything. Anonymous mutations have no owner to recover them
+						// for, so there is nothing to claim.
+						const claimed = Boolean(ledger && accountId && listId);
+						if (claimed) {
+							ledger?.mark(
+								/** @type {string} */ (listId),
+								/** @type {string} */ (accountId)
+							);
+						}
+
+						const settled = raw({
 							...body,
 							accountId,
 							timestamp_client: new Date()
 						});
+
+						// `raw()` only *starts* the mutation — Replicache persists
+						// asynchronously. Until that settles the queue does not yet
+						// contain this mutation, so a pending-count read taken in the
+						// gap would see an empty queue and retire the claim we just
+						// staked, orphaning it. Hand the ledger the promise so it can
+						// hold the claim un-retirable until the write lands.
+						if (claimed) ledger?.trackMutation(settled);
+
+						return settled;
+					};
 				}
 			}
 		)

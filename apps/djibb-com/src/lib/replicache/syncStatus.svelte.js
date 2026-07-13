@@ -11,6 +11,10 @@ import { createSyncTracker, INITIAL_STATUS } from '@djibb/client/syncStatus';
  * `SessionExpiredBanner` (the loud interrupt when the queue can't
  * drain without a sign-in, GH #6).
  *
+ * @param {object} [input]
+ * @param {() => void} [input.onDrained] Fired when the queue is seen empty.
+ * @param {() => number} [input.markVersion] Ledger's mark counter (staleness guard).
+ * @param {() => number} [input.inFlight] Ledger's claimed-but-unpersisted count.
  * @returns {{
  *   status: import('@djibb/client/syncStatus').SyncStatus,
  *   notifyPush: (httpStatusCode: number) => void,
@@ -19,7 +23,7 @@ import { createSyncTracker, INITIAL_STATUS } from '@djibb/client/syncStatus';
  *   close: () => void
  * }}
  */
-export function createSyncStatusState() {
+export function createSyncStatusState({ onDrained, markVersion, inFlight } = {}) {
 	/** @type {import('@djibb/client/syncStatus').SyncStatus} */
 	let status = $state(INITIAL_STATUS);
 
@@ -29,7 +33,10 @@ export function createSyncStatusState() {
 		// components' `$derived` labels key off.
 		onChange: (next) => {
 			status = next;
-		}
+		},
+		onDrained,
+		markVersion,
+		inFlight
 	});
 
 	return {
