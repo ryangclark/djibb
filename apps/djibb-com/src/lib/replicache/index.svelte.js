@@ -186,7 +186,14 @@ export function initList({
 		// live client), and that difference is precisely what
 		// `SessionExpiredBanner` needs to tell an expired session apart
 		// from an account that was signed out from under a running client.
-		actingAccountId: accountId,
+		//
+		// EFFECTIVE, not session: this must be the account the envelope
+		// actually claims, because that is the one the DO's cross-account
+		// check rejects. Handing the banner the session's account instead
+		// would have it reason about an identity we are not pushing as —
+		// and on the very path the ledger exists for (a dead session with
+		// a claim), the two differ.
+		actingAccountId: effectiveAccountId,
 		get list() {
 			return listData;
 		}
