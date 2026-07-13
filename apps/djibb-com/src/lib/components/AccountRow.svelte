@@ -37,6 +37,19 @@
 	let discarding = $state(false);
 	let signOutError = $state('');
 
+	// Does the user still have another account here after this sign-out?
+	// It changes what we can honestly promise (GH #46). "Sign back in and
+	// they'll finish saving on their own" is true on an empty session —
+	// signing back in makes this account current, the store reopens, the
+	// queue drains. It is NOT true while another account remains: the
+	// current account is workspace-derived, so the session keeps offering
+	// the *other* one, we keep opening its store, and this account's work
+	// keeps sitting there untouched. Promising otherwise would be exactly
+	// the reassurance-over-stranded-work this whole area exists to remove.
+	let otherAccountsRemain = $derived(
+		sessionState.accounts.some((a) => a.id !== account.id)
+	);
+
 	function handleSignOut() {
 		if (signingOut) return;
 		stuckEntities = unflushedLedger.entitiesFor(account.id);
@@ -242,11 +255,22 @@
 		</p>
 		<!-- Lead with the reassuring truth: signing out is not
 		     destructive here. The queue outlives the session, so this is
-		     a "come back and finish" state, not a "lose your work" one. -->
-		<p class="hint">
-			They're kept on this device. Sign back in as this account and they'll
-			finish saving on their own.
-		</p>
+		     a "come back and finish" state, not a "lose your work" one.
+		     But keep the reassurance inside what's actually guaranteed —
+		     see `otherAccountsRemain`. -->
+		{#if otherAccountsRemain}
+			<p class="hint">
+				They're kept on this device. Because you're still signed in to another
+				account, djibb will keep working as that one — so these changes stay
+				put until you make this account current again. Any list they're on will
+				say so.
+			</p>
+		{:else}
+			<p class="hint">
+				They're kept on this device. Sign back in as this account and they'll
+				finish saving on their own.
+			</p>
+		{/if}
 		<div class="actions">
 			<button
 				type="button"

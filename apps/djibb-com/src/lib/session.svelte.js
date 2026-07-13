@@ -148,6 +148,39 @@ class SessionState {
 	}
 
 	/**
+	 * Can this account be made the current one right now?
+	 *
+	 * "Current account" is not directly settable — it is *derived* from
+	 * the active workspace (`setActiveWorkspace`, above), so an account is
+	 * only reachable if the session can see a workspace it's a member of.
+	 * Being signed in is necessary but not sufficient. Callers that offer
+	 * "switch to that account" as an action (the stranded-work banner, GH
+	 * #46) must ask before offering, or the button is a lie.
+	 *
+	 * @param {string} accountId
+	 */
+	canSwitchToAccount(accountId) {
+		return this.workspaces.some((w) => w.membership.account_id === accountId);
+	}
+
+	/**
+	 * Make `accountId` the current account by activating a workspace it
+	 * belongs to. Returns false when there is no such workspace — the
+	 * caller must not assume it worked (see `canSwitchToAccount`).
+	 *
+	 * @param {string} accountId
+	 * @returns {boolean}
+	 */
+	switchToAccount(accountId) {
+		const match = this.workspaces.find(
+			(w) => w.membership.account_id === accountId
+		);
+		if (!match) return false;
+		this.setActiveWorkspace(match.workspace.slug);
+		return true;
+	}
+
+	/**
 	 * The active workspace's entity id (the `workspace_id` a freshly
 	 * created list/template should be stamped with), resolved from the
 	 * active slug. `null` until a workspace is selected — a new entity

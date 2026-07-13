@@ -269,6 +269,55 @@ export function resolveEffectiveAccount({ accountId, entityId, ledger }) {
 }
 
 /**
+ * Claims on this entity that the effective account will never drain
+ * (GH #46) — i.e. the work `resolveEffectiveAccount` deliberately
+ * declined to act as.
+ *
+ * ## Why this is a separate question
+ *
+ * The rule above gives an unconditional win to the live session, and it
+ * must: sessions here are multi-account, so a ledger claim outranking a
+ * live account would drag a genuinely different user on a shared device
+ * into someone else's store and push as them. That is strictly worse
+ * than the state it would fix.
+ *
+ * But "we correctly declined to act as A" is not the same as "there is
+ * nothing of A's here". On a device signed in as A and B, work queued
+ * as A and left unflushed (A's session dropped, or A signed out with
+ * "keep changes") sits in `A:<entity>`, while opening the entity as B
+ * opens `B:<entity>` — a different store, empty queue, pushes fine, and
+ * the indicator says **All changes saved**. Every word of that is true
+ * about B and a lie about the entity. This function is what lets the UI
+ * say the true thing instead: *another account has unsaved changes
+ * here.*
+ *
+ * Resolution stays; disclosure is the fix.
+ *
+ * ## It can over-report, by construction
+ *
+ * Claims are stamped before their mutation lands and retired only by a
+ * client acting as the claimant (see the over-claiming note above), so a
+ * claim can outlive its work — and nobody but that account can notice.
+ * A rare false "A has unsaved changes here" is the cost of never missing
+ * a true one, which is the same trade the ledger already makes. The
+ * escape hatch is that both offered actions (switch, discard) are
+ * harmless against an empty store.
+ *
+ * @param {object} input
+ * @param {ReturnType<typeof createUnflushedLedger>} input.ledger
+ * @param {string} input.entityId
+ * @param {string | null} input.effectiveAccountId The account this
+ *   client is actually acting as — from `resolveEffectiveAccount`, not
+ *   from the session. They differ on exactly the paths that matter.
+ * @returns {string[]} account ids, least-recent first
+ */
+export function strandedClaims({ ledger, entityId, effectiveAccountId }) {
+	return ledger
+		.accountsFor(entityId)
+		.filter(accountId => accountId !== effectiveAccountId);
+}
+
+/**
  * The nuclear option behind the sign-out prompt: throw away every
  * unflushed mutation this account holds in this browser.
  *
@@ -309,6 +358,12 @@ export function resolveEffectiveAccount({ accountId, entityId, ledger }) {
  * @param {object} input
  * @param {ReturnType<typeof createUnflushedLedger>} input.ledger
  * @param {string} input.accountId
+ * @param {string[]} [input.entityIds] Discard only these entities'
+ *   stores rather than every one this account holds. Sign-out is
+ *   account-wide and passes nothing; the stranded-work banner (GH #46)
+ *   speaks for one entity and must not throw away the account's work on
+ *   the lists the user isn't even looking at. Ids with no claim for this
+ *   account are ignored — there is no store of ours to drop.
  * @param {number} [input.timeoutMs=5000] Per-store deadline.
  * @param {(dbName: string) => Promise<void>} [input.dropStore] Seam for tests.
  * @returns {Promise<string[]>} the entity ids whose stores were dropped
@@ -317,10 +372,17 @@ export function resolveEffectiveAccount({ accountId, entityId, ledger }) {
 export async function discardUnflushed({
 	ledger,
 	accountId,
+	entityIds,
 	timeoutMs = 5000,
 	dropStore = dropDatabase
 }) {
-	const entities = ledger.entitiesFor(accountId);
+	const claimed = ledger.entitiesFor(accountId);
+	// Intersect rather than trust the caller's list: dropping a store for
+	// an entity this account never claimed would delete someone's work on
+	// the strength of a stale prop.
+	const entities = entityIds
+		? claimed.filter(id => entityIds.includes(id))
+		: claimed;
 	/** @type {string[]} */
 	const dropped = [];
 	/** @type {string[]} */
