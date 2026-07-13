@@ -24,6 +24,12 @@ import { mutators } from '@djibb/protocol/list/mutators/client';
  * @param {string} input.listId Entity ID; its prefix selects the route
  * @param {string} input.baseUrl API host, no protocol (e.g. `api.djibb.com`)
  * @param {boolean} [input.secure=true] https when true; false for local dev
+ * @param {(httpStatusCode: number) => void} [input.onPushStatus]
+ *   Observes every push response's HTTP status. The sync tracker
+ *   (`createSyncTracker`) uses it to notice persistent 401/403s, which
+ *   is the only reliable signal that a session expired mid-edit — the
+ *   push is rejected at the envelope check, so no per-mutation outcome
+ *   is ever emitted on the websocket channel.
  *
  * The return type is intentionally left to inference: TypeScript reads
  * the concrete mutator generic off the `new Replicache({ mutators })`
@@ -31,7 +37,13 @@ import { mutators } from '@djibb/protocol/list/mutators/client';
  * mutator. Annotating it as a bare `Replicache` would erase that
  * generic and collapse `.mutate` to an empty surface.
  */
-export function createReplicacheClient({ accountId, listId, baseUrl, secure = true }) {
+export function createReplicacheClient({
+	accountId,
+	listId,
+	baseUrl,
+	secure = true,
+	onPushStatus
+}) {
 	const protocol = secure ? 'https:' : 'http:';
 	const path = entityPath(listId);
 	const pullURL = `${protocol}//${baseUrl}/${path}/pull?l=${listId}`;
@@ -51,7 +63,7 @@ export function createReplicacheClient({ accountId, listId, baseUrl, secure = tr
 		// session cookie. Replicache's default fetch omits credentials
 		// and the worker would resolve the request as anonymous, which
 		// trips auth on lists owned by an authed account.
-		pusher: makePusher(pushURL),
+		pusher: makePusher(pushURL, onPushStatus),
 		puller: makePuller(pullURL),
 		// Bump when stored value shapes change; forces old clients to reset.
 		schemaVersion: '1'
@@ -113,9 +125,14 @@ export function wrapMutators(rawMutate, { accountId }) {
 
 /**
  * @param {string} url
+ * @param {(httpStatusCode: number) => void} [onStatus]
+ *   Notified of every push response status, success or failure. A
+ *   network error (offline) rejects the `fetch` and is *not* reported
+ *   — the caller distinguishes "can't reach the server" from "the
+ *   server said no", and only the latter can mean signed-out.
  * @returns {import('replicache').Pusher}
  */
-export function makePusher(url) {
+export function makePusher(url, onStatus) {
 	return async (requestBody, requestID) => {
 		const response = await fetch(url, {
 			method: 'POST',
@@ -126,6 +143,7 @@ export function makePusher(url) {
 			},
 			body: JSON.stringify(requestBody)
 		});
+		onStatus?.(response.status);
 		return {
 			httpRequestInfo: {
 				httpStatusCode: response.status,
