@@ -1,6 +1,8 @@
 # ADR 0024: Off-domain client sign-in — the interactive credential mint
 
-- **Status:** Accepted; not yet implemented. Amends ADR 0010 (the interactive ceremony gains a
+- **Status:** Accepted. **Sequencing item 1 (token endpoint + authorization-code
+  tail) implemented in #28** — see the note under Sequencing below; items 2–5
+  remain deferred as written. Amends ADR 0010 (the interactive ceremony gains a
   second terminal form: a minted credential, not only a same-site session) and
   ADR 0022 (fills the "device-flow mint UX" hole it named out of scope; the
   `issued_credentials` substrate is unchanged). Does not touch authorization
@@ -254,6 +256,21 @@ memory and reconnects per visit is a legitimate posture, not a failure mode.
 1. Token endpoint + authorization-code tail on the existing ceremony
    (reusing the `referer_origin` front half), PKCE enforced; behind the
    existing allowlist.
+
+   > **Implemented (#28).** `POST /auth/connect/token` exchanges a single-use,
+   > 5-minute authorization code + PKCE (`S256`, mandatory — `plain` rejected)
+   > verifier for an ordinary ADR 0022 `issued_credentials` row (`auth/connect.ts`;
+   > migration 0016 `connect_authorization_codes`). Both interactive methods can
+   > start a connect ceremony behind the `AUTHORIZED_DOMAINS` allowlist and
+   > terminate by redirecting a code to `<origin>/accounts/verified?code=` **in
+   > place of** the `djibb-session` cookie: OAuth carries the ceremony context
+   > (origin, challenge, label) in a short-lived httpOnly `djibb_connect` cookie
+   > (same-browser round-trip); magic-link carries it on the token row
+   > (`magic_link_tokens.connect_*`) so it survives the cross-device email hop.
+   > The two terminal forms are kept structurally separate (a connect flow
+   > returns before any session work — the §Negative "never both" hazard). The
+   > minted token is v1-policy: full resolved role, non-NULL expiry (90d),
+   > revocable — `role_ceiling` (§5a) stays deferred.
 2. Disclosure interstitial: the §3 connection-moment surface, designed as
    product, not as an error page.
 3. Auth-parameterize the `@djibb/client` transport (Bearer alongside

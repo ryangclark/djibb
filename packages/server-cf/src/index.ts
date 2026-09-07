@@ -129,6 +129,16 @@ app.use(
             return;
         }
 
+        // Connect-ceremony token exchange (ADR 0024 §1) is exempt for the
+        // same reason: an off-domain client POSTs here from its own origin
+        // (not in AUTHORIZED_DOMAINS by design), and its authenticity is the
+        // body-carried authorization code + PKCE verifier — a secret only the
+        // client that started the ceremony holds. See workers/src/auth/connect.ts.
+        if (c.req.path === '/auth/connect/token') {
+            await next();
+            return;
+        }
+
         const originHeader = c.req.header('Origin');
 
         const hostHeader = c.req.header('Host');

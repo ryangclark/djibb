@@ -26,6 +26,15 @@ export const CookieNames = {
     PendingInvite: 'djibb_pending_invite',
     RefererOrigin: 'referer_origin',
     Session: 'djibb-session',
+    /**
+     * Carries the connect-ceremony context (client origin, PKCE challenge,
+     * label) across an OAuth round-trip (ADR 0024 §1). OAuth completes in
+     * the browser that started it, so a short-lived httpOnly cookie is the
+     * right vessel — exactly like {@link CookieNames.GoogleState}. The
+     * magic-link path can span two devices, so it carries the same context
+     * on the token row instead (migration 0016 `connect_*` columns).
+     */
+    Connect: 'djibb_connect',
 };
 
 export const DURABLE_OBJECT_NAME_AUTH = '_djibb_auth';

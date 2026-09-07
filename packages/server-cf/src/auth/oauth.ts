@@ -15,6 +15,11 @@ import {
     CookieNames,
     OAUTH_REDIRECT_URI,
 } from './constants';
+import {
+    InsertAuthorizationCode,
+    originIsAllowlisted,
+    type ConnectCeremonyContext,
+} from './connect';
 import { FlagRouter, MOCK_AUTH_MODE } from '../flags';
 import type { HonoEnv } from '..';
 
@@ -127,7 +132,7 @@ export async function handleInitOAuthGoogle(c: Context<HonoEnv>) {
 
     if (
         refererOrigin &&
-        c.env.AUTHORIZED_DOMAINS.split(';').includes(`${refererOrigin}`)
+        originIsAllowlisted(c.env.AUTHORIZED_DOMAINS, refererOrigin)
     ) {
         setCookie(c, CookieNames.RefererOrigin, refererOrigin, cookieOpts);
     } else {
@@ -137,6 +142,46 @@ export async function handleInitOAuthGoogle(c: Context<HonoEnv>) {
         );
 
         throw new UnexpectedError();
+    }
+
+    // Connect ceremony (ADR 0024 §1): when the client requests a *credential*
+    // rather than a cookie, it starts the flow with `?connect=1` and a PKCE
+    // `code_challenge` (plus an optional `label`). We stash that context in a
+    // short-lived httpOnly cookie — the ceremony completes in this same
+    // browser, so the cookie is the right vessel (mirrors GoogleState). The
+    // terminal handler reads it and mints a code instead of a session. The
+    // origin is the already-allowlisted `refererOrigin` above.
+    //
+    // CRITICAL: like GoogleState/GoogleCodeVerifier, this cookie is (re)written
+    // on *every* init — set in connect mode, **cleared otherwise**. Without the
+    // clear, an abandoned connect ceremony would leave the cookie live for its
+    // maxAge, and the next *ordinary* sign-in in this browser would be misread
+    // as a connect terminal: no session set, and a credential-minting code
+    // handed to the stale client origin. The clear makes the terminal form a
+    // function of *this* flow, never a leftover.
+    if (c.req.query('connect') === '1') {
+        const codeChallenge = c.req.query('code_challenge');
+        if (!codeChallenge) {
+            console.warn(
+                '`handleInitOAuthGoogle()` connect start missing code_challenge'
+            );
+            throw new ValidationError('missing code_challenge');
+        }
+        const connectCtx: ConnectCeremonyContext = {
+            origin: refererOrigin,
+            codeChallenge,
+            // Bound to match the magic-link path's `z.string().max(200)` — the
+            // same `label` column feeds both entry points.
+            label: (c.req.query('label') ?? '').slice(0, 200) || null,
+        };
+        setCookie(
+            c,
+            CookieNames.Connect,
+            JSON.stringify(connectCtx),
+            cookieOpts
+        );
+    } else {
+        deleteCookie(c, CookieNames.Connect);
     }
 
     // Store code verifier as cookie.
@@ -243,6 +288,47 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
         }
     }
 
+    // Connect ceremony terminal (ADR 0024 §1): if the flow was started as a
+    // connect ceremony, mint an authorization code and redirect it back to
+    // the client's origin — *instead of* creating a session or setting the
+    // `djibb-session` cookie. The two terminal forms stay cleanly separate
+    // (ADR 0024 §Negative): this branch returns before any session work, so
+    // a connect flow can never also yield a cookie.
+    const connectRaw = getCookie(c, CookieNames.Connect);
+    if (connectRaw) {
+        deleteCookie(c, CookieNames.Connect);
+        let connectCtx: ConnectCeremonyContext;
+        try {
+            connectCtx = JSON.parse(connectRaw) as ConnectCeremonyContext;
+        } catch {
+            console.error('`/google/verify` malformed connect cookie');
+            throw new ValidationError('Invalid Request!');
+        }
+        // Re-validate the origin at redirect time (defense in depth): the
+        // allowlist may have changed since ceremony start, and a redirect
+        // target must always be a known-good origin.
+        if (
+            !connectCtx.origin ||
+            !connectCtx.codeChallenge ||
+            !originIsAllowlisted(c.env.AUTHORIZED_DOMAINS, connectCtx.origin)
+        ) {
+            console.error(
+                '`/google/verify` connect redirect to unauthorized origin "%s"',
+                connectCtx.origin
+            );
+            throw new UnexpectedError();
+        }
+        const { code } = await InsertAuthorizationCode(c.env.DJIBB_AUTH, {
+            accountId: account.id,
+            clientOrigin: connectCtx.origin,
+            codeChallenge: connectCtx.codeChallenge,
+            label: connectCtx.label,
+        });
+        const url = new URL(`${connectCtx.origin}/accounts/verified`);
+        url.searchParams.set('code', code);
+        return c.redirect(url.toString());
+    }
+
     // Merge into the current cookie session if there is one (multi-Account
     // per session). A bearer principal has no session to merge into.
     const principal = c.get('principal');
@@ -285,7 +371,7 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
 
     if (
         redirectOrigin &&
-        c.env.AUTHORIZED_DOMAINS.split(';').includes(redirectOrigin)
+        originIsAllowlisted(c.env.AUTHORIZED_DOMAINS, redirectOrigin)
     ) {
         const url = new URL(`${redirectOrigin}/accounts/verified`);
         url.searchParams.set('account_id', account.id);
