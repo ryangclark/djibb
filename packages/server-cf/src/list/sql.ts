@@ -314,24 +314,49 @@ export function getLiveItemCasRow(
 }
 
 /**
- * Count the live (non-archived) `item` rows on this entity. Backs the
- * structural append-volume cap (ADR 0021 / GH #66): the submitter role is
- * an append-only vector, and Replicache batches N appends into one `/push`
- * — so a per-request HTTP rate limit can't see per-item volume. The mutator
- * reads this count where the write actually lands, so the ceiling holds
- * regardless of how requests are batched. `time_deleted IS NULL` mirrors
- * every other "live row" predicate here (e.g. `getLiveItemCasRow`), so an
- * archived item frees a slot back under the cap.
+ * Does this entity already hold `limit` or more live (non-archived) `item`
+ * rows? Backs the structural append-volume cap (ADR 0021 / GH #66): the
+ * submitter role is an append-only vector, and Replicache batches N appends
+ * into one `/push` — so a per-request HTTP rate limit can't see per-item
+ * volume. The mutator asks this where the write actually lands, so the
+ * ceiling holds regardless of how requests are batched. `time_deleted IS
+ * NULL` mirrors every other "live row" predicate here (e.g.
+ * `getLiveItemCasRow`), so an archived item frees a slot back under the cap.
+ *
+ * An existence probe, deliberately NOT `COUNT(*)`. This runs once per
+ * submitter mutation, and the whole premise of the cap is that a submitter
+ * can pack N appends into a single `/push` — so a full count would have made
+ * the guard its own read-amplification vector (N × scan-every-item-row
+ * inside one DO tick) on exactly the request shape it defends against.
+ * `LIMIT 1 OFFSET limit - 1` stops the moment the answer is known, bounding
+ * each call at `limit` rows no matter how large the list grows.
+ *
+ * Deliberately NOT index-backed. An index on `(type, time_deleted)` would
+ * make this an index-only walk, but adding ANY index to `list_elements`
+ * inflates `SqlStorage`'s `rowsWritten` (index writes count toward it), and
+ * this module uses `rowsWritten` as a row-found assertion in several places
+ * — `archiveEntity` starts throwing `NotFoundError` with `rowsWritten=2`,
+ * and `setReplicacheClientGroup`'s expectations break too. Indexing
+ * `list_elements` therefore requires auditing every `rowsWritten` check
+ * first; until then the OFFSET bound is the mitigation.
  */
-export function countLiveListItems(sql: SqlStorage): number {
-    const row = sql
-        .exec(
-            `SELECT COUNT(*) AS n FROM list_elements
-             WHERE type = 'item' AND time_deleted IS NULL;`
-        )
-        .one() as { n: number };
-    return row.n;
+export function atOrOverLiveItemLimit(sql: SqlStorage, limit: number): boolean {
+    // A non-positive ceiling means "no appends allowed" — the probe below
+    // can't express OFFSET -1, so answer directly.
+    if (limit <= 0) return true;
+
+    return (
+        sql
+            .exec(
+                `SELECT 1 FROM list_elements
+                 WHERE type = 'item' AND time_deleted IS NULL
+                 LIMIT 1 OFFSET ?;`,
+                limit - 1
+            )
+            .toArray().length > 0
+    );
 }
+
 
 // Queries the database for entries with a version greater than the
 // given version.

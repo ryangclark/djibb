@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { BadMutationError, FailedPreconditionError } from '@djibb/protocol/errors';
+import { AppendLimitError, BadMutationError } from '@djibb/protocol/errors';
 import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
 import { ListElementUnion, ListItemSchema } from '@djibb/protocol/list';
 import { IdTypes } from '@djibb/protocol/id';
@@ -29,14 +29,14 @@ export const server: ServerMutator<Args> = ({ item }, { store, role, nextVersion
     // packs mutations into a `/push` (the per-request rate limit from
     // #14/#40 can't see per-item volume). EDIT_ROLES (owner/editor/…) skip
     // this: they own the list and curate it. Permanent for this push: throw
-    // a `FailedPreconditionError`, which the DO maps to a `precondition`
-    // outcome + skip-and-ack (see `handleMutation`), so the optimistic add
-    // rolls back with a reason and Replicache's pusher never wedges.
+    // an `AppendLimitError`, which the DO maps to a `precondition` outcome +
+    // skip-and-ack (see `handleMutation`), so the optimistic add rolls back
+    // with a reason and Replicache's pusher never wedges.
     if (
         role === AuthorizationRoleEnum.enum.submitter &&
-        store.countLiveListItems() >= SUBMITTER_APPEND_CEILING
+        store.atOrOverLiveItemLimit(SUBMITTER_APPEND_CEILING)
     ) {
-        throw new FailedPreconditionError(
+        throw new AppendLimitError(
             `append limit reached: this list is capped at ${SUBMITTER_APPEND_CEILING} items for open submissions`
         );
     }

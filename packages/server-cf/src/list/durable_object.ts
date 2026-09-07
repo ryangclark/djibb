@@ -39,9 +39,9 @@ import {
 } from '@djibb/protocol/websocket/constants';
 import type { Bindings } from '..';
 import {
+    AppendLimitError,
     BadMutationError,
     DjibbError,
-    FailedPreconditionError,
     NotFoundError,
     type SerializedDjibbError,
     TablesAlreadyInitializedError,
@@ -1074,6 +1074,7 @@ export class DjibbList extends DurableObject {
             `begin processing ${pushRequest.mutations.length} mutations`
         );
 
+
         // What this push's committed mutations imply for the post-commit
         // tail — the entity-snapshot emit (ADR 0003), the workspace
         // cascade + hard-delete clock (ADR 0008), and the invitation /
@@ -1425,6 +1426,9 @@ export class DjibbList extends DurableObject {
         }
 
         let mutationStatus: MutationStatus = 'unknown';
+        // Set by the append-cap branch below: a refused append must not
+        // write a mutation-log row (see the comment there).
+        let suppressMutationLog = false;
 
         try {
             const result = executeServerMutation(envelopeResult.mutation, {
@@ -1511,7 +1515,7 @@ export class DjibbList extends DurableObject {
 
             if (error instanceof UnauthorizedError) {
                 throw error;
-            } else if (error instanceof FailedPreconditionError) {
+            } else if (error instanceof AppendLimitError) {
                 // Structural cap refusal (ADR 0021 append-volume / GH #66):
                 // the mutator rejected because the entity is at its item
                 // ceiling for open (`submitter`) submissions. This is
@@ -1521,7 +1525,9 @@ export class DjibbList extends DurableObject {
                 // optimistic add back with a reason, then skip-and-ack below
                 // (advance lastMutationID, write no rows) so Replicache's
                 // pusher doesn't wedge on a retried 4xx. `append_limit` is the
-                // structured reason code the client keys its copy off.
+                // structured reason code the client keys its copy off — keyed
+                // to this specific subclass, so a future mutator throwing a
+                // plain `FailedPreconditionError` isn't mislabeled as a cap.
                 this.emitMutationOutcome(
                     envelope.clientID,
                     envelope.id,
@@ -1529,6 +1535,15 @@ export class DjibbList extends DurableObject {
                     { reason: 'append_limit', message: error.message }
                 );
                 mutationStatus = 'skipped';
+                // Do NOT log this one. The shared tail below writes a
+                // `mutations` row carrying the full serialized args, and
+                // nothing prunes that table — so logging a refusal would
+                // leave the exact storage-growth vector the cap exists to
+                // close: a submitter looping over-cap appends would still
+                // grow the DO by one full-payload row per attempt, forever.
+                // A refused append changed nothing about the entity, so
+                // there is no audit fact to record.
+                suppressMutationLog = true;
             } else if (error instanceof DjibbError) {
                 mutationStatus = 'skipped';
             } else {
@@ -1540,7 +1555,10 @@ export class DjibbList extends DurableObject {
         // Best-effort log of skipped/succeeded mutations. Envelope
         // fields land in their dedicated columns; only the body is
         // serialized into `args`.
-        if (mutationStatus === 'succeeded' || mutationStatus === 'skipped') {
+        if (
+            !suppressMutationLog &&
+            (mutationStatus === 'succeeded' || mutationStatus === 'skipped')
+        ) {
             try {
                 this.logMutationOutcome(
                     envelope,

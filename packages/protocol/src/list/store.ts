@@ -88,12 +88,14 @@ export interface MutatorStore {
     ): { parent_element_ref: unknown; value: unknown } | undefined;
 
     /**
-     * Count of live (non-archived) `item` rows on this entity. Backs the
-     * structural append-volume cap (ADR 0021 / GH #66) enforced in
-     * `createListItem` — the one mutator a `submitter` can reach. See the
-     * SQL helper of the same name for why the guard lives at the write.
+     * Does this entity already hold `limit` or more live (non-archived)
+     * `item` rows? Backs the structural append-volume cap (ADR 0021 /
+     * GH #66) enforced in `createListItem` — the one mutator a `submitter`
+     * can reach. A bounded probe rather than a count: see the SQL helper of
+     * the same name for why the guard lives at the write, and why it must
+     * not scan the whole table on every mutation of a batched `/push`.
      */
-    countLiveListItems(): number;
+    atOrOverLiveItemLimit(limit: number): boolean;
 
     // ---- entity-row mutations ----
     renameEntity(args: { entityId: string; name: string; version: number }): void;

@@ -563,6 +563,19 @@ describe('createListItem structural append cap (submitter, GH #66)', () => {
         );
         expect(present).toHaveLength(0);
         expect(await countLiveItems(stub)).toBe(SUBMITTER_APPEND_CEILING);
+
+        // ...and it writes NO mutation-log row. The log serializes the full
+        // args, and nothing prunes that table — logging refusals would leave
+        // the very storage-growth vector this cap closes (one full-payload
+        // row per over-cap attempt, forever).
+        const logged = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(
+                    `SELECT id FROM mutations WHERE name = 'createListItem';`
+                )
+                .toArray()
+        );
+        expect(logged).toHaveLength(0);
     });
 
     it('still admits an EDIT-role append at the ceiling — owners are uncapped', async () => {
