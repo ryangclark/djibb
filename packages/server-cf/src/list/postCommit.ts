@@ -33,6 +33,7 @@ import {
     harddeleteTransition,
     isCascadeArchiveTrigger,
     isCascadeRestoreTrigger,
+    isDirectHardDeleteArm,
 } from '../workspace/triggers';
 import {
     InvitationIdentityKindEnum,
@@ -109,6 +110,16 @@ export interface PostCommitIntent {
      */
     harddelete: 'arm' | 'clear' | null;
     /**
+     * Whether the mutation that produced the current `harddelete` value was
+     * a *direct* destructive arm (`archiveList`/`startFresh`), as opposed to
+     * a `cascadeArchiveList` swept into a child DO (ADR 0008). Tracks
+     * `harddelete` under last-write-wins. The destructive-action
+     * notification (ADR 0023 §2, issue #18) gates on `harddelete === 'arm'
+     * && harddeleteDirect` so it fires once for the entity the actor
+     * directly destroyed, never once per cascade-swept child.
+     */
+    harddeleteDirect: boolean;
+    /**
      * Actor of a `startFresh` on this DO's personal workspace, carrying the
      * display name the post-commit mint needs to format `<name>'s space`.
      * Last write wins, matching `harddelete`.
@@ -145,6 +156,7 @@ export function emptyPostCommitIntent(): PostCommitIntent {
         cascadeArchiveTriggered: false,
         cascadeRestoreTriggered: false,
         harddelete: null,
+        harddeleteDirect: false,
         startFresh: null,
         invitationsMutated: false,
         acceptedInvites: [],
@@ -195,6 +207,10 @@ export function foldCommittedMutation(
     const transition = harddeleteTransition(name);
     if (transition !== null) {
         next.harddelete = transition;
+        // Track, under the same last-write-wins rule, whether this
+        // transition came from a direct archive vs. a cascade sweep — the
+        // #18 notification must not fire on cascade-swept children.
+        next.harddeleteDirect = isDirectHardDeleteArm(name);
     }
 
     // `startFresh` on this DO's own personal workspace: capture the actor

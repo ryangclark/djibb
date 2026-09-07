@@ -1300,12 +1300,15 @@ export class DjibbList extends DurableObject {
         );
 
         // Destructive-action notification (ADR 0023 §2, issue #18). When
-        // this push's net hard-delete transition armed the clock (archive
-        // / startFresh not undone in the same push), email the owner a
-        // heads-up with the restore link and the hard-purge deadline, so
-        // an unattended client's silent destroy doesn't lapse unnoticed.
-        // Owner-only, best-effort, detached via `ctx.waitUntil` (same as
-        // the notification emails above) so the ack never waits on a send.
+        // this push *directly* armed the clock — an `archiveList`/
+        // `startFresh` on this entity, not undone in the same push — email
+        // the owner a heads-up with the restore link and the hard-purge
+        // deadline, so an unattended client's silent destroy doesn't lapse
+        // unnoticed. Gated on `harddeleteDirect` so a workspace archive's
+        // cascade sweep (which pushes `cascadeArchiveList` into each child
+        // DO — see `workspace/cascade.ts`) does NOT fan out one email per
+        // swept child. Owner-only, best-effort, detached via `ctx.waitUntil`
+        // (same as the emails above) so the ack never waits on a send.
         // Because the arm signal is captured post-commit, this fires the
         // same regardless of how the push was authed — token or session.
         await applyDestructiveNotification(
@@ -1316,7 +1319,8 @@ export class DjibbList extends DurableObject {
             },
             {
                 entityId: listId,
-                armed: intent.harddelete === 'arm',
+                armed:
+                    intent.harddelete === 'arm' && intent.harddeleteDirect,
                 recoverableUntil: Date.now() + DjibbList.HARD_DELETE_DELAY_MS,
             }
         );

@@ -65,9 +65,12 @@ clean later refinement, not a v1 requirement.
 
 > **Implemented (#18):** the destructive-action notification is built — an
 > **owner-only email** fired post-commit whenever a push's net hard-delete
-> transition *arms* the clock (archive / `startFresh` not undone in the same
-> push), carrying the restore link (`/trash`) and the 30-day hard-purge
-> deadline. Because the arm signal is captured post-commit, it fires the same
+> transition *directly arms* the clock (an `archiveList` / `startFresh` on the
+> entity itself, not undone in the same push), carrying the restore link
+> (`/trash`) and the 30-day hard-purge deadline. It deliberately excludes the
+> `cascadeArchiveList` arms a workspace archive sweeps into its children (ADR
+> 0008), so one workspace archive is one email, not one per child. Because the
+> arm signal is captured post-commit, it fires the same
 > regardless of the client the push came through, so the non-interactive/token
 > actor this section worries about is covered by construction. The
 > "grace-window-as-a-function-of-who-acted" refinement stays deferred. (Mirrors

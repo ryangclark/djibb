@@ -86,6 +86,21 @@ export async function emitInvitationsSnapshot(
  * missing so the link still names the right DO. `logPrefix` names the
  * calling method in the warn logs.
  */
+/**
+ * The origin every outbound link is built on: the first domain in the
+ * semicolon-separated `AUTHORIZED_DOMAINS` (matches `workspace/fetch.ts`).
+ * Shared by `resolveEntityBaseUrl` and the destructive-action fire so the
+ * canonical-domain convention (and its "missing → relative URL" warning)
+ * lives in one place. `logPrefix` names the caller in the warn log.
+ */
+function resolveCanonicalOrigin(env: Bindings, logPrefix: string): string {
+    const origin = (env.AUTHORIZED_DOMAINS ?? '').split(';')[0] ?? '';
+    if (!origin) {
+        console.warn(`${logPrefix} no AUTHORIZED_DOMAINS; using relative URL.`);
+    }
+    return origin;
+}
+
 async function resolveEntityBaseUrl(
     env: Bindings,
     d1: D1Database,
@@ -93,10 +108,7 @@ async function resolveEntityBaseUrl(
     entityTypeLabel: string,
     logPrefix: string
 ): Promise<string> {
-    const origin = (env.AUTHORIZED_DOMAINS ?? '').split(';')[0] ?? '';
-    if (!origin) {
-        console.warn(`${logPrefix} no AUTHORIZED_DOMAINS; using relative URL.`);
-    }
+    const origin = resolveCanonicalOrigin(env, logPrefix);
     // URL prefix mirrors the entity ID's type prefix (`l/`, `t/`, `w/`)
     // — see user memory note "URLs mirror ID type prefixes".
     const pathPrefix =
@@ -409,14 +421,10 @@ export async function fireDestructiveActionEmail(
 
     // The restore surface is a single page (`/trash`), not the entity URL
     // — an archived entity's own page isn't the place you recover it from.
-    // First domain in `AUTHORIZED_DOMAINS` is canonical for outbound links
-    // (same convention as `resolveEntityBaseUrl`).
-    const origin = (env.AUTHORIZED_DOMAINS ?? '').split(';')[0] ?? '';
-    if (!origin) {
-        console.warn(
-            '`fireDestructiveActionEmail()` no AUTHORIZED_DOMAINS; using relative URL.'
-        );
-    }
+    const origin = resolveCanonicalOrigin(
+        env,
+        '`fireDestructiveActionEmail()`'
+    );
     const restoreUrl = `${origin}/trash`;
 
     try {
@@ -467,17 +475,24 @@ export async function applyDestructiveNotification(
 ): Promise<void> {
     if (!flags.armed) return;
 
+    // `fireDestructiveActionEmail` already swallows its own failures; the
+    // `.catch` is belt-and-braces against an unexpected synchronous throw
+    // so a detached (`waitUntil`) promise can never reject.
     const fire = fireDestructiveActionEmail(
         deps.sql,
         deps.env,
         flags.entityId,
         flags.recoverableUntil
-    );
-    const settled = Promise.allSettled([fire]);
+    ).catch(error => {
+        console.error(
+            `\`applyDestructiveNotification()\` unexpected failure for "${flags.entityId}":`,
+            error
+        );
+    });
     if (deps.waitUntil) {
-        deps.waitUntil(settled);
+        deps.waitUntil(fire);
     } else {
-        await settled;
+        await fire;
     }
 }
 

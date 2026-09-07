@@ -276,7 +276,10 @@ describe('applyDestructiveNotification (tail) + arm/clear gating', () => {
                     { sql: i.sql, env: env as any },
                     {
                         entityId: id,
-                        armed: intent.harddelete === 'arm',
+                        // Mirror the DO's gate exactly.
+                        armed:
+                            intent.harddelete === 'arm' &&
+                            intent.harddeleteDirect,
                         recoverableUntil: Date.now() + HARD_DELETE_DELAY_MS,
                     }
                 )
@@ -304,7 +307,10 @@ describe('applyDestructiveNotification (tail) + arm/clear gating', () => {
                     { sql: i.sql, env: env as any },
                     {
                         entityId: id,
-                        armed: intent.harddelete === 'arm',
+                        // Mirror the DO's gate exactly.
+                        armed:
+                            intent.harddelete === 'arm' &&
+                            intent.harddeleteDirect,
                         recoverableUntil: Date.now() + HARD_DELETE_DELAY_MS,
                     }
                 )
@@ -337,7 +343,45 @@ describe('applyDestructiveNotification (tail) + arm/clear gating', () => {
                     { sql: i.sql, env: env as any },
                     {
                         entityId: id,
-                        armed: intent.harddelete === 'arm',
+                        // Mirror the DO's gate exactly.
+                        armed:
+                            intent.harddelete === 'arm' &&
+                            intent.harddeleteDirect,
+                        recoverableUntil: Date.now() + HARD_DELETE_DELAY_MS,
+                    }
+                )
+            );
+            expect(sends).toHaveLength(0);
+        } finally {
+            restore();
+        }
+    });
+
+    it('cascade-swept child (cascadeArchiveList): arms the clock but sends NO email', async () => {
+        // Archiving a workspace pushes `cascadeArchiveList` into each child
+        // DO (workspace/cascade.ts). That arms each child's hard-delete
+        // clock — but must NOT email each child's owner, else one workspace
+        // archive fans out N+1 heads-ups. The `harddeleteDirect` gate is
+        // what suppresses it.
+        const owner = await CreateAccount(env as any, makeAccount());
+        const { id, stub } = await mintListEntity('ap5', owner.id);
+        const intent = foldCommittedMutation(
+            emptyPostCommitIntent(),
+            { name: 'cascadeArchiveList', args: {} },
+            id
+        );
+        expect(intent.harddelete).toBe('arm');
+        expect(intent.harddeleteDirect).toBe(false);
+        const { sends, restore } = spyOnEmail();
+        try {
+            await runInDurableObject(stub, async (i) =>
+                applyDestructiveNotification(
+                    { sql: i.sql, env: env as any },
+                    {
+                        entityId: id,
+                        armed:
+                            intent.harddelete === 'arm' &&
+                            intent.harddeleteDirect,
                         recoverableUntil: Date.now() + HARD_DELETE_DELAY_MS,
                     }
                 )
