@@ -164,6 +164,19 @@ describe('makePusher / makePuller — credential presentation (ADR 0024 item 3)'
 		});
 	});
 
+	it('falls back to include when a hand-rolled credential omits credentials', async () => {
+		// `Credential.credentials` is optional on the type. Left undefined,
+		// fetch would default to 'same-origin' and silently drop cookies on
+		// these cross-origin requests — the exact failure the custom
+		// pusher/puller exists to prevent. The fallback must be 'include'.
+		const fetchMock = stubFetch();
+		await makePusher('https://api.example/list/push', /** @type {any} */ ({
+			headers: { 'X-Anything': 'y' }
+		}))(/** @type {any} */ ({}), 'req-4');
+		const init = /** @type {any} */ (fetchMock.mock.calls[0]?.[1]);
+		expect(init?.credentials).toBe('include');
+	});
+
 	it('reports the push status to the observer', async () => {
 		stubFetch(403);
 		const onStatus = vi.fn();

@@ -198,9 +198,18 @@ export function wrapMutators(rawMutate, { accountId, listId, ledger }) {
  * @param {string} url
  * @param {import('./transport.js').Credential} credential How the request
  *   presents its identity — contributes `credentials` and any auth headers
- *   (`Authorization`, `Origin`). The two protocol headers below always win:
- *   they never collide with a credential header, so the order is only for
- *   the reader.
+ *   (`Authorization`, `Origin`). `credentials` is optional on the type; it
+ *   falls back to `'include'` here rather than to `fetch`'s `'same-origin'`
+ *   default, because these requests are cross-origin and dropping ambient
+ *   credentials is the exact failure this custom pusher exists to prevent (a
+ *   silently-anonymous request the worker rejects on an authed list). The
+ *   three provided constructors all set it explicitly, so the fallback only
+ *   guards a hand-rolled credential.
+ *
+ *   Unlike `transport.js`, this takes no caller-supplied extra headers, so it
+ *   needs no case-insensitive collision guard: the only headers are the
+ *   credential's and the two protocol headers below, which never collide. If
+ *   caller headers are ever threaded in here, port that guard with them.
  * @param {(httpStatusCode: number) => void} [onStatus]
  *   Notified of every push response status, success or failure. A
  *   network error (offline) rejects the `fetch` and is *not* reported
@@ -212,7 +221,7 @@ export function makePusher(url, credential, onStatus) {
 	return async (requestBody, requestID) => {
 		const response = await fetch(url, {
 			method: 'POST',
-			credentials: credential.credentials,
+			credentials: credential.credentials ?? 'include',
 			headers: {
 				...credential.headers,
 				'Content-Type': 'application/json',
@@ -240,7 +249,7 @@ export function makePuller(url, credential) {
 	return async (requestBody, requestID) => {
 		const response = await fetch(url, {
 			method: 'POST',
-			credentials: credential.credentials,
+			credentials: credential.credentials ?? 'include',
 			headers: {
 				...credential.headers,
 				'Content-Type': 'application/json',

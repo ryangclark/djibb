@@ -1,56 +1,86 @@
-### Accounts
+# Auth
 
-A user may have multiple accounts. An account has:
+This directory is the worker's authentication layer: how a request becomes an
+identity, and how that identity becomes a *role* on the entity it's touching.
+The ADRs are the source of truth for the *why*; this README is a map of the
+*what* and where it lives.
 
--   an authentication method
-    -   currently only Email/Password
--   display name
--   email address(es)
--   image URL for avatar/profile pic
+> **History note.** An earlier version of this file described an
+> email/password login and a Clerk-style `org:resource:action` permission
+> string. Neither shipped. The app authenticates with Google OAuth and
+> magic-link, and authorization is `(Account, entity) → role` (ADR 0021), not
+> capability strings. If you're looking for the old brainstorm, it's in git.
 
-### Entering the site
+## The two halves
 
-A user enters the site by authenticating into either their account or their workspace.
+**Authentication** answers *who is this request?* — and its output is a single
+discriminated union, the `RequestPrincipal` (`principal.ts`):
 
-#### Authenticating by account
+```
+anonymous                         — no credential presented
+session   { accounts, sessionId } — the interactive djibb-session cookie
+credential{ account, credentialId } — an issued_credentials Bearer token
+```
 
-A user arrives at the site. They click the "sign in" button and enter their email and password.
+Every request funnels through one seam, `resolvePrincipal` (`resolver.ts` +
+`middleware.ts`), which reads either the cookie or the `Authorization: Bearer`
+header and produces exactly one of the three. There is no fourth path and no
+synthesized fake session (ADR 0022 §2).
 
-After successful authentication, we pull all accounts tied to that email via `GetAccountsByEmail(email)`, then pull all workspaces for each account by calling `GetWorkspacesByAccount(account_id)`.
+**Authorization** answers *what may this identity do here?* — `resolver.ts`
+maps `(principal, entity)` to an `AuthorizationRole` via the per-account
+specificity ladder (explicit per-entity grant → workspace membership →
+`default_role`), with the `X-Djibb-Active-Account` header as the cross-account
+tiebreak (ADR 0021). Authentication says who you are; authorization decides
+what that identity may do. The two never collapse into each other.
 
-That allows us to show the user a list of their accounts, and the workspaces for each, so they can select a workspace and get working.
+## How an identity is minted
 
-#### Authenticating by workspace
+Three ceremonies, all landing in the same `accounts` / `sessions` /
+`issued_credentials` substrate:
 
-I don't know how this would work exactly. The idea here is taken from Slack, which allows you to log into a workspace (e.g. `use-weave.slack.com`).
+- **Google OAuth** (`oauth.ts`, `google.ts`) — `GET /auth/google` starts it,
+  `GET /auth/google/verify` finishes it. `google.ts` is our in-house Google
+  OIDC client (replaced the deprecated `arctic` dep, #52); the
+  `GoogleIdentity` Effect service (`../effect/oauth.ts`) is the seam.
+- **Magic-link** (`magic.ts`, ADR 0010) — `POST /auth/magic/request` mints and
+  emails a single-use token; `GET /auth/magic/land` renders the click-through
+  interstitial; `POST /auth/magic/consume` validates it and signs in. This is
+  the identity *floor*: any email can reach an Account without a password.
+- **Connect ceremony** (`connect.ts`, ADR 0024) — the off-domain path. An
+  interactive ceremony whose terminal form is a **Bearer credential** instead
+  of the same-site cookie, so a client on its own domain can authenticate a
+  user. `POST /auth/connect/token` exchanges a single-use authorization code +
+  PKCE verifier for an `issued_credentials` row (#28). `GET`/`POST
+  /auth/connect/consent` is the §3 disclosure interstitial shown before any
+  code is minted (#29): it discloses the connecting client and, on affirmative
+  **Connect**, mints the code. (v1 is affirmative-only — no decline button;
+  see ADR 0024's §3 amendment.)
 
-The main reason this feels important is because a user may have previously authenticated using multiple auth methods, and the email/password for one account/workspace doesn't grant them access to their desired workspace (e.g. a friend's workspace they've been invited into via old email address).
+Account resolution across all three is email-first, then provider `sub`, then
+create (ADR 0010 option C): the same email reaches the same Account regardless
+of method.
 
-**Problem:** I don't know how to facilitate a user finding the correct credentials to log into a workspace...
+## Files
 
-### On permissions
+| file | responsibility |
+| --- | --- |
+| `principal.ts` | the `RequestPrincipal` union — the auth seam's output type |
+| `resolver.ts` | principal resolution + `(principal, entity) → role` ladder |
+| `middleware.ts` | Hono adapter: runs the seam, sets `principal` on the context |
+| `d1.ts` | session / credential / account row access (the D1 substrate) |
+| `account-row.ts` | the `accounts` row shape + mappers |
+| `oauth.ts`, `google.ts` | Google OAuth ceremony + in-house OIDC client |
+| `magic.ts` | magic-link ceremony (ADR 0010) |
+| `connect.ts` | off-domain connect ceremony: token endpoint + §3 interstitial (ADR 0024) |
+| `constants.ts` | cookie names/attributes, OAuth redirect URIs |
+| `errors.ts` | auth error types |
+| `fetch.ts` | the `/auth/*` route table |
 
-I like how Clerk does permissions. They're just strings, with colons
-separate "units" or "levels".
+## Related ADRs
 
--   `org:member` denotes the account has the member role
--   `org:admin` denotes the account has admin role
--   `org:billing` denotes the account has the billing role (custom role)
--   `org:items:read` denotes the account has a permission to read items, though not to "write" or "update" them.
--   `org:<resource>:<action>` - pattern for custom permissions.
-
-#### Thinking out loud – authing list-access
-
-Accessing a list via `GET` request:
-
--   If request has a session cookie:
-    -   Use Session's active Account ID for the List ID
-        -   This is a map of `map[ListID]AccountID` with a `_default` key, too
-        -   Need methods to update those values
-    -   Session has no active Account ID for list
-        -   Need method to set the Account ID on the Session
-        -   Check the User DO for last used Account ID for the List
-            -   This is a map of `map[ListID]AccountID`
-            -   Need method to update that map whenever the user selects an Account ID for the List
-    -   List has a map of `map[UserID]AccountID` to track the last
--   If no session cookie
+- **0010** — magic-link floor + interactive ceremony account resolution.
+- **0021** — the read model and `(Account, entity) → role` authorization.
+- **0022** — client authentication: the `issued_credentials` Bearer token and
+  the one request→Account seam.
+- **0024** — off-domain client sign-in: the interactive credential mint.
