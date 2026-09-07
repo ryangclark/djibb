@@ -182,8 +182,8 @@
 		actingAccountId: () => actingAccountId
 	});
 
-	// "Not you?" — discard the blocked work and rebuild the client as
-	// whoever the session says we are (GH #45). See /l/[id]/+page.svelte
+	// "Discard and continue" — discard the blocked work and rebuild the
+	// client as whoever the session says we are (GH #45). See /l/[id]/+page.svelte
 	// for why the order (stand down → tick → drop → resume) matters.
 	async function disown() {
 		const accountId = actingAccountId;

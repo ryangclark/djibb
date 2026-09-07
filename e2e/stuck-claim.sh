@@ -17,15 +17,17 @@
 #      ledger claim for A on this entity. `resolveEffectiveAccount` falls
 #      back to the ledger — correctly, that is what keeps A's work
 #      reachable — so the client acts as A, pushes as A, is refused, and
-#      raises the non-dismissible "Session expired" banner. Before the
-#      fix, that was the end of the road for anyone who is not A: shown
-#      a banner about someone else's work, told to sign in as someone
-#      they are not, unable to edit the list anonymously until A returns.
+#      raises the non-dismissible auth-blocked banner. Before the fix,
+#      that was the end of the road for anyone who is not A: shown a
+#      banner about someone else's work, told to sign in as someone they
+#      are not, unable to edit the list anonymously until A returns.
 #
 #      The ledger cannot tell "A came back" from "someone else is here"
 #      — only the person in front of the screen knows. So the fix is not
-#      a smarter rule; it is an explicit escape hatch: "Not you? Discard
-#      and continue."
+#      a smarter rule; it is an explicit fork with no live session:
+#      "Sign in to resume" for the owner, "Discard and continue" for
+#      anyone else. The banner names no account, which is the
+#      privacy-respecting default on a shared device.
 #   4. Take it. Assert the whole chain: the banner clears, the claim is
 #      gone from the ledger, A's IndexedDB store is gone (not merely
 #      unclaimed — a claim deleted alone would leave the mutations
@@ -234,11 +236,14 @@ log "step 3: reload as the anonymous visitor — trapped behind A's claim (#45)"
 
 ab_retry reload
 wait_body "Stuck As A" "reloaded page has rendered (acting as A, from the ledger)"
-wait_for banner "Session expired" "the visitor is shown A's session-expired banner"
+# No live session now, so the banner drops the "Session expired" wording
+# and offers the neutral two-path fork instead — naming no account.
+wait_for banner "from a previous session" "the visitor is shown the neutral previous-session banner"
 
 # The fix: the banner must OFFER a way out. Before, it did not, and a
-# visitor who is not A had no move at all.
-wait_for banner "Not you?" "the banner asks the one question only the visitor can answer"
+# visitor who is not A had no move at all. Two neutral forward paths:
+# resume (the owner's) and discard (anyone else's).
+wait_for banner "Sign in to resume" "the banner offers the owner a way to resume"
 [[ "$(banner)" == *"Discard and continue"* ]] ||
     fail "no escape hatch on the banner. saw: $(banner)"
 ok "the escape hatch is offered"

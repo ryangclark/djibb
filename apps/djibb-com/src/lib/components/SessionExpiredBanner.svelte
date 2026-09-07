@@ -60,16 +60,33 @@
 	 * trap for anyone else. The ledger fallback in `resolveEffectiveAccount`
 	 * is keyed on the entity, not the human, so on a shared device a
 	 * genuinely anonymous visitor can land here acting as an account that
-	 * left work behind — shown a banner about someone else's changes, told
-	 * to sign in as someone they are not, and unable to edit the list
-	 * anonymously until that account returns. Preserving the work by
-	 * default is still correct (discarding it silently would destroy
-	 * something real), so the way out is an *explicit* choice: "not you?
-	 * discard these and continue". `canDisownAuthBlock` says when that
-	 * may be offered — only while acting as an account the session cannot
-	 * vouch for. The discard itself is the page's (`onDisown`): it has to
-	 * close the live client before the store can be dropped, then rebuild
-	 * it as whoever the session actually says we are.
+	 * left work behind — shown a banner about someone else's changes and
+	 * unable to edit the list anonymously until that account returns.
+	 * Preserving the work by default is still correct (discarding it
+	 * silently would destroy something real), so the way out is an
+	 * *explicit* choice.
+	 *
+	 * When there is no live session — the actual #45 trap — the banner does
+	 * not diagnose *who* the work belongs to, because it cannot and because
+	 * naming an absent account discloses them to whoever is now at the
+	 * screen. Instead it offers two neutral forward paths: **Sign in to
+	 * resume** (the owner picks their work back up — no code beyond re-auth;
+	 * the store and claim are untouched, so the client rebuilds as that
+	 * account and the queue drains) and **Discard and continue** (anyone
+	 * else clears it and edits anonymously). The safe path stays the primary,
+	 * filled action; discard is the lower-weight outline beside it.
+	 *
+	 * The discard is only offered in the no-session case. When a *live*
+	 * session is acting as an account it lacks (the `signed-out` cause), the
+	 * same stranded work is already surfaced by `StrandedWorkBanner`, which
+	 * owns the switch/discard choice (GH #46); a second discard here was
+	 * redundant for the same work, so it is not rendered.
+	 *
+	 * `canDisownAuthBlock` says when a disown may be offered at all — only
+	 * while acting as an account the session cannot vouch for. The discard
+	 * itself is the page's (`onDisown`): it has to close the live client
+	 * before the store can be dropped, then rebuild it as whoever the
+	 * session actually says we are.
 	 */
 	import { onMount } from 'svelte';
 	import {
@@ -173,6 +190,48 @@
 				back in and they'll finish saving on their own.
 			</p>
 			<a class="primary" href={signInHref}>Sign in to that account</a>
+			<!-- No discard offered here. On a live session the same stranded
+			     work is surfaced by StrandedWorkBanner, which owns the
+			     switch/discard choice (GH #46); a second discard control on
+			     this banner was redundant for the same work. The disown path
+			     below is only for the no-session trap. -->
+		{:else if canDisown}
+			<!-- The #45 trap: no live session, acting from a leftover ledger
+			     claim on this entity. The person here is either the owner
+			     returning or someone else on a shared device — the browser
+			     cannot tell, and only they can. So two neutral forward paths,
+			     neither naming the account: the owner signs in and resumes;
+			     anyone else discards and continues. Framing the choice this
+			     way (rather than "Not you?") discloses nothing about *whose*
+			     work it was, which is the privacy-respecting default on a
+			     shared device. -->
+			<p>
+				{#if status.pending > 0}
+					<strong>Unsaved changes from a previous session</strong> —
+					there {status.pending === 1 ? 'is' : 'are'} {changes} here
+					from a session that's no longer signed in. Sign in to pick
+					{status.pending === 1 ? 'it' : 'them'} back up, or discard
+					{status.pending === 1 ? 'it' : 'them'} to continue.
+				{:else}
+					<strong>Leftover work from a previous session</strong> — a
+					session that's no longer signed in left work here. Sign in
+					to pick it back up, or discard it to continue.
+				{/if}
+			</p>
+			<div class="actions">
+				<a class="primary" href={signInHref}>Sign in to resume</a>
+				<button
+					type="button"
+					class="discard"
+					disabled={disowning}
+					onclick={onDisown}
+				>
+					{disowning ? 'Discarding…' : 'Discard and continue'}
+				</button>
+			</div>
+			{#if disownError}
+				<p class="error">{disownError}</p>
+			{/if}
 		{:else}
 			<p>
 				<strong>Session expired</strong> — sign in to save your
@@ -180,36 +239,6 @@
 				safe here until you do.
 			</p>
 			<a class="primary" href={signInHref}>Sign in</a>
-		{/if}
-		{#if canDisown}
-			<!-- The way out for someone who is NOT that account (GH #45).
-			     Reads as a question because that is the one fact only the
-			     person in front of the screen knows; the button is worded
-			     as the consequence, not as a soft "dismiss". -->
-			<div class="disown">
-				<p>
-					<strong>Not you?</strong>
-					{#if cause === 'signed-out'}
-						Discard those changes and carry on{#if signedInAs} as
-							{signedInAs}{/if}.
-					{:else}
-						These changes were made as an account that isn't signed
-						in on this device. Discard them to continue without it.
-					{/if}
-					This can't be undone.
-				</p>
-				<button
-					type="button"
-					class="danger"
-					disabled={disowning}
-					onclick={onDisown}
-				>
-					{disowning ? 'Removing…' : 'Discard and continue'}
-				</button>
-				{#if disownError}
-					<p class="error">{disownError}</p>
-				{/if}
-			</div>
 		{/if}
 	</aside>
 {/if}
@@ -234,18 +263,17 @@
 	.session-expired p {
 		margin: 0;
 	}
-	.disown {
-		flex-basis: 100%;
+	/* The two forward paths sit together; the primary (filled) sign-in
+	   stays the visually dominant, safe default and the discard is a
+	   lower-weight outline button beside it. */
+	.actions {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.5rem 1rem;
+		gap: 0.5rem;
 		align-items: center;
-		justify-content: space-between;
-		border-top: 1px solid #fecaca;
-		padding-top: 0.5rem;
-		font-size: 0.9rem;
+		flex: none;
 	}
-	.disown .danger {
+	.actions .discard {
 		background: none;
 		border: 1px solid #b91c1c;
 		color: #7f1d1d;
@@ -254,10 +282,10 @@
 		cursor: pointer;
 		flex: none;
 	}
-	.disown .danger:disabled {
+	.actions .discard:disabled {
 		opacity: 0.5;
 	}
-	.disown .error {
+	.error {
 		flex-basis: 100%;
 		font-size: 0.85rem;
 	}

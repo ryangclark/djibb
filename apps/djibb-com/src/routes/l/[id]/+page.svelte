@@ -197,8 +197,8 @@
 	});
 
 	/**
-	 * "Not you?" — discard the blocked work and continue as whoever the
-	 * session actually says we are (GH #45).
+	 * "Discard and continue" — discard the blocked work and continue as
+	 * whoever the session actually says we are (GH #45).
 	 *
 	 * The order is load-bearing. `discardUnflushed` drops the account's
 	 * IndexedDB store, and `deleteDatabase` *blocks* (never rejects) while
