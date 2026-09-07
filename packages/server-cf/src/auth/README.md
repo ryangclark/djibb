@@ -61,6 +61,38 @@ Account resolution across all three is email-first, then provider `sub`, then
 create (ADR 0010 option C): the same email reaches the same Account regardless
 of method.
 
+## How an identity is deleted
+
+The connect ceremony's affirmative-only consent (ADR 0024 §3) leans on identity
+deletion as a real exit path, so it's built as a **user-facing verb**
+(`magic.ts` / `fetch.ts`, GH #58) — Phase 1 of a two-phase design:
+
+- **`POST /auth/account/delete`** — **session-only** (a bearer credential must
+  never delete the identity it's scoped to) and gated behind a fresh **sudo**
+  step-up for *that same account*. On success it soft-deletes the account
+  (`accounts.time_deleted`) and, in one atomic batch, revokes every issued
+  credential, removes the account from every session (reaping sessions left
+  empty; a multi-account session keeps its other accounts), and drops the
+  identity's in-flight connect ceremonies (codes + pending consents). "Delete"
+  is felt instantly — signed out everywhere, every connected client dead.
+  (Email-keyed magic-link tokens are left alone — they can't resurrect a
+  tombstoned identity, and deleting by email would be collateral on any other
+  account sharing the address.)
+- **Sudo mode** (`POST /auth/sudo/request` → a `purpose='sudo'` magic-link →
+  consumed via `/auth/magic/consume`) — a GitHub-style re-auth. Consuming the
+  link stamps the *current* session sudo-fresh (`sessions.time_sudo` +
+  `sudo_account_id`, 5-minute window). It mints no session and creates no
+  account; it must land in the browser holding the session, so it's same-device.
+- **Deferred to Phase 2 (a follow-up vs GH #15):** the scheduled hard purge of
+  PII and the owned-shared-entity handling (`transferOwnership`). The
+  `time_deleted` tombstone is what buys the grace window to do that safely.
+
+Two guards make "deleted" actually deny even before the purge: `GetSessionById`
+drops a tombstoned account from any session it loads, and
+`VerifyBearerCredential` fails closed on a token whose account is tombstoned.
+The djibb-native uniqueness index also excludes tombstoned rows, so a deleted
+identity's email is free to sign up again.
+
 ## Files
 
 | file | responsibility |
@@ -71,7 +103,7 @@ of method.
 | `d1.ts` | session / credential / account row access (the D1 substrate) |
 | `account-row.ts` | the `accounts` row shape + mappers |
 | `oauth.ts`, `google.ts` | Google OAuth ceremony + in-house OIDC client |
-| `magic.ts` | magic-link ceremony (ADR 0010) |
+| `magic.ts` | magic-link ceremony (ADR 0010) + sudo-mode step-up (#58) |
 | `connect.ts` | off-domain connect ceremony: token endpoint + §3 interstitial (ADR 0024) |
 | `constants.ts` | cookie names/attributes, OAuth redirect URIs |
 | `errors.ts` | auth error types |

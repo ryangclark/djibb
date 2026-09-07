@@ -306,9 +306,14 @@ memory and reconnects per visit is a legitimate posture, not a failure mode.
    >    "no". §3's load-bearing property holds — no **credential** without
    >    affirmative consent — but the explicit decline affordance is gone.
    >    Withdrawal *after* connecting is via the connected-clients revoke, or
-   >    deleting the identity (an account-deletion surface is **not yet
-   >    built** — tracked separately). Consequently there is no
-   >    `?error=access_denied` redirect, and clients need not handle one.
+   >    deleting the identity. **The account-deletion surface is now built —
+   >    Phase 1 (#58):** `POST /auth/account/delete` (session-only, gated by a
+   >    fresh "sudo mode" magic-link step-up) soft-deletes the account and
+   >    synchronously revokes every credential, session, and pending-auth
+   >    handle for the identity — the immediate withdraw path §3 leans on.
+   >    Phase 2 (scheduled PII purge + owned-entity `transferOwnership`) is
+   >    deferred to a follow-up (vs the GC story, #15). Consequently there is
+   >    no `?error=access_denied` redirect, and clients need not handle one.
    > 2. *No returning-vs-new recognition in v1.* The greeting is a single
    >    always-true "Welcome, <name>!"; the ceremony does not tell the client
    >    (or lean into copy) whether the identity pre-existed. This sidesteps
