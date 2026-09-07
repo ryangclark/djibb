@@ -324,6 +324,11 @@ describe('consumeMagicTokenRow', () => {
         expect(first).toEqual({
             target_email: 'alice@example.com',
             purpose: 'signin',
+            // Connect-ceremony columns (ADR 0024 §1, migration 0016) — always
+            // null on a plain signin token.
+            connect_origin: null,
+            connect_code_challenge: null,
+            connect_label: null,
         });
 
         // A second consume must not succeed — load-bearing single-use.

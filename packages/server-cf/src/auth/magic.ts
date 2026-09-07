@@ -46,12 +46,20 @@ import {
     sessionCookieAttributes,
     CookieNames,
 } from './constants';
+import { InsertAuthorizationCode, originIsAllowlisted } from './connect';
+import type { Account } from '@djibb/protocol/account';
 
 // ─── Tunables ───────────────────────────────────────────────────────────────
 
 const TOKEN_LENGTH = 32; // ~192 bits over the 64-char URL-safe alphabet.
 const TOKEN_TTL_SECONDS = 15 * 60; // ADR 0010 policy default.
 const MAGIC_PURPOSE_SIGNIN = 'signin';
+/**
+ * A connect-ceremony magic-link (ADR 0024 §1): consuming this token mints a
+ * bearer credential for an off-domain client and redirects a code back to
+ * that client's origin, rather than setting the `djibb-session` cookie.
+ */
+const MAGIC_PURPOSE_CONNECT = 'connect';
 
 
 // Email matching — pragmatic shape check, not RFC 5321 compliant.
@@ -74,6 +82,20 @@ const RequestBodySchema = z.object({
      * env check is what makes prod ignore it.
      */
     _dev: z.boolean().optional(),
+    /**
+     * Connect ceremony (ADR 0024 §1): a client requesting a *credential*
+     * rather than a session includes its allowlisted `origin`, a PKCE
+     * `code_challenge`, and an optional `label`. When present, consuming the
+     * emailed link mints a code the client exchanges for a bearer token —
+     * it does not sign a session into this browser.
+     */
+    connect: z
+        .object({
+            origin: z.string().min(1),
+            code_challenge: z.string().min(1).max(128),
+            label: z.string().max(200).optional(),
+        })
+        .optional(),
 });
 
 const ConsumeBodySchema = z.object({
@@ -180,6 +202,41 @@ function pickFrontendOrigin(c: Context<HonoEnv>): string | null {
     return domains?.[0] ?? null;
 }
 
+/**
+ * Resolve the Account for a just-verified email, creating a djibb-native
+ * one if none exists (ADR 0010 option C). Proof-of-control of the inbox was
+ * demonstrated by consuming the emailed token, so the new Account is
+ * `email_verified`. Shared by both magic terminal forms (session + connect).
+ */
+async function resolveOrCreateAccountByEmail(
+    c: Context<HonoEnv>,
+    email: string
+): Promise<Account> {
+    const existing = await GetAccountByEmail(c.env.DJIBB_AUTH, email);
+    if (existing) return existing;
+
+    const localPart = email.split('@')[0] ?? email;
+    try {
+        return await CreateAccount(c.env, {
+            id: '',
+            display_name: localPart,
+            email,
+            email_verified: true, // proof-of-control just demonstrated
+            flags: null,
+            image: '',
+            provider_name: OAUTH_PROVIDER.enum.djibb,
+            provider_client_id: email, // djibb-as-IdP handle = canonical email
+            user_name: null,
+            time_created: new Date(),
+            time_deleted: null,
+            time_updated: new Date(),
+        });
+    } catch (err) {
+        console.error('`resolveOrCreateAccountByEmail()` error:', err);
+        throw new UnexpectedError();
+    }
+}
+
 // ─── Handlers ───────────────────────────────────────────────────────────────
 
 /**
@@ -203,6 +260,15 @@ export async function handleMagicRequest(c: Context<HonoEnv>) {
 
     const email = parsed.data.email.toLowerCase();
     const next = sanitizeNext(parsed.data.next);
+    const connect = parsed.data.connect;
+
+    // Connect-ceremony origin guard (ADR 0024 §5). Unlike the unknown-email
+    // soft-200 (which protects Account existence), a bad *origin* leaks
+    // nothing about the email — it's a client misconfiguration, so fail
+    // loudly and early, before any token is minted or emailed.
+    if (connect && !originIsAllowlisted(c.env.AUTHORIZED_DOMAINS, connect.origin)) {
+        throw new BadRequestError('unauthorized origin');
+    }
 
     // Shape check. Anything malformed gets a soft 200 — same as the
     // unknown-email case, for the same disclosure-avoidance reason.
@@ -244,11 +310,14 @@ export async function handleMagicRequest(c: Context<HonoEnv>) {
         await InsertMagicLinkToken(c.env.DJIBB_AUTH, {
             tokenHash,
             targetEmail: email,
-            purpose: MAGIC_PURPOSE_SIGNIN,
+            purpose: connect ? MAGIC_PURPOSE_CONNECT : MAGIC_PURPOSE_SIGNIN,
             timeCreated: now,
             timeExpires: expires,
             requestIp: ip,
             userAgent: c.req.header('User-Agent') ?? null,
+            connectOrigin: connect?.origin ?? null,
+            connectCodeChallenge: connect?.code_challenge ?? null,
+            connectLabel: connect?.label ?? null,
         });
     } catch (err) {
         // PK collision is astronomically unlikely with 32-char
@@ -348,7 +417,10 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
         throw new ValidationError('sign-in link is invalid or expired');
     }
 
-    if (updateResult.purpose !== MAGIC_PURPOSE_SIGNIN) {
+    if (
+        updateResult.purpose !== MAGIC_PURPOSE_SIGNIN &&
+        updateResult.purpose !== MAGIC_PURPOSE_CONNECT
+    ) {
         // Other purposes (e.g., 'verify_email_change') route through
         // dedicated handlers. Don't accidentally sign anyone in via
         // a non-signin token.
@@ -357,31 +429,42 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
 
     const email = updateResult.target_email.toLowerCase();
 
-    // Resolve-or-create the Account. ADR 0010 option C:
-    //   email is the matching key; Account ID is the contract boundary.
-    let account = await GetAccountByEmail(c.env.DJIBB_AUTH, email);
+    // Resolve-or-create the Account (ADR 0010 option C: email is the
+    // matching key; Account ID is the contract boundary). Shared by both
+    // terminal forms — the Account the user just proved control of is the
+    // same whether the ceremony ends in a session or a minted credential.
+    const account = await resolveOrCreateAccountByEmail(c, email);
 
-    if (!account) {
-        const localPart = email.split('@')[0] ?? email;
-        try {
-            account = await CreateAccount(c.env, {
-                id: '',
-                display_name: localPart,
-                email,
-                email_verified: true, // proof-of-control just demonstrated
-                flags: null,
-                image: '',
-                provider_name: OAUTH_PROVIDER.enum.djibb,
-                provider_client_id: email, // djibb-as-IdP handle = canonical email
-                user_name: null,
-                time_created: new Date(),
-                time_deleted: null,
-                time_updated: new Date(),
-            });
-        } catch (err) {
-            console.error('`handleMagicConsume()` create-account error:', err);
+    // Connect ceremony terminal (ADR 0024 §1): mint an authorization code
+    // for the client's origin and hand it back — no session, no cookie. The
+    // two terminal forms stay cleanly separate (ADR 0024 §Negative): this
+    // branch returns before any session work below.
+    if (updateResult.purpose === MAGIC_PURPOSE_CONNECT) {
+        const origin = updateResult.connect_origin;
+        const codeChallenge = updateResult.connect_code_challenge;
+        if (
+            !origin ||
+            !codeChallenge ||
+            !originIsAllowlisted(c.env.AUTHORIZED_DOMAINS, origin)
+        ) {
+            // A connect token with a missing/now-unauthorized origin can't be
+            // redirected anywhere safe. Should be unreachable (validated at
+            // /request), but never redirect to an unvetted origin.
+            console.error(
+                '`handleMagicConsume()` connect token bad origin "%s"',
+                origin
+            );
             throw new UnexpectedError();
         }
+        const { code } = await InsertAuthorizationCode(c.env.DJIBB_AUTH, {
+            accountId: account.id,
+            clientOrigin: origin,
+            codeChallenge,
+            label: updateResult.connect_label,
+        });
+        const url = new URL(`${origin}/accounts/verified`);
+        url.searchParams.set('code', code);
+        return c.json({ redirect: url.toString(), account_id: account.id });
     }
 
     // Mint session. Merge into any existing session so multi-Account-

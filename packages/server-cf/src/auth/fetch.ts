@@ -20,6 +20,7 @@ import {
     handleMagicLand,
     handleMagicRequest,
 } from './magic';
+import { handleConnectToken } from './connect';
 import { CreateSession, DeleteSession } from './d1';
 import type { Account } from '@djibb/protocol/account';
 
@@ -37,6 +38,12 @@ Auth_App.get(OAUTH_REDIRECT_URI.google, handleVerifyOAuthGoogle);
 Auth_App.post('/magic/request', handleMagicRequest);
 Auth_App.get('/magic/land', handleMagicLand);
 Auth_App.post('/magic/consume', handleMagicConsume);
+
+// Connect ceremony token endpoint (ADR 0024 §1, GH #28). Exchanges a
+// single-use authorization code + PKCE verifier for a bearer credential.
+// CSRF-exempt (see src/index.ts) — its authenticity is the body-carried
+// code + verifier, like /magic/consume.
+Auth_App.post('/connect/token', handleConnectToken);
 
 Auth_App.delete('/session/accounts', async c => {
     // Inherently session-only: this mutates the cookie session (drops an

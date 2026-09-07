@@ -1033,17 +1033,33 @@ export async function consumeMagicTokenRow(
     d1: D1Database,
     tokenHash: string,
     now: number
-): Promise<{ target_email: string; purpose: string } | null> {
+): Promise<{
+    target_email: string;
+    purpose: string;
+    // Connect-ceremony context (ADR 0024 §1) — non-null only on a
+    // `purpose='connect'` token; the consume handler mints a code from these
+    // instead of a session. `signin` tokens leave them null.
+    connect_origin: string | null;
+    connect_code_challenge: string | null;
+    connect_label: string | null;
+} | null> {
     const rows = await runD1(
         d1,
         'consumeMagicTokenRow',
         sql =>
-            sql<{ target_email: string; purpose: string }>`UPDATE magic_link_tokens
+            sql<{
+                target_email: string;
+                purpose: string;
+                connect_origin: string | null;
+                connect_code_challenge: string | null;
+                connect_label: string | null;
+            }>`UPDATE magic_link_tokens
                 SET time_consumed = ${now}
                 WHERE token_hash = ${tokenHash}
                     AND time_consumed IS NULL
                     AND time_expires > ${now}
-                RETURNING target_email, purpose`,
+                RETURNING target_email, purpose, connect_origin,
+                    connect_code_challenge, connect_label`,
     );
     return rows[0] ?? null;
 }
@@ -1062,6 +1078,13 @@ export async function InsertMagicLinkToken(
         timeExpires: number;
         requestIp: string | null;
         userAgent: string | null;
+        // Connect-ceremony context (ADR 0024 §1). Non-null only for a
+        // `purpose='connect'` token; carried on the row rather than a cookie
+        // because a magic-link ceremony can span two devices (request here,
+        // click there). Default null keeps `signin` inserts unchanged.
+        connectOrigin?: string | null;
+        connectCodeChallenge?: string | null;
+        connectLabel?: string | null;
     },
 ): Promise<void> {
     await runD1(
@@ -1075,10 +1098,14 @@ export async function InsertMagicLinkToken(
                 time_created,
                 time_expires,
                 request_ip,
-                user_agent
+                user_agent,
+                connect_origin,
+                connect_code_challenge,
+                connect_label
             ) VALUES (${args.tokenHash}, ${args.targetEmail}, ${args.purpose},
                 ${args.timeCreated}, ${args.timeExpires}, ${args.requestIp},
-                ${args.userAgent})`,
+                ${args.userAgent}, ${args.connectOrigin ?? null},
+                ${args.connectCodeChallenge ?? null}, ${args.connectLabel ?? null})`,
     );
 }
 
