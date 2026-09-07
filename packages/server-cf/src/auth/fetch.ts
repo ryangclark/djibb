@@ -20,7 +20,11 @@ import {
     handleMagicLand,
     handleMagicRequest,
 } from './magic';
-import { handleConnectToken } from './connect';
+import {
+    handleConnectConsent,
+    handleConnectConsentSubmit,
+    handleConnectToken,
+} from './connect';
 import { CreateSession, DeleteSession } from './d1';
 import type { Account } from '@djibb/protocol/account';
 
@@ -38,6 +42,16 @@ Auth_App.get(OAUTH_REDIRECT_URI.google, handleVerifyOAuthGoogle);
 Auth_App.post('/magic/request', handleMagicRequest);
 Auth_App.get('/magic/land', handleMagicLand);
 Auth_App.post('/magic/consume', handleMagicConsume);
+
+// Connect ceremony disclosure interstitial (ADR 0024 §3, GH #29). The
+// worker-owned page that discloses the connection being made and offers a
+// real decline path, *before* any code is minted. GET renders (idempotent,
+// non-consuming); POST is the decision (approve → mint code + redirect;
+// decline → redirect with error). The POST is CSRF-exempt (see src/index.ts):
+// it posts from this page whose Origin is the API origin, and its authenticity
+// is the single-use `pending` handle only the ceremony browser holds.
+Auth_App.get('/connect/consent', handleConnectConsent);
+Auth_App.post('/connect/consent', handleConnectConsentSubmit);
 
 // Connect ceremony token endpoint (ADR 0024 §1, GH #28). Exchanges a
 // single-use authorization code + PKCE verifier for a bearer credential.

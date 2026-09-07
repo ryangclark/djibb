@@ -46,7 +46,7 @@ import {
     sessionCookieAttributes,
     CookieNames,
 } from './constants';
-import { InsertAuthorizationCode, originIsAllowlisted } from './connect';
+import { InsertPendingConnection, originIsAllowlisted } from './connect';
 import type { Account } from '@djibb/protocol/account';
 
 // ─── Tunables ───────────────────────────────────────────────────────────────
@@ -211,13 +211,13 @@ function pickFrontendOrigin(c: Context<HonoEnv>): string | null {
 async function resolveOrCreateAccountByEmail(
     c: Context<HonoEnv>,
     email: string
-): Promise<Account> {
+): Promise<{ account: Account; preexisting: boolean }> {
     const existing = await GetAccountByEmail(c.env.DJIBB_AUTH, email);
-    if (existing) return existing;
+    if (existing) return { account: existing, preexisting: true };
 
     const localPart = email.split('@')[0] ?? email;
     try {
-        return await CreateAccount(c.env, {
+        const created = await CreateAccount(c.env, {
             id: '',
             display_name: localPart,
             email,
@@ -231,6 +231,7 @@ async function resolveOrCreateAccountByEmail(
             time_deleted: null,
             time_updated: new Date(),
         });
+        return { account: created, preexisting: false };
     } catch (err) {
         console.error('`resolveOrCreateAccountByEmail()` error:', err);
         throw new UnexpectedError();
@@ -433,12 +434,18 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
     // matching key; Account ID is the contract boundary). Shared by both
     // terminal forms — the Account the user just proved control of is the
     // same whether the ceremony ends in a session or a minted credential.
-    const account = await resolveOrCreateAccountByEmail(c, email);
+    const { account, preexisting } = await resolveOrCreateAccountByEmail(
+        c,
+        email
+    );
 
-    // Connect ceremony terminal (ADR 0024 §1): mint an authorization code
-    // for the client's origin and hand it back — no session, no cookie. The
-    // two terminal forms stay cleanly separate (ADR 0024 §Negative): this
-    // branch returns before any session work below.
+    // Connect ceremony terminal (ADR 0024 §1, §3): no session, no cookie.
+    // Rather than mint the authorization code here, open a *pending
+    // connection* and send the browser to the worker's disclosure page — the
+    // code (and so the credential) is minted only if the user approves there.
+    // The two terminal forms stay cleanly separate (ADR 0024 §Negative): this
+    // branch returns before any session work below. The land page follows
+    // `redirect`, so it points at the worker's own consent surface.
     if (updateResult.purpose === MAGIC_PURPOSE_CONNECT) {
         const origin = updateResult.connect_origin;
         const codeChallenge = updateResult.connect_code_challenge;
@@ -448,23 +455,25 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
             !originIsAllowlisted(c.env.AUTHORIZED_DOMAINS, origin)
         ) {
             // A connect token with a missing/now-unauthorized origin can't be
-            // redirected anywhere safe. Should be unreachable (validated at
-            // /request), but never redirect to an unvetted origin.
+            // completed safely. Should be unreachable (validated at /request),
+            // but never hand off to an unvetted origin.
             console.error(
                 '`handleMagicConsume()` connect token bad origin "%s"',
                 origin
             );
             throw new UnexpectedError();
         }
-        const { code } = await InsertAuthorizationCode(c.env.DJIBB_AUTH, {
+        const { handle } = await InsertPendingConnection(c.env.DJIBB_AUTH, {
             accountId: account.id,
+            accountDisplayName: account.display_name || null,
+            accountPreexisting: preexisting,
             clientOrigin: origin,
             codeChallenge,
             label: updateResult.connect_label,
         });
-        const url = new URL(`${origin}/accounts/verified`);
-        url.searchParams.set('code', code);
-        return c.json({ redirect: url.toString(), account_id: account.id });
+        return c.json({
+            redirect: `/auth/connect/consent?pending=${encodeURIComponent(handle)}`,
+        });
     }
 
     // Mint session. Merge into any existing session so multi-Account-

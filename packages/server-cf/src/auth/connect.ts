@@ -69,6 +69,16 @@ const CODE_TTL_SECONDS = 5 * 60;
  */
 const CREDENTIAL_TTL_SECONDS = 90 * 24 * 60 * 60;
 
+/**
+ * Lifetime of a pending connection — the window between a ceremony verifying
+ * the user and the user approving (or declining) on the disclosure page
+ * (ADR 0024 §3; GH #29). Longer than a code's TTL because a human has to
+ * *read* the disclosure and click, not just round-trip a redirect. Still
+ * single-use (`time_consumed`); this only bounds a consent that is opened
+ * but never answered.
+ */
+const PENDING_TTL_SECONDS = 15 * 60;
+
 // ─── Ceremony context ───────────────────────────────────────────────────────
 
 /**
@@ -290,4 +300,347 @@ export async function handleConnectToken(c: Context<HonoEnv>) {
         account_id: claimed.account_id,
         credential_id: minted.credentialId,
     });
+}
+
+// ─── Pending-connection substrate (disclosure interstitial, §3) ───────────────
+
+/**
+ * What a ceremony captures for the disclosure page and the later mint. The
+ * `account*` fields are the recognition surface (§3 rule 1); the client
+ * fields are threaded verbatim into {@link InsertAuthorizationCode} on
+ * approval, so the exchanged code carries the same ceremony context #28 set.
+ */
+export type PendingConnectionInput = {
+    accountId: string;
+    accountDisplayName: string | null;
+    /** Did the ceremony resolve an existing Account (→ "welcome back")? */
+    accountPreexisting: boolean;
+    clientOrigin: string;
+    codeChallenge: string;
+    label: string | null;
+    boundEntityId?: string | null;
+};
+
+/** The pending row as the consent page reads it. */
+export type PendingConnectionRow = {
+    account_id: string;
+    account_display_name: string | null;
+    account_preexisting: number;
+    client_origin: string;
+    code_challenge: string;
+    label: string | null;
+    bound_entity_id: string | null;
+};
+
+/**
+ * Open a pending connection for a just-verified ceremony. Returns the **raw**
+ * handle (lives only in the consent-page URL); only its SHA-256 is stored, so
+ * a DB read cannot forge a live consent.
+ */
+export async function InsertPendingConnection(
+    d1: D1Database,
+    input: PendingConnectionInput & { now?: number },
+): Promise<{ handle: string }> {
+    const rawHandle = randomString(CODE_LENGTH);
+    const handleHash = await hashSecret(rawHandle);
+    const now = input.now ?? Math.floor(Date.now() / 1000);
+
+    await runD1(
+        d1,
+        'InsertPendingConnection',
+        sql =>
+            sql`INSERT INTO connect_pending (
+                    handle_hash,
+                    account_id,
+                    account_display_name,
+                    account_preexisting,
+                    client_origin,
+                    code_challenge,
+                    label,
+                    bound_entity_id,
+                    time_created,
+                    time_expires
+                ) VALUES (${handleHash}, ${input.accountId},
+                    ${input.accountDisplayName ?? null},
+                    ${input.accountPreexisting ? 1 : 0}, ${input.clientOrigin},
+                    ${input.codeChallenge}, ${input.label ?? null},
+                    ${input.boundEntityId ?? null}, ${now},
+                    ${now + PENDING_TTL_SECONDS})`,
+    );
+
+    return { handle: rawHandle };
+}
+
+/**
+ * Read a live pending connection **without consuming it** — the consent GET
+ * renders from this, and rendering must be idempotent (a reload, a
+ * mail-scanner prefetch, a back button must not spend the handle). Returns
+ * null if unknown, already answered, or expired.
+ */
+export async function GetPendingConnection(
+    d1: D1Database,
+    rawHandle: string,
+    now: number,
+): Promise<PendingConnectionRow | null> {
+    const handleHash = await hashSecret(rawHandle);
+    const rows = await runD1(
+        d1,
+        'GetPendingConnection',
+        sql =>
+            sql<PendingConnectionRow>`SELECT account_id, account_display_name,
+                    account_preexisting, client_origin, code_challenge, label,
+                    bound_entity_id
+                FROM connect_pending
+                WHERE handle_hash = ${handleHash}
+                    AND time_consumed IS NULL
+                    AND time_expires > ${now}`,
+    );
+    return rows[0] ?? null;
+}
+
+/**
+ * Atomically claim a pending connection — spent by *either* approve or
+ * decline, so a handle answers exactly once. Same single-UPDATE...RETURNING
+ * shape as {@link ConsumeAuthorizationCode}; a null return (unknown, already
+ * answered, expired) is the caller's "this consent is no longer live".
+ */
+export async function ConsumePendingConnection(
+    d1: D1Database,
+    rawHandle: string,
+    now: number,
+): Promise<PendingConnectionRow | null> {
+    const handleHash = await hashSecret(rawHandle);
+    const rows = await runD1(
+        d1,
+        'ConsumePendingConnection',
+        sql =>
+            sql<PendingConnectionRow>`UPDATE connect_pending
+                SET time_consumed = ${now}
+                WHERE handle_hash = ${handleHash}
+                    AND time_consumed IS NULL
+                    AND time_expires > ${now}
+                RETURNING account_id, account_display_name, account_preexisting,
+                    client_origin, code_challenge, label, bound_entity_id`,
+    );
+    return rows[0] ?? null;
+}
+
+// ─── Disclosure interstitial (the connection moment, §3) ──────────────────────
+
+/** Minimal HTML-attribute/text escaper for the values we interpolate. */
+function escapeHtml(value: string): string {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/** Client display name for the copy: its label, else its bare origin. */
+function clientName(row: PendingConnectionRow): string {
+    return row.label && row.label.trim() ? row.label : row.client_origin;
+}
+
+/**
+ * The disclosure page (§3). Worker-owned, self-contained, no client script.
+ * Names what is connecting to what, recognizes a returning identity, and
+ * offers Approve / Decline — the two buttons POST the handle back to this
+ * same route. It discloses only the connection being made: the client's
+ * name/origin and (when returning) the identity's own display name — never
+ * anything about the Account's other clients or entities (§3 rule 2).
+ */
+function renderConsentPage(handle: string, row: PendingConnectionRow): string {
+    const client = escapeHtml(clientName(row));
+    const origin = escapeHtml(row.client_origin);
+    const preexisting = row.account_preexisting === 1;
+    const name = row.account_display_name
+        ? escapeHtml(row.account_display_name)
+        : null;
+
+    const heading = preexisting
+        ? name
+            ? `Welcome back, ${name}`
+            : 'Welcome back'
+        : 'Connect your djibb identity';
+    const lead = preexisting
+        ? `This connects <strong>${client}</strong> to your djibb identity.`
+        : `This creates a djibb identity and connects <strong>${client}</strong> to it.`;
+
+    return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Connect to djibb</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0;
+         display: grid; place-items: center; min-height: 100vh; padding: 1.5rem; }
+  main { max-width: 26rem; width: 100%; }
+  h1 { font-size: 1.4rem; margin: 0 0 .5rem; }
+  p { margin: 0 0 1rem; }
+  .origin { color: #666; font-size: .85rem; word-break: break-all; }
+  .actions { display: flex; gap: .75rem; margin-top: 1.5rem; }
+  button { font: inherit; padding: .6rem 1.1rem; border-radius: .5rem;
+           border: 1px solid #8884; cursor: pointer; flex: 1; }
+  button.approve { background: #2563eb; color: #fff; border-color: #2563eb; }
+  button.decline { background: transparent; }
+</style>
+</head>
+<body>
+<main>
+  <h1>${heading}</h1>
+  <p>${lead}</p>
+  <p class="origin">Requested by ${origin}</p>
+  <form method="post" action="/auth/connect/consent">
+    <input type="hidden" name="handle" value="${escapeHtml(handle)}">
+    <div class="actions">
+      <button class="decline" type="submit" name="decision" value="decline">Not now</button>
+      <button class="approve" type="submit" name="decision" value="approve">Connect</button>
+    </div>
+  </form>
+</main>
+</body>
+</html>`;
+}
+
+/** Terminal page shown when a consent handle is missing/expired/answered. */
+function renderConsentError(message: string): string {
+    return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Connect to djibb</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0;
+         display: grid; place-items: center; min-height: 100vh; padding: 1.5rem; }
+  main { max-width: 26rem; }
+</style>
+</head>
+<body><main><p>${escapeHtml(message)}</p></main></body>
+</html>`;
+}
+
+/** No-store + no-referrer: the handle is in the URL; don't cache or leak it. */
+function consentPageHeaders(c: Context<HonoEnv>): void {
+    c.header('Cache-Control', 'no-store');
+    c.header('Referrer-Policy', 'no-referrer');
+}
+
+/**
+ * GET /auth/connect/consent?pending=<handle>
+ *
+ * The disclosure page (ADR 0024 §3). Reads the pending connection **without
+ * consuming it** (idempotent render) and shows what is connecting, with an
+ * Approve/Decline form. This is the one branding floor a client cannot skip:
+ * the shared identity discloses the connection on its own surface before any
+ * credential exists.
+ */
+export async function handleConnectConsent(c: Context<HonoEnv>) {
+    consentPageHeaders(c);
+    const handle = c.req.query('pending') ?? '';
+    if (!handle) {
+        return c.html(renderConsentError('This connection link is missing.'), 400);
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const pending = await GetPendingConnection(c.env.DJIBB_AUTH, handle, now);
+    if (!pending) {
+        return c.html(
+            renderConsentError(
+                'This connection request has expired or was already used. ' +
+                    'Start again from the app you were connecting.',
+            ),
+            410,
+        );
+    }
+    return c.html(renderConsentPage(handle, pending));
+}
+
+/** Build the client redirect after a consent decision. */
+function verifiedRedirectUrl(
+    origin: string,
+    params: Record<string, string>,
+): string {
+    const url = new URL(`${origin}/accounts/verified`);
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+    return url.toString();
+}
+
+/**
+ * POST /auth/connect/consent   (form-encoded: handle, decision)
+ *
+ * The decision point (§3). Claims the pending connection once (approve OR
+ * decline spends it), then:
+ *  - **approve** → mints the authorization code #28 defined and redirects it
+ *    to the client's origin (`/accounts/verified?code=`);
+ *  - **decline** (or any non-approve value) → mints nothing and redirects
+ *    with `?error=access_denied`, so the client learns the ceremony was
+ *    abandoned. No code, and therefore no credential, ever exists.
+ *
+ * CSRF-exempt (see `src/index.ts`): the form posts from this worker-owned
+ * page whose Origin is the API origin (not in `AUTHORIZED_DOMAINS`), and its
+ * authenticity is the single-use `handle` — a secret only the browser that
+ * completed the ceremony was ever handed.
+ */
+export async function handleConnectConsentSubmit(c: Context<HonoEnv>) {
+    consentPageHeaders(c);
+    const form = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>);
+    const handle = typeof form.handle === 'string' ? form.handle : '';
+    const decision = typeof form.decision === 'string' ? form.decision : '';
+    if (!handle) {
+        return c.html(renderConsentError('This connection link is missing.'), 400);
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const pending = await ConsumePendingConnection(c.env.DJIBB_AUTH, handle, now);
+    if (!pending) {
+        return c.html(
+            renderConsentError(
+                'This connection request has expired or was already used. ' +
+                    'Start again from the app you were connecting.',
+            ),
+            410,
+        );
+    }
+
+    // Re-validate the redirect target at decision time (defense in depth): the
+    // allowlist may have changed since ceremony start, and we never redirect
+    // to an origin that isn't known-good right now.
+    if (!originIsAllowlisted(c.env.AUTHORIZED_DOMAINS, pending.client_origin)) {
+        console.error(
+            '`handleConnectConsentSubmit()` pending for unauthorized origin "%s"',
+            pending.client_origin,
+        );
+        return c.html(
+            renderConsentError('This connection can no longer be completed.'),
+            400,
+        );
+    }
+
+    // Any non-approve decision declines — a malformed/unknown value must never
+    // mint. Decline is terminal: the handle is already spent above.
+    if (decision !== 'approve') {
+        return c.redirect(
+            verifiedRedirectUrl(pending.client_origin, {
+                error: 'access_denied',
+            }),
+        );
+    }
+
+    const { code } = await InsertAuthorizationCode(c.env.DJIBB_AUTH, {
+        accountId: pending.account_id,
+        clientOrigin: pending.client_origin,
+        codeChallenge: pending.code_challenge,
+        label: pending.label,
+        boundEntityId: pending.bound_entity_id,
+        now,
+    });
+    return c.redirect(
+        verifiedRedirectUrl(pending.client_origin, { code }),
+    );
 }

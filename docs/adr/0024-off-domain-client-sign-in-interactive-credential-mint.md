@@ -1,7 +1,8 @@
 # ADR 0024: Off-domain client sign-in — the interactive credential mint
 
 - **Status:** Accepted. **Sequencing item 1 (token endpoint + authorization-code
-  tail) implemented in #28** — see the note under Sequencing below; items 2–5
+  tail) implemented in #28, item 2 (§3 disclosure interstitial) implemented in
+  #29** — see the notes under Sequencing below; items 3–5
   remain deferred as written. Amends ADR 0010 (the interactive ceremony gains a
   second terminal form: a minted credential, not only a same-site session) and
   ADR 0022 (fills the "device-flow mint UX" hole it named out of scope; the
@@ -262,8 +263,10 @@ memory and reconnects per visit is a legitimate posture, not a failure mode.
    > verifier for an ordinary ADR 0022 `issued_credentials` row (`auth/connect.ts`;
    > migration 0016 `connect_authorization_codes`). Both interactive methods can
    > start a connect ceremony behind the `AUTHORIZED_DOMAINS` allowlist and
-   > terminate by redirecting a code to `<origin>/accounts/verified?code=` **in
-   > place of** the `djibb-session` cookie: OAuth carries the ceremony context
+   > terminate **in place of** the `djibb-session` cookie by handing off toward
+   > a code at `<origin>/accounts/verified?code=` (as of #29 that hand-off goes
+   > through the §3 disclosure page first — item 2 below): OAuth carries the
+   > ceremony context
    > (origin, challenge, label) in a short-lived httpOnly `djibb_connect` cookie
    > (same-browser round-trip); magic-link carries it on the token row
    > (`magic_link_tokens.connect_*`) so it survives the cross-device email hop.
@@ -273,6 +276,23 @@ memory and reconnects per visit is a legitimate posture, not a failure mode.
    > revocable — `role_ceiling` (§5a) stays deferred.
 2. Disclosure interstitial: the §3 connection-moment surface, designed as
    product, not as an error page.
+
+   > **Implemented (#29).** A worker-owned consent page now sits between
+   > ceremony verification and code issuance — no authorization code (and so
+   > no credential) exists until the user approves. On ceremony success both
+   > methods open a single-use, short-TTL **pending connection**
+   > (`auth/connect.ts`; migration 0017 `connect_pending`) and redirect to
+   > `GET /auth/connect/consent?pending=<handle>`. That page discloses the
+   > connecting client (label + origin) and recognizes a returning identity
+   > ("welcome back, <name>") — reading the Account server-side and rendering
+   > only that, never its other clients/entities (§3 rule 2). The
+   > Approve/Decline form POSTs the handle back (CSRF-exempt like
+   > `/connect/token`; the handle is the capability): **approve** consumes the
+   > pending row and mints the #28 code, redirecting `?code=`; **decline** (or
+   > any non-approve value) mints nothing and redirects `?error=access_denied`.
+   > The handle is spent by either decision, so a connection is answered
+   > exactly once. The connected-clients surface (ADR 0022 §6) already renders
+   > the resulting labeled credential as revocable, satisfying §3 rule 3.
 3. Auth-parameterize the `@djibb/client` transport (Bearer alongside
    cookie); fold the CLI's hand-rolled push/pull into it (ADR 0014 second
    consumer).
