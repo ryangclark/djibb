@@ -331,6 +331,62 @@ async function postToken(body: unknown): Promise<Response> {
     return res;
 }
 
+// ─── OAuth connect-init cookie discipline (finding-1 guard) ────────────────────
+
+async function initGoogle(query: string): Promise<Response> {
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(
+        new Request(`http://localhost:8787/auth/google${query}`, {
+            headers: { referer: ALLOWED_ORIGIN },
+        }),
+        env,
+        ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    return res;
+}
+
+function connectSetCookie(res: Response): string | undefined {
+    return res.headers
+        .getSetCookie()
+        .find(c => c.startsWith('djibb_connect='));
+}
+
+/** The `djibb_connect=<value>` up to the first `;`, URL-decoded. */
+function connectCookieValue(setCookie: string): string {
+    return decodeURIComponent(setCookie.split(';')[0]!.split('=')[1] ?? '');
+}
+
+describe('OAuth /auth/google connect cookie discipline', () => {
+    it('sets the connect cookie carrying the ceremony context on a connect init', async () => {
+        const res = await initGoogle(
+            `?connect=1&code_challenge=${RFC_CHALLENGE}&label=Secret%20Santa`,
+        );
+        expect(res.status).toBe(302);
+        const cookie = connectSetCookie(res);
+        expect(cookie).toBeDefined();
+        const ctx = JSON.parse(connectCookieValue(cookie!));
+        expect(ctx).toEqual({
+            origin: ALLOWED_ORIGIN,
+            codeChallenge: RFC_CHALLENGE,
+            label: 'Secret Santa',
+        });
+    });
+
+    it('CLEARS a stale connect cookie on an ordinary (non-connect) init', async () => {
+        // Finding-1 guard: an abandoned connect ceremony must not let its
+        // 10-min cookie hijack the next ordinary sign-in into a connect
+        // terminal. Every init (re)writes the cookie; a non-connect init
+        // clears it, exactly like GoogleState is re-set each time.
+        const res = await initGoogle('');
+        expect(res.status).toBe(302);
+        const cookie = connectSetCookie(res);
+        expect(cookie).toBeDefined();
+        // A cleared cookie: empty value (hono deleteCookie also sets Max-Age=0).
+        expect(connectCookieValue(cookie!)).toBe('');
+    });
+});
+
 describe('POST /auth/connect/token', () => {
     it('exchanges a valid code + verifier for a bearer token that authenticates', async () => {
         const accountId = await insertAccount();

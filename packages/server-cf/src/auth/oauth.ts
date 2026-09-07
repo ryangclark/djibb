@@ -132,7 +132,7 @@ export async function handleInitOAuthGoogle(c: Context<HonoEnv>) {
 
     if (
         refererOrigin &&
-        c.env.AUTHORIZED_DOMAINS.split(';').includes(`${refererOrigin}`)
+        originIsAllowlisted(c.env.AUTHORIZED_DOMAINS, refererOrigin)
     ) {
         setCookie(c, CookieNames.RefererOrigin, refererOrigin, cookieOpts);
     } else {
@@ -151,6 +151,14 @@ export async function handleInitOAuthGoogle(c: Context<HonoEnv>) {
     // browser, so the cookie is the right vessel (mirrors GoogleState). The
     // terminal handler reads it and mints a code instead of a session. The
     // origin is the already-allowlisted `refererOrigin` above.
+    //
+    // CRITICAL: like GoogleState/GoogleCodeVerifier, this cookie is (re)written
+    // on *every* init — set in connect mode, **cleared otherwise**. Without the
+    // clear, an abandoned connect ceremony would leave the cookie live for its
+    // maxAge, and the next *ordinary* sign-in in this browser would be misread
+    // as a connect terminal: no session set, and a credential-minting code
+    // handed to the stale client origin. The clear makes the terminal form a
+    // function of *this* flow, never a leftover.
     if (c.req.query('connect') === '1') {
         const codeChallenge = c.req.query('code_challenge');
         if (!codeChallenge) {
@@ -162,7 +170,9 @@ export async function handleInitOAuthGoogle(c: Context<HonoEnv>) {
         const connectCtx: ConnectCeremonyContext = {
             origin: refererOrigin,
             codeChallenge,
-            label: c.req.query('label') ?? null,
+            // Bound to match the magic-link path's `z.string().max(200)` — the
+            // same `label` column feeds both entry points.
+            label: (c.req.query('label') ?? '').slice(0, 200) || null,
         };
         setCookie(
             c,
@@ -170,6 +180,8 @@ export async function handleInitOAuthGoogle(c: Context<HonoEnv>) {
             JSON.stringify(connectCtx),
             cookieOpts
         );
+    } else {
+        deleteCookie(c, CookieNames.Connect);
     }
 
     // Store code verifier as cookie.
@@ -359,7 +371,7 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
 
     if (
         redirectOrigin &&
-        c.env.AUTHORIZED_DOMAINS.split(';').includes(redirectOrigin)
+        originIsAllowlisted(c.env.AUTHORIZED_DOMAINS, redirectOrigin)
     ) {
         const url = new URL(`${redirectOrigin}/accounts/verified`);
         url.searchParams.set('account_id', account.id);
