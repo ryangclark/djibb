@@ -43,6 +43,7 @@ import { runD1 } from '../effect/d1';
 import { CreateCredential, hashSecret } from './d1';
 import { parseAuthorizedDomains } from '../utils/origin';
 import { base64UrlSha256 } from '../utils/base64url';
+import { escapeHtml } from '../utils/html';
 
 // ─── Tunables ───────────────────────────────────────────────────────────────
 
@@ -427,16 +428,6 @@ export async function ConsumePendingConnection(
 
 // ─── Disclosure interstitial (the connection moment, §3) ──────────────────────
 
-/** Minimal HTML-attribute/text escaper for the values we interpolate. */
-function escapeHtml(value: string): string {
-    return value
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
 /** Client display name for the copy: its label, else its bare origin. */
 function clientName(row: PendingConnectionRow): string {
     return row.label && row.label.trim() ? row.label : row.client_origin;
@@ -526,10 +517,18 @@ function renderConsentError(message: string): string {
 </html>`;
 }
 
-/** No-store + no-referrer: the handle is in the URL; don't cache or leak it. */
+/**
+ * Response hardening for the consent surface. No-store + no-referrer because
+ * the handle is in the URL (don't cache or leak it); frame-denial because a
+ * security *decision* page must never be clickjackable — an attacker framing
+ * it to trick an "approve" click would mint a credential to an allowlisted
+ * origin behind the user's back.
+ */
 function consentPageHeaders(c: Context<HonoEnv>): void {
     c.header('Cache-Control', 'no-store');
     c.header('Referrer-Policy', 'no-referrer');
+    c.header('X-Frame-Options', 'DENY');
+    c.header('Content-Security-Policy', "frame-ancestors 'none'");
 }
 
 /**
@@ -556,6 +555,19 @@ export async function handleConnectConsent(c: Context<HonoEnv>) {
                     'Start again from the app you were connecting.',
             ),
             410,
+        );
+    }
+    // Re-validate the origin at render time too (defense in depth, matching the
+    // POST handler): if the allowlist was tightened after the ceremony started,
+    // never present a now-untrusted origin as a legitimate connection request.
+    if (!originIsAllowlisted(c.env.AUTHORIZED_DOMAINS, pending.client_origin)) {
+        console.error(
+            '`handleConnectConsent()` pending for unauthorized origin "%s"',
+            pending.client_origin,
+        );
+        return c.html(
+            renderConsentError('This connection can no longer be completed.'),
+            400,
         );
     }
     return c.html(renderConsentPage(handle, pending));

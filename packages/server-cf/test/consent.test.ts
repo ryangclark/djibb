@@ -215,6 +215,27 @@ describe('GET /auth/connect/consent', () => {
         expect((await getConsent('')).status).toBe(400);
         expect((await getConsent('never-existed-handle')).status).toBe(410);
     });
+
+    it('refuses to disclose a pending bound to a now-unauthorized origin', async () => {
+        // Simulates the allowlist being tightened after the ceremony started:
+        // the row is live, but its origin is no longer trusted. The disclosure
+        // must not present it as a legitimate request (defense in depth,
+        // mirroring the POST handler).
+        const accountId = await insertAccount();
+        const { handle } = await InsertPendingConnection(env.DJIBB_AUTH, {
+            accountId,
+            accountDisplayName: 'Ada Lovelace',
+            accountPreexisting: true,
+            clientOrigin: 'https://evil.example.com',
+            codeChallenge: RFC_CHALLENGE,
+            label: 'Rogue Client',
+        });
+        const res = await getConsent(handle);
+        expect(res.status).toBe(400);
+        const html = await res.text();
+        expect(html).not.toContain('Rogue Client');
+        expect(html).not.toContain('evil.example.com');
+    });
 });
 
 // ─── POST consent (the decision) ───────────────────────────────────────────────

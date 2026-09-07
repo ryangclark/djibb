@@ -47,6 +47,7 @@ import {
     CookieNames,
 } from './constants';
 import { InsertPendingConnection, originIsAllowlisted } from './connect';
+import { escapeHtml } from '../utils/html';
 import type { Account } from '@djibb/protocol/account';
 
 // ─── Tunables ───────────────────────────────────────────────────────────────
@@ -513,18 +514,9 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
 
 // ─── Interstitial rendering ─────────────────────────────────────────────────
 
-function escapeAttr(s: string): string {
-    return s
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
 function renderLanding(rawToken: string, next: string): string {
-    const tokenAttr = escapeAttr(rawToken);
-    const nextAttr = escapeAttr(next);
+    const tokenAttr = escapeHtml(rawToken);
+    const nextAttr = escapeHtml(next);
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -599,7 +591,7 @@ function renderLandingError(message: string): string {
 </head>
 <body>
 <h1>Sign-in error</h1>
-<p>${escapeAttr(message)}</p>
+<p>${escapeHtml(message)}</p>
 </body>
 </html>`;
 }
