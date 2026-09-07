@@ -19,6 +19,7 @@
 	import UndoToast from '$lib/components/UndoToast.svelte';
 	import { getSessionState } from '$lib/session.svelte.js';
 	import { createStrandedState } from '$lib/replicache/stranded.svelte.js';
+	import { createDisownController } from '$lib/replicache/disown.svelte.js';
 	import z, { ZodError } from 'zod';
 
 	let data = $derived(page.data);
@@ -52,6 +53,10 @@
 	/** @type {string | null} */
 	let actingAccountId = $state.raw(null);
 
+	// The "Discard and continue" escape hatch (GH #45), shared with the
+	// list page so the drop ordering can't drift. See disown.svelte.js.
+	const disownController = createDisownController({ noun: 'template' });
+
 	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
 	let toastEvent = $state(null);
 
@@ -67,6 +72,9 @@
 		// See /l/[id]/+page.svelte for the long-form comment on why
 		// this gate is necessary. tl;dr: direct nav races session load.
 		if (!sessionState.hasLoaded) return;
+
+		// Standing down for a disown — see /l/[id]/+page.svelte.
+		if (disownController.disowning) return;
 
 		// See /l/[id]/+page.svelte: the `?new=1` marker authorizes the
 		// one-time optimistic init, read untracked so stripping it (below)
@@ -148,7 +156,10 @@
 		return () => {
 			unbindKeymap();
 			replicacheList.syncStatus.close();
-			replicacheList.client.close();
+			// Hand the close promise to the disown controller so the store
+			// drop can await the real close, not just tick() — see
+			// /l/[id]/+page.svelte and disown.svelte.js (GH #45 review).
+			disownController.handoffClose(replicacheList.client.close());
 			ws?.close(1000);
 		};
 	});
@@ -172,6 +183,7 @@
 		entityId: () => data.list_id,
 		actingAccountId: () => actingAccountId
 	});
+
 </script>
 
 {#if page.url.searchParams.get('from_invite') === '1' && sessionState.hasLoaded}
@@ -197,6 +209,10 @@
 		onRetry={() => syncStatus?.retry()}
 		{actingAccountId}
 		sessionAccounts={sessionState.accounts}
+		onDisown={() =>
+			disownController.disown({ entityId: data.list_id, accountId: actingAccountId })}
+		disowning={disownController.disowning}
+		disownError={disownController.error}
 	/>
 	<StrandedWorkBanner
 		{stranded}

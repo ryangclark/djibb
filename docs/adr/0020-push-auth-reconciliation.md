@@ -143,6 +143,24 @@ complementary prevention layer.
   `entityInvitations` role-rejection tests were updated from "throws" to
   "skip-and-acks" to match the authenticated-denial behavior.
 
+- **A null session is not an anonymous client — and that has a cost for
+  actual anonymous clients** (GH #43 → #45). The unflushed-work ledger
+  keeps a dead session's queued mutations reachable by having the client
+  keep *acting as* the account that enqueued them, so its pushes keep
+  hitting the unauthenticated-throw branch above (which is what raises
+  the banner) and re-auth flushes them. That fallback is keyed on the
+  entity, not the human: on a shared device, a genuinely anonymous
+  visitor opening that entity inherits the claim, the refused pushes,
+  and a non-dismissible banner about someone else's work — and cannot
+  edit anonymously until that account returns. Preserving the work by
+  default is still the right call (dropping it silently would destroy
+  something real with no way back), so the resolution is an *explicit*
+  escape hatch on the banner — "Not you? Discard and continue" — offered
+  only while the client acts as an account the session cannot vouch for
+  (`canDisownAuthBlock`). The discard drops that account's store for
+  that entity and rebuilds the client as whoever the session actually
+  says we are. Pinned by `e2e/stuck-claim.sh`.
+
 ## Relations
 
 - **ADR 0005** (undo and inverse mutators) — the undo runtime consumes the

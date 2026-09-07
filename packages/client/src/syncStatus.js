@@ -115,6 +115,61 @@ export function diagnoseAuthBlock({ actingAccountId, sessionAccounts }) {
 }
 
 /**
+ * May the person in front of the screen *disown* the blocked work —
+ * throw it away and carry on as whoever the session says they are?
+ * (GH #45.)
+ *
+ * ## The situation
+ *
+ * `resolveEffectiveAccount` falls back to the ledger when the session is
+ * gone. That is what keeps a reloaded tab pointed at the store its queued
+ * work lives in. But the fallback is keyed on the *entity*, not on the
+ * *human*: a browser cannot tell "the same person came back" from
+ * "someone else is using this device". So when account A leaves
+ * unflushed work on entity E and a genuinely anonymous visitor opens E on
+ * that device, the client acts as A, pushes as A, is refused, and the
+ * visitor is shown a non-dismissible "Session expired" banner about
+ * someone else's work — and cannot edit E anonymously until A signs back
+ * in.
+ *
+ * Erring toward preserving the work is right: discarding it automatically
+ * would destroy something real with no way back. What was missing is an
+ * *escape hatch* — a choice the visitor can make explicitly. This
+ * predicate says when that choice may be offered.
+ *
+ * ## The rule
+ *
+ * Offer it exactly when the client is acting as an account the session
+ * cannot vouch for. Two shapes:
+ *
+ *  - **No session at all.** The acting account came from the ledger (or
+ *    the session expired underneath a running client). Whoever is here
+ *    may or may not be that account; only they know, so only they can
+ *    say "not me".
+ *  - **A live session that lacks the acting account.** Signed out of A
+ *    with B still current. B is a real, present person with their own
+ *    standing; they may discard A's work here and continue as B.
+ *
+ * Never offered when the acting account *is* on the session: then the
+ * person here is that account, the fix is to re-authenticate, and
+ * "not you?" would be nonsense. Never offered to a genuinely anonymous
+ * client either — there is no other account's work to disown.
+ *
+ * Deciding what an anonymous visitor may do to a signed-in user's queued
+ * work is authorization reasoning, which is why this is here, tested,
+ * and not a `$derived` in the banner.
+ *
+ * @param {object} input
+ * @param {string | null} input.actingAccountId
+ * @param {readonly { id: string }[]} input.sessionAccounts
+ * @returns {boolean}
+ */
+export function canDisownAuthBlock({ actingAccountId, sessionAccounts }) {
+	if (!actingAccountId) return false;
+	return !sessionAccounts.some(a => a.id === actingAccountId);
+}
+
+/**
  * @param {object} input
  * @param {(status: SyncStatus) => void} input.onChange
  *   Called with a fresh snapshot whenever any field changes.

@@ -19,6 +19,7 @@
 	import UndoToast from '$lib/components/UndoToast.svelte';
 	import { getSessionState } from '$lib/session.svelte.js';
 	import { createStrandedState } from '$lib/replicache/stranded.svelte.js';
+	import { createDisownController } from '$lib/replicache/disown.svelte.js';
 	import z, { ZodError } from 'zod';
 
 	let data = $derived(page.data);
@@ -62,6 +63,12 @@
 	/** @type {string | null} */
 	let actingAccountId = $state.raw(null);
 
+	// The "Discard and continue" escape hatch (GH #45). Owns the
+	// `disowning` flag the init effect below stands down on, and the
+	// load-bearing drop ordering — shared with the template page so the two
+	// can't drift. See disown.svelte.js.
+	const disownController = createDisownController({ noun: 'list' });
+
 	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
 	let toastEvent = $state(null);
 
@@ -81,6 +88,11 @@
 		// push initList with accountId=null, creating an ownerless
 		// entity, before the real account is known.
 		if (!sessionState.hasLoaded) return;
+
+		// Standing down for a disown: the cleanup below has just closed the
+		// client (or is about to), and the next run — once the store is
+		// gone and the claim with it — resolves the account afresh.
+		if (disownController.disowning) return;
 
 		// The `?new=1` marker authorizes the one-time optimistic init for a
 		// genuine creation. Read it untracked: we strip it from the URL the
@@ -177,7 +189,12 @@
 		return () => {
 			unbindKeymap();
 			replicacheList.syncStatus.close();
-			replicacheList.client.close();
+			// Hand the close promise to the disown controller: when this
+			// cleanup runs *because* a disown is standing the client down, the
+			// store drop must wait for the connection to actually close, not
+			// just for close() to be called (GH #45 review). Harmless
+			// otherwise — it only captures the promise while disowning.
+			disownController.handoffClose(replicacheList.client.close());
 			ws?.close(1000);
 		};
 	});
@@ -229,6 +246,10 @@
 		onRetry={() => syncStatus?.retry()}
 		{actingAccountId}
 		sessionAccounts={sessionState.accounts}
+		onDisown={() =>
+			disownController.disown({ entityId: data.list_id, accountId: actingAccountId })}
+		disowning={disownController.disowning}
+		disownError={disownController.error}
 	/>
 	<StrandedWorkBanner
 		{stranded}
