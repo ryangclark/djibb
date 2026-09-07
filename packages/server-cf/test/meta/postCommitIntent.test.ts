@@ -41,6 +41,7 @@ describe('emptyPostCommitIntent', () => {
             cascadeArchiveTriggered: false,
             cascadeRestoreTriggered: false,
             harddelete: null,
+            harddeleteDirect: false,
             startFresh: null,
             invitationsMutated: false,
             acceptedInvites: [],
@@ -92,6 +93,41 @@ describe('hard-delete clock (ADR 0008 §10b)', () => {
         expect(
             foldAll([{ name: 'cascadeArchiveList' }], LIST).harddelete
         ).toBe('arm');
+    });
+
+    describe('harddeleteDirect: direct destroy vs. cascade sweep (#18)', () => {
+        // The destructive-action notification gates on this: a direct
+        // archive/startFresh emails the owner; a cascade-swept child must
+        // not, else a workspace archive fans out one email per child.
+        it('is true for a direct archive', () => {
+            const intent = foldAll([{ name: 'archiveList' }], LIST);
+            expect(intent.harddelete).toBe('arm');
+            expect(intent.harddeleteDirect).toBe(true);
+        });
+
+        it('is true for startFresh', () => {
+            const intent = foldAll(
+                [{ name: 'startFresh', args: { accountId: 'a' } }],
+                WORKSPACE
+            );
+            expect(intent.harddelete).toBe('arm');
+            expect(intent.harddeleteDirect).toBe(true);
+        });
+
+        it('is FALSE for a cascade-swept child even though it arms', () => {
+            const intent = foldAll([{ name: 'cascadeArchiveList' }], LIST);
+            expect(intent.harddelete).toBe('arm');
+            expect(intent.harddeleteDirect).toBe(false);
+        });
+
+        it('tracks last-write-wins: direct archive then restore ends not-armed', () => {
+            const intent = foldAll(
+                [{ name: 'archiveList' }, { name: 'unarchiveList' }],
+                LIST
+            );
+            expect(intent.harddelete).toBe('clear');
+            expect(intent.harddeleteDirect).toBe(false);
+        });
     });
 
     it('clears on restore', () => {

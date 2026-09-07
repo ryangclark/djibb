@@ -45,6 +45,23 @@ export function isCascadeRestoreTrigger(
 }
 
 /**
+ * Whether a mutator name is a *direct* destructive arm — an archive the
+ * user/actor initiated against this entity itself (`archiveList`,
+ * `startFresh`), as opposed to `cascadeArchiveList`, which a workspace's
+ * alarm sweep pushes into each child DO (`workspace/cascade.ts`).
+ *
+ * Both flavors arm the hard-delete clock (see `harddeleteTransition`), so
+ * the clock can't tell them apart — but the destructive-action
+ * notification (ADR 0023 §2, issue #18) must: emailing on cascade arms
+ * would fan out one heads-up per swept child (N+1 emails for a single
+ * workspace archive). The notification gates on this predicate so it
+ * fires once, at the entity the actor directly destroyed.
+ */
+export function isDirectHardDeleteArm(mutationName: string): boolean {
+    return mutationName === 'archiveList' || mutationName === 'startFresh';
+}
+
+/**
  * ADR 0008 hard-delete clock arm/clear. Mutator names are the signal: a
  * successful archive of any flavor means this DO's entity row is now
  * soft-deleted (`arm` the 30d clock); a successful restore means it's live
