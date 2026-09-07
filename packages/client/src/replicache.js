@@ -11,6 +11,7 @@
 import { Replicache } from 'replicache';
 import { IdTypes } from '@djibb/protocol/id';
 import { mutators } from '@djibb/protocol/list/mutators/client';
+import { sessionCookie } from './transport.js';
 
 /**
  * Constructs the Replicache client for one (account, entity) pair. All
@@ -24,6 +25,14 @@ import { mutators } from '@djibb/protocol/list/mutators/client';
  * @param {string} input.listId Entity ID; its prefix selects the route
  * @param {string} input.baseUrl API host, no protocol (e.g. `api.djibb.com`)
  * @param {boolean} [input.secure=true] https when true; false for local dev
+ * @param {import('./transport.js').Credential} [input.credential] How this
+ *   client presents its identity on every push/pull — `sessionCookie()`
+ *   (the default, and the only workable option for a client same-site with
+ *   the API, e.g. djibb.com), or `bearerToken(token, { origin })` for an
+ *   off-domain client that authenticates with an `issued_credentials` token
+ *   minted by the connect ceremony (ADR 0024). Cookie-only was the sole
+ *   option before this parameter, which is why it stays the default: the
+ *   `credentials: 'include'` behavior is unchanged when it's omitted.
  * @param {(httpStatusCode: number) => void} [input.onPushStatus]
  *   Observes every push response's HTTP status. The sync tracker
  *   (`createSyncTracker`) uses it to notice persistent 401/403s, which
@@ -42,6 +51,7 @@ export function createReplicacheClient({
 	listId,
 	baseUrl,
 	secure = true,
+	credential = sessionCookie(),
 	onPushStatus
 }) {
 	const protocol = secure ? 'https:' : 'http:';
@@ -59,12 +69,14 @@ export function createReplicacheClient({
 		// Event-driven sync: poke via websocket triggers pulls; no polling.
 		pullURL,
 		pushURL,
-		// Custom pusher/puller so the cross-origin push/pull sends the
-		// session cookie. Replicache's default fetch omits credentials
-		// and the worker would resolve the request as anonymous, which
-		// trips auth on lists owned by an authed account.
-		pusher: makePusher(pushURL, onPushStatus),
-		puller: makePuller(pullURL),
+		// Custom pusher/puller so the cross-origin push/pull carries the
+		// caller's credential. Replicache's default fetch omits credentials
+		// entirely and the worker would resolve the request as anonymous,
+		// which trips auth on lists owned by an authed account. The
+		// credential is either the interactive session cookie (default) or
+		// a Bearer token for an off-domain client (ADR 0024).
+		pusher: makePusher(pushURL, credential, onPushStatus),
+		puller: makePuller(pullURL, credential),
 		schemaVersion: SCHEMA_VERSION
 	});
 }
@@ -184,6 +196,20 @@ export function wrapMutators(rawMutate, { accountId, listId, ledger }) {
 
 /**
  * @param {string} url
+ * @param {import('./transport.js').Credential} credential How the request
+ *   presents its identity — contributes `credentials` and any auth headers
+ *   (`Authorization`, `Origin`). `credentials` is optional on the type; it
+ *   falls back to `'include'` here rather than to `fetch`'s `'same-origin'`
+ *   default, because these requests are cross-origin and dropping ambient
+ *   credentials is the exact failure this custom pusher exists to prevent (a
+ *   silently-anonymous request the worker rejects on an authed list). The
+ *   three provided constructors all set it explicitly, so the fallback only
+ *   guards a hand-rolled credential.
+ *
+ *   Unlike `transport.js`, this takes no caller-supplied extra headers, so it
+ *   needs no case-insensitive collision guard: the only headers are the
+ *   credential's and the two protocol headers below, which never collide. If
+ *   caller headers are ever threaded in here, port that guard with them.
  * @param {(httpStatusCode: number) => void} [onStatus]
  *   Notified of every push response status, success or failure. A
  *   network error (offline) rejects the `fetch` and is *not* reported
@@ -191,12 +217,13 @@ export function wrapMutators(rawMutate, { accountId, listId, ledger }) {
  *   server said no", and only the latter can mean signed-out.
  * @returns {import('replicache').Pusher}
  */
-export function makePusher(url, onStatus) {
+export function makePusher(url, credential, onStatus) {
 	return async (requestBody, requestID) => {
 		const response = await fetch(url, {
 			method: 'POST',
-			credentials: 'include',
+			credentials: credential.credentials ?? 'include',
 			headers: {
+				...credential.headers,
 				'Content-Type': 'application/json',
 				'X-Replicache-RequestID': requestID
 			},
@@ -214,14 +241,17 @@ export function makePusher(url, onStatus) {
 
 /**
  * @param {string} url
+ * @param {import('./transport.js').Credential} credential How the request
+ *   presents its identity — see `makePusher`.
  * @returns {import('replicache').Puller}
  */
-export function makePuller(url) {
+export function makePuller(url, credential) {
 	return async (requestBody, requestID) => {
 		const response = await fetch(url, {
 			method: 'POST',
-			credentials: 'include',
+			credentials: credential.credentials ?? 'include',
 			headers: {
+				...credential.headers,
 				'Content-Type': 'application/json',
 				'X-Replicache-RequestID': requestID
 			},

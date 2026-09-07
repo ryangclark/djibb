@@ -44,12 +44,14 @@ Auth_App.get('/magic/land', handleMagicLand);
 Auth_App.post('/magic/consume', handleMagicConsume);
 
 // Connect ceremony disclosure interstitial (ADR 0024 §3, GH #29). The
-// worker-owned page that discloses the connection being made and offers a
-// real decline path, *before* any code is minted. GET renders (idempotent,
-// non-consuming); POST is the decision (approve → mint code + redirect;
-// decline → redirect with error). The POST is CSRF-exempt (see src/index.ts):
-// it posts from this page whose Origin is the API origin, and its authenticity
-// is the single-use `pending` handle only the ceremony browser holds.
+// worker-owned page that discloses the connection being made *before* any code
+// is minted. GET renders (idempotent, non-consuming); POST is the affirmative
+// decision — submitting the single Connect form mints the code and redirects.
+// v1 is affirmative-only: there is no decline button (closing the page mints
+// nothing, which is the real "no"; see ADR 0024's §3 amendment). The POST is
+// CSRF-exempt (see src/index.ts): it posts from this page whose Origin is the
+// API origin, and its authenticity is the single-use `pending` handle only the
+// ceremony browser holds.
 Auth_App.get('/connect/consent', handleConnectConsent);
 Auth_App.post('/connect/consent', handleConnectConsentSubmit);
 
