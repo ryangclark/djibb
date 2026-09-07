@@ -35,6 +35,7 @@ import {
 } from '../derived-index/d1';
 import { GetAccountById } from '../auth/d1';
 import {
+    sendDestructiveActionEmail,
     sendEntityInvitationEmail,
     sendOwnershipTransferEmail,
     sendOwnershipTransferReceiptEmail,
@@ -325,6 +326,159 @@ export async function fireOwnershipTransferEmails(
         }
     });
     await Promise.allSettled(sends);
+}
+
+/**
+ * Notify an entity's owner that a destructive action (archive /
+ * `startFresh`) armed the 30-day hard-delete clock (ADR 0023 §2, issue
+ * #18). Best-effort, logged-not-thrown, mirroring the fires above.
+ *
+ * ADR 0023 chose recoverability over a step-up gate: destructive actions
+ * are soft-deletes recoverable until a hard-purge. The residual risk the
+ * ADR names is an *unattended* client (an email-LLM, a scheduled agent)
+ * destroying something whose grace window then lapses unnoticed. This
+ * email is that mitigation. Owner-only by decision; because the arming
+ * signal is captured post-commit, it fires regardless of the client the
+ * push came through — the non-interactive/token actor is covered by
+ * construction, with no client-nature plumbing.
+ *
+ * Guards, each a clean skip (nothing to notify):
+ *   - not an entity row (invariant violation) — warn + skip;
+ *   - ownerless entity — no one to notify;
+ *   - owner has no email on file — warn + skip;
+ *   - no EMAIL binding — warn + skip (matches the siblings).
+ */
+export async function fireDestructiveActionEmail(
+    sql: SqlStorage,
+    env: Bindings,
+    entityId: string,
+    recoverableUntil: number
+): Promise<void> {
+    const entity = getElementById(sql, entityId);
+    if (!entity || !isEntityRow(entity)) {
+        console.warn(
+            `\`fireDestructiveActionEmail()\` no entity row for "${entityId}"`
+        );
+        return;
+    }
+    const entityName = (entity as { name?: string }).name ?? '';
+    const entityTypeLabel = entity.type;
+
+    // Single-owner invariant (ADR 0011): the `authorized_accounts` entry
+    // with `role: 'owner'`, if any. An ownerless entity has no principal
+    // to warn — skip rather than fan out to members (owner-only per the
+    // #18 decisions).
+    const rules = (
+        entity as {
+            authorization_rules?: {
+                authorized_accounts?: Record<string, { role?: string }>;
+            };
+        }
+    ).authorization_rules;
+    const accounts = rules?.authorized_accounts ?? {};
+    const ownerId =
+        Object.keys(accounts).find((id) => accounts[id]?.role === 'owner') ??
+        null;
+    if (!ownerId) {
+        // No principal to notify. Common for public/ownerless entities.
+        return;
+    }
+
+    if (!env.EMAIL) {
+        console.warn(
+            '`fireDestructiveActionEmail()` no EMAIL binding; skipping send.'
+        );
+        return;
+    }
+    const d1 = env.DJIBB_AUTH;
+
+    const owner = await GetAccountById(d1, ownerId).catch((err) => {
+        console.error(
+            `\`fireDestructiveActionEmail()\` GetAccountById failed for "${ownerId}":`,
+            err
+        );
+        return null;
+    });
+    const ownerEmail = owner?.email;
+    if (!ownerEmail) {
+        console.warn(
+            `\`fireDestructiveActionEmail()\` no email for owner "${ownerId}" of "${entityId}"; skipping.`
+        );
+        return;
+    }
+
+    // The restore surface is a single page (`/trash`), not the entity URL
+    // — an archived entity's own page isn't the place you recover it from.
+    // First domain in `AUTHORIZED_DOMAINS` is canonical for outbound links
+    // (same convention as `resolveEntityBaseUrl`).
+    const origin = (env.AUTHORIZED_DOMAINS ?? '').split(';')[0] ?? '';
+    if (!origin) {
+        console.warn(
+            '`fireDestructiveActionEmail()` no AUTHORIZED_DOMAINS; using relative URL.'
+        );
+    }
+    const restoreUrl = `${origin}/trash`;
+
+    try {
+        await sendDestructiveActionEmail(env, {
+            to: ownerEmail,
+            entityTypeLabel,
+            entityName,
+            restoreUrl,
+            recoverableUntil,
+        });
+    } catch (error) {
+        console.error(
+            `\`sendDestructiveActionEmail()\` failed for "${entityId}" -> owner "${ownerId}":`,
+            error
+        );
+    }
+}
+
+export interface DestructiveNotificationDeps {
+    sql: SqlStorage;
+    env: Bindings; // EMAIL + AUTHORIZED_DOMAINS + DJIBB_AUTH
+    /** Same detachment contract as `InvitationPostCommitDeps.waitUntil`:
+     *  the DO injects `ctx.waitUntil` so the send settles after the ack;
+     *  unit tests omit it and get inline `await`. */
+    waitUntil?: (promise: Promise<unknown>) => void;
+}
+
+export interface DestructiveNotificationFlags {
+    entityId: string;
+    /** True only when the push's net hard-delete transition was `'arm'`
+     *  (an archive not undone in the same push). No-ops otherwise. */
+    armed: boolean;
+    /** `Date.now() + HARD_DELETE_DELAY_MS` — the hard-purge deadline. */
+    recoverableUntil: number;
+}
+
+/**
+ * Thin post-commit tail for the destructive-action notification (ADR
+ * 0023 §2, issue #18). Kept alongside `applyInvitationPostCommit` so the
+ * DO stays thin and the fire is independently unit-testable. No-ops
+ * unless `armed`, so the DO can call it unconditionally. Best-effort: the
+ * fire swallows its own failures; the outer settle is belt-and-braces so
+ * a detached promise can never reject.
+ */
+export async function applyDestructiveNotification(
+    deps: DestructiveNotificationDeps,
+    flags: DestructiveNotificationFlags
+): Promise<void> {
+    if (!flags.armed) return;
+
+    const fire = fireDestructiveActionEmail(
+        deps.sql,
+        deps.env,
+        flags.entityId,
+        flags.recoverableUntil
+    );
+    const settled = Promise.allSettled([fire]);
+    if (deps.waitUntil) {
+        deps.waitUntil(settled);
+    } else {
+        await settled;
+    }
 }
 
 export interface InvitationPostCommitDeps {

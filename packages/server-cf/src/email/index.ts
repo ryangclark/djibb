@@ -222,6 +222,96 @@ export async function sendOwnershipTransferReceiptEmail(
     );
 }
 
+export interface DestructiveActionEmailParams {
+    /** Owner's email — the recipient of this heads-up. */
+    to: string;
+    /** "list", "template", or "workspace" — drives subject/body phrasing. */
+    entityTypeLabel: 'list' | 'template' | 'workspace';
+    /** Display name of the entity. May be empty; falls back to a
+     *  generic phrase. */
+    entityName: string;
+    /** URL of the restore surface (`/trash`). */
+    restoreUrl: string;
+    /** When the soft-delete becomes a permanent hard-delete, as an
+     *  epoch-ms timestamp. Formatted into the copy as a calendar date. */
+    recoverableUntil: number;
+}
+
+/**
+ * Format the hard-delete deadline (epoch ms) as a human calendar date
+ * for the destructive-action email. UTC-anchored so the rendered date is
+ * deterministic regardless of the isolate's locale/timezone — the grace
+ * window is 30 days, so day-boundary precision is plenty and a stable
+ * string keeps the copy assertable. Exported for the send test.
+ */
+export function formatRecoverableUntil(recoverableUntil: number): string {
+    return new Intl.DateTimeFormat('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        timeZone: 'UTC',
+    }).format(new Date(recoverableUntil));
+}
+
+/**
+ * Message body for the destructive-action notification (ADR 0023 §2).
+ * Archive / `startFresh` are soft-deletes recoverable until a 30-day
+ * hard-purge; the ADR chose recoverability over a step-up gate, and this
+ * email is the mitigation for its named residual risk — an unattended
+ * client destroying something whose grace window then lapses unnoticed.
+ * The CTA points at the `/trash` restore surface, and the deadline is
+ * spelled out so a human can act before "recoverable" turns into "gone".
+ */
+export function buildDestructiveActionEmail(
+    from: string,
+    params: DestructiveActionEmailParams,
+): OutboundEmail {
+    const entityName =
+        params.entityName?.trim() || `a ${params.entityTypeLabel}`;
+    const deadline = formatRecoverableUntil(params.recoverableUntil);
+    const subject = `${sanitizeHeader(entityName)} was archived — recoverable until ${sanitizeHeader(deadline)}`;
+
+    const text =
+        `"${entityName}" (${params.entityTypeLabel}) was archived and will be ` +
+        `permanently deleted on ${deadline}.\n\n` +
+        `Restore it before then:\n${params.restoreUrl}\n\n` +
+        `If you archived it on purpose, no action is needed.\n`;
+
+    const html =
+        `<p><strong>${escapeHtml(entityName)}</strong> (${escapeHtml(params.entityTypeLabel)}) ` +
+        `was archived and will be permanently deleted on ` +
+        `<strong>${escapeHtml(deadline)}</strong>.</p>` +
+        `<p><a href="${escapeAttr(params.restoreUrl)}">Restore it before then</a></p>` +
+        `<p style="color:#888;font-size:12px">If you archived it on purpose, no action is needed.</p>`;
+
+    return {
+        from: { email: from, name: 'djibb' },
+        to: params.to,
+        subject,
+        html,
+        text,
+    };
+}
+
+/**
+ * Heads-up email to an entity's owner when a destructive action
+ * (archive / `startFresh`) armed the 30-day hard-delete clock (ADR 0023
+ * §2, issue #18). Owner-only, best-effort. Because the arming signal is
+ * captured post-commit, this fires regardless of the client the push
+ * came through — so non-interactive/token actors are covered by
+ * construction, which is the whole point: an unattended agent's silent
+ * destroy still lands in the owner's inbox with time to restore.
+ */
+export async function sendDestructiveActionEmail(
+    env: Bindings,
+    params: DestructiveActionEmailParams
+): Promise<void> {
+    await runEmailSend(
+        env.EMAIL,
+        buildDestructiveActionEmail(resolveEmailFrom(env), params),
+    );
+}
+
 export interface MagicLinkEmailParams {
     to: string;
     landingUrl: string;

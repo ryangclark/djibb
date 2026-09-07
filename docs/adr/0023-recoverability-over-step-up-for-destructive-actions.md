@@ -63,6 +63,16 @@ elapses with no human noticing, at which point "recoverable" has silently become
 making the window a function of who-acted (longer for unattended actors) is a
 clean later refinement, not a v1 requirement.
 
+> **Implemented (#18):** the destructive-action notification is built — an
+> **owner-only email** fired post-commit whenever a push's net hard-delete
+> transition *arms* the clock (archive / `startFresh` not undone in the same
+> push), carrying the restore link (`/trash`) and the 30-day hard-purge
+> deadline. Because the arm signal is captured post-commit, it fires the same
+> regardless of the client the push came through, so the non-interactive/token
+> actor this section worries about is covered by construction. The
+> "grace-window-as-a-function-of-who-acted" refinement stays deferred. (Mirrors
+> the #45→ADR-0020 convention of recording the build against the deciding ADR.)
+
 ### 3. Step-up is deferred; it is not punted
 
 We do not build sensitive-action re-auth / confirmation now. We *cannot* draw the
