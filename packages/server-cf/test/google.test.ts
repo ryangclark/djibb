@@ -147,11 +147,15 @@ describe('exchangeGoogleAuthorizationCode', () => {
         expect(body.get('code_verifier')).toBe('the-verifier');
     });
 
-    it('throws on a non-2xx token response', async () => {
+    it('throws on a non-2xx token response, surfacing Google\'s error code', async () => {
         vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-            new Response(JSON.stringify({ error: 'invalid_grant' }), {
-                status: 400,
-            }),
+            new Response(
+                JSON.stringify({
+                    error: 'invalid_grant',
+                    error_description: 'Bad Request',
+                }),
+                { status: 400 },
+            ),
         );
 
         await expect(
@@ -162,7 +166,24 @@ describe('exchangeGoogleAuthorizationCode', () => {
                 code: 'bad',
                 codeVerifier: 'v',
             }),
-        ).rejects.toThrow();
+            // The on-call log gets Google's actual OAuth error, not just "400".
+        ).rejects.toThrow(/invalid_grant/);
+    });
+
+    it('still throws when the error body is not JSON', async () => {
+        vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+            new Response('upstream exploded', { status: 503 }),
+        );
+
+        await expect(
+            exchangeGoogleAuthorizationCode({
+                clientId: 'c',
+                clientSecret: 's',
+                redirectUri: 'https://api.djibb.com/cb',
+                code: 'bad',
+                codeVerifier: 'v',
+            }),
+        ).rejects.toThrow(/503/);
     });
 
     it('throws when access_token is missing', async () => {

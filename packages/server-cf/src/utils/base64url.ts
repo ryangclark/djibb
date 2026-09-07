@@ -8,7 +8,7 @@
  */
 
 /** base64url-encode raw bytes (no `=` padding, `+/` → `-_`). */
-export function base64UrlEncode(bytes: Uint8Array): string {
+function base64UrlEncode(bytes: Uint8Array): string {
     let binary = '';
     for (const byte of bytes) {
         binary += String.fromCharCode(byte);

@@ -105,8 +105,26 @@ export async function exchangeGoogleAuthorizationCode(args: {
     });
 
     if (!response.ok) {
+        // Surface Google's OAuth error code in the thrown message (arctic's
+        // OAuth2RequestError used to carry it). This is for the on-call log
+        // only — the token endpoint still collapses every failure to a flat
+        // `invalid_grant` for the client (`auth/connect.ts`). Body read is
+        // best-effort: a non-JSON/absent body must not mask the real status.
+        let detail = '';
+        try {
+            const errorBody = (await response.json()) as {
+                error?: unknown;
+                error_description?: unknown;
+            };
+            const parts = [errorBody.error, errorBody.error_description]
+                .filter(v => typeof v === 'string')
+                .join(': ');
+            if (parts) detail = ` — ${parts}`;
+        } catch {
+            // Non-JSON or empty error body; the status line stands on its own.
+        }
         throw new Error(
-            `Google token endpoint responded ${response.status} ${response.statusText}`,
+            `Google token endpoint responded ${response.status} ${response.statusText}${detail}`,
         );
     }
 
