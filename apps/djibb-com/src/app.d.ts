@@ -3,10 +3,9 @@
 declare global {
 	namespace App {
 		// interface Error {}
-		interface Locals {
-			session: import('lucia').Session | null;
-			user: import('lucia').User | null;
-		}
+		// interface Locals {} — no server-side Locals today. (Previously held
+		// `lucia` Session/User types, but nothing populated or read them, and
+		// lucia is deprecated — GH #52.)
 		// interface PageData {}
 		// interface PageState {}
 		interface Platform {
