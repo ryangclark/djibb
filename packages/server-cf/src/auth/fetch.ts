@@ -19,14 +19,28 @@ import {
     handleMagicConsume,
     handleMagicLand,
     handleMagicRequest,
+    handleSudoRequest,
 } from './magic';
 import {
     handleConnectConsent,
     handleConnectConsentSubmit,
     handleConnectToken,
 } from './connect';
-import { CreateSession, DeleteSession } from './d1';
+import {
+    CreateSession,
+    DeleteSession,
+    GetSessionSudo,
+    SoftDeleteAccountPhase1,
+} from './d1';
 import type { Account } from '@djibb/protocol/account';
+
+/**
+ * Sudo-mode freshness window (GH #58). A destructive account action is
+ * admitted only within this many seconds of a completed step-up re-auth.
+ * GitHub-ish: long enough to finish the flow, short enough that a walked-
+ * away session goes stale.
+ */
+const SUDO_WINDOW_SECONDS = 5 * 60;
 
 export const Auth_App = new Hono<HonoEnv>();
 
@@ -60,6 +74,78 @@ Auth_App.post('/connect/consent', handleConnectConsentSubmit);
 // CSRF-exempt (see src/index.ts) — its authenticity is the body-carried
 // code + verifier, like /magic/consume.
 Auth_App.post('/connect/token', handleConnectToken);
+
+// Sudo-mode step-up (ADR 0024 §3 withdraw path, GH #58). Session-only;
+// mints+emails a fresh re-auth link that stamps this session sudo-fresh
+// on consume. Posted from the first-party settings UI (Origin in
+// AUTHORIZED_DOMAINS), so it stays under the normal CSRF Origin check —
+// unlike /magic/consume, it is NOT exempt.
+Auth_App.post('/sudo/request', handleSudoRequest);
+
+// Account (identity) deletion — Phase 1 (ADR 0024 §3 withdraw path, GH
+// #58). Immediate soft-delete + synchronous hard-revoke of every session,
+// credential, and pending-auth handle for the identity. Session-only (a
+// bearer credential must never delete the identity it is scoped to) and
+// gated behind a fresh sudo step-up for *this same account*.
+Auth_App.post('/account/delete', async c => {
+    const principal = c.get('principal');
+    // Session-only, mirroring `DELETE /session/accounts`: a bearer
+    // credential has no session and must never be a self-destruct button.
+    if (principal.kind !== 'session') throw new UnauthenticatedError();
+
+    const requestBody = await c.req.json().catch(() => null);
+    const parseResult = z
+        .object({ account_id: z.string() })
+        .safeParse(requestBody);
+    if (!parseResult.success) {
+        return new Response('invalid request data', { status: 400 });
+    }
+    const accountId = parseResult.data.account_id;
+
+    // The account must be one this session holds.
+    const account = principal.accounts.find(a => a.id === accountId);
+    if (!account) {
+        return new Response('invalid request data', { status: 403 });
+    }
+
+    // Sudo gate: the calling session must have completed a step-up re-auth
+    // for THIS account inside the freshness window. Account-precise, so a
+    // multi-account session's sudo for one identity can't delete another.
+    const now = Math.floor(Date.now() / 1000);
+    const sudo = await GetSessionSudo(c.env.DJIBB_AUTH, principal.sessionId);
+    const sudoFresh =
+        sudo?.time_sudo != null &&
+        sudo.sudo_account_id === accountId &&
+        now - sudo.time_sudo <= SUDO_WINDOW_SECONDS;
+    if (!sudoFresh) {
+        return c.json({ error: 'sudo_required' }, 403);
+    }
+
+    const callerSingleAccount = principal.accounts.length === 1;
+
+    try {
+        await SoftDeleteAccountPhase1(c.env.DJIBB_AUTH, {
+            accountId,
+            email: account.email ? account.email.toLowerCase() : null,
+            now,
+        });
+    } catch (error) {
+        console.error('`POST /account/delete` cascade error:', error);
+        throw new UnexpectedError();
+    }
+
+    if (callerSingleAccount) {
+        // The caller's own (single-account) session was just deleted — clear
+        // its cookie and report signed-out.
+        setCookie(c, CookieNames.Session, '', sessionCookieAttributes(c));
+        return new Response(null, { status: 204 });
+    }
+
+    // A multi-account session survives with the deleted account removed in
+    // place (same session id, cookie unchanged). Report the remaining set.
+    const remaining = principal.accounts.filter(a => a.id !== accountId);
+    return c.json({ accounts: remaining });
+});
 
 Auth_App.delete('/session/accounts', async c => {
     // Inherently session-only: this mutates the cookie session (drops an

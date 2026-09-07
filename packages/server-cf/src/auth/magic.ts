@@ -30,7 +30,12 @@ import { setCookie } from 'hono/cookie';
 import { z } from 'zod';
 
 import type { HonoEnv } from '..';
-import { BadRequestError, UnexpectedError, ValidationError } from '@djibb/protocol/errors';
+import {
+    BadRequestError,
+    UnauthenticatedError,
+    UnexpectedError,
+    ValidationError,
+} from '@djibb/protocol/errors';
 import { CreateAccount } from '../account/service';
 import { GetAccountByEmail } from './d1';
 import {
@@ -39,6 +44,7 @@ import {
     CreateSession,
     InsertMagicLinkToken,
     MAGIC_RATE_LIMITS,
+    StampSessionSudo,
 } from './d1';
 import { randomString } from '@djibb/protocol/id';
 import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
@@ -61,6 +67,15 @@ const MAGIC_PURPOSE_SIGNIN = 'signin';
  * that client's origin, rather than setting the `djibb-session` cookie.
  */
 const MAGIC_PURPOSE_CONNECT = 'connect';
+/**
+ * A "sudo mode" step-up (GH #58): a GitHub-style fresh re-auth that gates
+ * a destructive account action (identity deletion). Consuming this token
+ * neither creates an account nor mints a session — it re-proves the
+ * *current* session's identity by stamping it sudo-fresh. It must land in
+ * the same browser that holds the session (the consume POST carries the
+ * session cookie), so it is inherently same-device.
+ */
+const MAGIC_PURPOSE_SUDO = 'sudo';
 
 
 // Email matching — pragmatic shape check, not RFC 5321 compliant.
@@ -102,6 +117,17 @@ const RequestBodySchema = z.object({
 const ConsumeBodySchema = z.object({
     token: z.string().min(8).max(128),
     next: z.string().optional(),
+});
+
+/**
+ * Sudo step-up request (GH #58). Session-only. `account_id` names which
+ * of the session's accounts to re-prove (required when the session holds
+ * more than one; optional for a single-account session). `_dev` mirrors
+ * the sign-in dev seam.
+ */
+const SudoRequestBodySchema = z.object({
+    account_id: z.string().optional(),
+    _dev: z.boolean().optional(),
 });
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -177,10 +203,19 @@ function sanitizeNext(next: string | undefined): string {
  * the rendered page. The link in the email points here, not to the
  * frontend, on purpose.
  */
-function buildLandingUrl(c: Context<HonoEnv>, rawToken: string, next: string): string {
+function buildLandingUrl(
+    c: Context<HonoEnv>,
+    rawToken: string,
+    next: string,
+    purpose?: 'sudo'
+): string {
     const u = new URL(`${c.env.API_ORIGIN}/auth/magic/land`);
     u.searchParams.set('token', rawToken);
     if (next && next !== '/') u.searchParams.set('next', next);
+    // Cosmetic only: switches the interstitial copy from "sign in" to
+    // "confirm it's you". The real purpose is bound to the token row in
+    // D1, so a spoofed `purpose` param changes nothing but the wording.
+    if (purpose) u.searchParams.set('purpose', purpose);
     return u.toString();
 }
 
@@ -355,6 +390,118 @@ export async function handleMagicRequest(c: Context<HonoEnv>) {
 }
 
 /**
+ * POST /auth/sudo/request  (GH #58)
+ *
+ * Session-only. Mints and emails a `purpose='sudo'` magic-link that,
+ * when clicked in this same browser, re-proves the caller's identity and
+ * stamps the session sudo-fresh (see the sudo terminal in
+ * `handleMagicConsume`). This is the GitHub-style step-up that gates the
+ * destructive account-delete action; a bearer credential has no session
+ * to elevate, so it is inherently session-only.
+ *
+ * Body: `{ account_id?: string }` — which of the session's accounts to
+ * re-prove (required only when the session holds more than one). Unlike
+ * `/magic/request`, this does not soft-200 on error: the caller is an
+ * authenticated first party driving its own settings UI, so bad input is
+ * an honest 4xx, not a disclosure surface. Rate-limited on the account's
+ * email exactly like sign-in.
+ */
+export async function handleSudoRequest(c: Context<HonoEnv>) {
+    const principal = c.get('principal');
+    if (principal.kind !== 'session') throw new UnauthenticatedError();
+
+    const body = await c.req.json().catch(() => null);
+    const parsed = SudoRequestBodySchema.safeParse(body ?? {});
+    if (!parsed.success) {
+        throw new BadRequestError('invalid request');
+    }
+
+    // Pick which account to re-prove. A single-account session needs no
+    // hint; a multi-account session must name one so sudo stays
+    // account-precise (deleting A must not be authorized by sudo for B).
+    let account: Account | undefined;
+    if (parsed.data.account_id) {
+        account = principal.accounts.find(a => a.id === parsed.data.account_id);
+        if (!account) {
+            return new Response('account not in session', { status: 403 });
+        }
+    } else if (principal.accounts.length === 1) {
+        account = principal.accounts[0];
+    } else {
+        throw new BadRequestError('account_id is required for a multi-account session');
+    }
+
+    if (!account) {
+        // Unreachable: a `session` principal always has ≥1 account.
+        throw new UnexpectedError();
+    }
+
+    const email = (account.email ?? '').toLowerCase();
+    if (!email) {
+        // Step-up is proof-of-inbox; an emailless account can't do it.
+        throw new BadRequestError('this account has no email to confirm with');
+    }
+
+    const ip = c.req.header('CF-Connecting-IP') ?? null;
+    const now = Math.floor(Date.now() / 1000);
+
+    const limit = await checkRateLimits(c.env.DJIBB_AUTH, { email, ip, now });
+    if (!limit.ok) {
+        c.header('Retry-After', String(limit.retryAfterSec));
+        return c.json(
+            {
+                error: 'rate_limited',
+                reason: limit.reason,
+                retry_after_seconds: limit.retryAfterSec,
+            },
+            429
+        );
+    }
+
+    const rawToken = randomString(TOKEN_LENGTH);
+    const tokenHash = await hashToken(rawToken);
+    const expires = now + TOKEN_TTL_SECONDS;
+
+    try {
+        await InsertMagicLinkToken(c.env.DJIBB_AUTH, {
+            tokenHash,
+            targetEmail: email,
+            purpose: MAGIC_PURPOSE_SUDO,
+            timeCreated: now,
+            timeExpires: expires,
+            requestIp: ip,
+            userAgent: c.req.header('User-Agent') ?? null,
+            connectOrigin: null,
+            connectCodeChallenge: null,
+            connectLabel: null,
+        });
+    } catch (err) {
+        console.error('`handleSudoRequest()` insert error:', err);
+        throw new UnexpectedError();
+    }
+
+    const landingUrl = buildLandingUrl(c, rawToken, '/', 'sudo');
+
+    try {
+        await sendMagicLinkEmailLocal(c, email, landingUrl);
+    } catch (err) {
+        console.error('`handleSudoRequest()` email send error:', err);
+        throw new UnexpectedError();
+    }
+
+    if (shouldExposeDevSeam(c.env.ENV, parsed.data._dev)) {
+        console.log(
+            '`handleSudoRequest()` dev seam: returning landing_url for ' +
+                'email=%s. This must not happen in production.',
+            email
+        );
+        return c.json({ landing_url: landingUrl }, 200);
+    }
+
+    return c.body(null, 200);
+}
+
+/**
  * GET /auth/magic/land?token=<raw>&next=<path>
  *
  * Renders an interstitial page with a single button that POSTs to
@@ -369,6 +516,7 @@ export async function handleMagicRequest(c: Context<HonoEnv>) {
 export function handleMagicLand(c: Context<HonoEnv>) {
     const rawToken = c.req.query('token') ?? '';
     const next = sanitizeNext(c.req.query('next'));
+    const mode = c.req.query('purpose') === 'sudo' ? 'sudo' : 'signin';
 
     // Don't validate the token here (would require a DB read and we'd
     // need to be careful not to mutate state). Hand it straight to
@@ -377,7 +525,7 @@ export function handleMagicLand(c: Context<HonoEnv>) {
         return c.html(renderLandingError('Missing sign-in token.'), 400);
     }
 
-    const html = renderLanding(rawToken, next);
+    const html = renderLanding(rawToken, next, mode);
     c.header('Cache-Control', 'no-store');
     c.header('Referrer-Policy', 'no-referrer');
     return c.html(html);
@@ -416,6 +564,44 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
 
     if (!updateResult) {
         throw new ValidationError('sign-in link is invalid or expired');
+    }
+
+    // Sudo step-up terminal (GH #58). Re-proves the *current* session's
+    // identity: no account is created and no session is minted. Handled
+    // before the resolve-or-create + session paths below, and requires the
+    // consuming request to already be that session (the land page's
+    // consume POST carries the cookie, so this is same-browser by
+    // construction).
+    if (updateResult.purpose === MAGIC_PURPOSE_SUDO) {
+        const principal = c.get('principal');
+        if (principal.kind !== 'session') {
+            // The confirmation must complete in the browser that holds the
+            // session. Elevating a session you're not in is impossible, so
+            // fail with guidance rather than silently.
+            throw new ValidationError(
+                'Open this confirmation on the device where you are signed in.'
+            );
+        }
+        const target = updateResult.target_email.toLowerCase();
+        const match = principal.accounts.find(
+            account => (account.email ?? '').toLowerCase() === target
+        );
+        if (!match) {
+            throw new ValidationError(
+                'This confirmation does not match the signed-in account.'
+            );
+        }
+        await StampSessionSudo(c.env.DJIBB_AUTH, {
+            sessionId: principal.sessionId,
+            accountId: match.id,
+            now,
+        });
+        const frontendOrigin = pickFrontendOrigin(c);
+        if (!frontendOrigin) {
+            console.error('`handleMagicConsume()` sudo: no authorized frontend origin');
+            throw new UnexpectedError();
+        }
+        return c.json({ redirect: `${frontendOrigin}/accounts?sudo=ok` });
     }
 
     if (
@@ -509,15 +695,31 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
 
 // ─── Interstitial rendering ─────────────────────────────────────────────────
 
-function renderLanding(rawToken: string, next: string): string {
+function renderLanding(
+    rawToken: string,
+    next: string,
+    mode: 'signin' | 'sudo' = 'signin'
+): string {
     const tokenAttr = escapeHtml(rawToken);
     const nextAttr = escapeHtml(next);
+    // Copy differs by mode; the sudo step-up (GH #58) is a re-auth for an
+    // already-signed-in user, so it says "confirm" rather than "sign in".
+    const title = mode === 'sudo' ? 'Confirm it’s you' : 'Sign in to djibb';
+    const heading = title;
+    const blurb =
+        mode === 'sudo'
+            ? 'Click the button below to confirm this sensitive account action.'
+            : 'Click the button below to complete sign-in.';
+    const cta = mode === 'sudo' ? 'Confirm' : 'Sign me in';
+    const ctaBusy = mode === 'sudo' ? 'Confirming…' : 'Signing in…';
+    const failPrefix =
+        mode === 'sudo' ? 'Confirmation failed: ' : 'Sign-in failed: ';
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="robots" content="noindex,nofollow">
-<title>Sign in to djibb</title>
+<title>${escapeHtml(title)}</title>
 <style>
   body { font: 16px/1.5 system-ui, -apple-system, sans-serif; max-width: 24rem; margin: 4rem auto; padding: 0 1rem; color: #222; }
   h1 { font-size: 1.25rem; margin: 0 0 1rem; }
@@ -528,12 +730,12 @@ function renderLanding(rawToken: string, next: string): string {
 </style>
 </head>
 <body>
-<h1>Sign in to djibb</h1>
-<p>Click the button below to complete sign-in.</p>
+<h1>${escapeHtml(heading)}</h1>
+<p>${escapeHtml(blurb)}</p>
 <form id="f" method="post" action="/auth/magic/consume">
   <input type="hidden" name="token" value="${tokenAttr}">
   <input type="hidden" name="next" value="${nextAttr}">
-  <button type="submit">Sign me in</button>
+  <button type="submit">${escapeHtml(cta)}</button>
 </form>
 <p id="err"></p>
 <script>
@@ -543,7 +745,7 @@ function renderLanding(rawToken: string, next: string): string {
     e.preventDefault();
     const btn = e.target.querySelector('button');
     btn.disabled = true;
-    btn.textContent = 'Signing in…';
+    btn.textContent = ${JSON.stringify(ctaBusy)};
     try {
       const res = await fetch('/auth/magic/consume', {
         method: 'POST',
@@ -562,9 +764,9 @@ function renderLanding(rawToken: string, next: string): string {
       window.location.replace(data.redirect);
     } catch (err) {
       btn.disabled = false;
-      btn.textContent = 'Sign me in';
+      btn.textContent = ${JSON.stringify(cta)};
       const el = document.getElementById('err');
-      el.textContent = 'Sign-in failed: ' + (err && err.message ? err.message : 'unknown error');
+      el.textContent = ${JSON.stringify(failPrefix)} + (err && err.message ? err.message : 'unknown error');
       el.style.display = 'block';
     }
   });

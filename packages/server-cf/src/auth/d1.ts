@@ -225,6 +225,149 @@ export function DeleteSession(d1: D1Database, sessionId: string) {
     );
 }
 
+/**
+ * Sudo-mode freshness for a session (GH #58). "Sudo mode" is a
+ * GitHub-style re-auth: before a destructive account action, the user
+ * completes a fresh `purpose='sudo'` magic-link step-up whose consume
+ * stamps *this* session with the moment and the account it re-proved.
+ * The account-delete endpoint admits the action only when the calling
+ * session was sudo-verified for the same account, within the window.
+ *
+ * Account-scoped on purpose: a multi-account session (ADR 0010) that
+ * sudo'd for account A must not thereby authorize deleting account B.
+ * `sudo_account_id` is the account whose email was re-proved.
+ */
+export function StampSessionSudo(
+    d1: D1Database,
+    args: { sessionId: string; accountId: string; now: number },
+) {
+    return runD1(
+        d1,
+        'StampSessionSudo',
+        sql =>
+            sql`UPDATE sessions
+                SET time_sudo = ${args.now},
+                    sudo_account_id = ${args.accountId}
+                WHERE id = ${args.sessionId}`,
+    );
+}
+
+/**
+ * Reads a session's sudo-freshness state (GH #58). Returns null for an
+ * unknown session; `time_sudo`/`sudo_account_id` are null on a session
+ * that has never completed a step-up. The freshness-window and
+ * account-match checks live at the call site (the delete endpoint), so
+ * this stays a pure read.
+ */
+export async function GetSessionSudo(
+    d1: D1Database,
+    sessionId: string,
+): Promise<{ time_sudo: number | null; sudo_account_id: string | null } | null> {
+    const rows = await runD1(
+        d1,
+        'GetSessionSudo',
+        sql =>
+            sql`SELECT time_sudo, sudo_account_id
+                FROM sessions
+                WHERE id = ${sessionId}
+                LIMIT 1`,
+    );
+    const row = rows[0] as
+        | { time_sudo: number | null; sudo_account_id: string | null }
+        | undefined;
+    if (!row) return null;
+    return {
+        time_sudo: row.time_sudo ?? null,
+        sudo_account_id: row.sudo_account_id ?? null,
+    };
+}
+
+/**
+ * Account (identity) deletion — Phase 1 (GH #58, ADR 0024 §3 withdraw
+ * path). Immediate soft-delete + synchronous hard revoke, as one atomic
+ * batch: a half-applied delete would leave a tombstoned account whose
+ * tokens or sessions still authenticate, which is exactly the failure
+ * "delete" must not have. The irreversible erasure (PII purge) and
+ * owned-entity handling are Phase 2 — the `time_deleted` tombstone this
+ * sets is what buys the grace window to do that safely.
+ *
+ * The batch:
+ *   1. Tombstone the account (`time_deleted`), idempotently.
+ *   2. Revoke every live issued credential for the account — the whole
+ *      point of "delete" as the connect-ceremony withdraw path: every
+ *      connected client dies immediately, not at purge time.
+ *   3. Remove the account from every session *in place* (drop its
+ *      `AccountSession` rows), then delete sessions left with no
+ *      accounts. A multi-account session (the same human's other
+ *      accounts) keeps its id and its other accounts — going further
+ *      than the detach-only `DELETE /auth/session/accounts`, without
+ *      logging the survivor out of its remaining accounts.
+ *   4. Drop pending auth the identity could still complete: magic-link
+ *      tokens for its email, and any in-flight connect codes / pending
+ *      consents.
+ *
+ * `email` is the account's canonical (lowercased) email; pass null for
+ * an emailless account (magic tokens key on email, so there are none to
+ * drop). Atomicity needs the raw D1 batch API (sql-d1 has none), lifted
+ * via `d1Try` like `CreateSession`/`DeleteSession`.
+ */
+export async function SoftDeleteAccountPhase1(
+    d1: D1Database,
+    args: { accountId: string; email: string | null; now: number },
+): Promise<void> {
+    const { accountId, email, now } = args;
+
+    const stmts: Array<D1PreparedStatement> = [
+        d1
+            .prepare(
+                `UPDATE accounts
+                 SET time_deleted = ?, time_updated = ?
+                 WHERE id = ? AND time_deleted IS NULL`,
+            )
+            .bind(now, now, accountId),
+        d1
+            .prepare(
+                `UPDATE issued_credentials
+                 SET time_revoked = ?
+                 WHERE account_id = ? AND time_revoked IS NULL`,
+            )
+            .bind(now, accountId),
+        d1
+            .prepare(`DELETE FROM AccountSession WHERE account_id = ?`)
+            .bind(accountId),
+        // Reap sessions left with no accounts (the account's single-account
+        // sessions; a multi-account session still has its other rows and
+        // survives). LEFT JOIN … IS NULL, not a bound id-list, so it's one
+        // static statement regardless of how many sessions the account had.
+        d1.prepare(
+            `DELETE FROM sessions
+             WHERE id IN (
+                 SELECT s.id FROM sessions s
+                 LEFT JOIN AccountSession a ON a.session_id = s.id
+                 WHERE a.session_id IS NULL
+             )`,
+        ),
+        d1
+            .prepare(`DELETE FROM connect_authorization_codes WHERE account_id = ?`)
+            .bind(accountId),
+        d1
+            .prepare(`DELETE FROM connect_pending WHERE account_id = ?`)
+            .bind(accountId),
+    ];
+
+    if (email) {
+        stmts.push(
+            d1
+                .prepare(`DELETE FROM magic_link_tokens WHERE target_email = ?`)
+                .bind(email),
+        );
+    }
+
+    await runD1(d1, 'SoftDeleteAccountPhase1', () =>
+        d1Try(() => d1.batch(stmts)),
+    );
+}
+
 // TODO: change this function to not use a `batch` of querires, and
 // instead just send a single `JOIN` query, and loop over those rows.
 //
@@ -260,7 +403,8 @@ export async function GetSessionById(
                     ON AccountSession.account_id = accounts.id
                 JOIN sessions
                     ON sessions.id = AccountSession.session_id
-                WHERE AccountSession.session_id = ${sessionId}`,
+                WHERE AccountSession.session_id = ${sessionId}
+                    AND accounts.time_deleted IS NULL`,
     );
 
     if (!rows.length) {
@@ -611,6 +755,13 @@ export async function VerifyBearerCredential(
     ) {
         return null;
     }
+
+    // Deleted-identity guard (GH #58). Phase-1 deletion revokes every
+    // credential synchronously, so a live token for a tombstoned account
+    // should not exist — but a mint/delete race or a token that somehow
+    // outlived its revoke must still fail closed. "Deleted" means the
+    // identity can't authenticate, full stop.
+    if (row.account_time_deleted != null) return null;
 
     const account = accountFromRow(row);
 
