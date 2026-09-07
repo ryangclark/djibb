@@ -100,10 +100,12 @@ you only choose how the credential *arrives*.
 
 **Bearer path (CLIs, bots, integrations):**
 
-- [ ] Mint a token via the `issued_credentials` flow (seed-operator
-  mints today; a self-serve mint UX is a known TODO of ADR 0022).
-  Give it an honest `label` — that label *is* the client's identity in
-  the management surface.
+- [ ] Get a token. Two ways in: `seed-operator` mints one directly (the
+  operator/first-party path — CI, the `djibb` CLI), or an interactive user
+  runs the **connect ceremony** below, which *is* the self-serve mint ADR
+  0022 deferred (ADR 0024, now built). Either way you end up with an
+  ordinary `issued_credentials` row. Give it an honest `label` — that label
+  *is* the client's identity in the management surface.
 - [ ] Send `Authorization: Bearer <token>` — build the transport with
   `bearerToken(token, { origin })` from `@djibb/client/transport`, which
   attaches it and the `Origin` header for you. (`anonymous({ origin })`
@@ -111,6 +113,44 @@ you only choose how the credential *arrives*.
 - [ ] For entity-scoped clients (an email-reply token, a
   single-exchange bot), set `bound_entity_id` so a leaked token can't
   roam.
+
+**Connect-ceremony path (off-domain interactive sign-in) — the client-integration contract:**
+
+This is the designated path for a client on its own domain whose user signs
+in *themselves* (ADR 0024). It reuses the interactive flows (OAuth /
+magic-link) but terminates by minting a **Bearer credential** instead of the
+same-site cookie the browser can't send cross-site. The ceremony imposes a
+concrete contract on the client — these are obligations the *substrate*
+requires, distinct from the one operator setup step (`AUTHORIZED_DOMAINS`,
+below). As of ADR 0024 items 1–3 (#28, #29, #59) the whole path works
+end-to-end; item 4 (the first real off-domain consumer) will stress it.
+
+- [ ] **Host an `/accounts/verified` redirect target that reads `?code=`.**
+  On success the worker redirects the browser back to
+  `<your-origin>/accounts/verified?code=<authorization_code>`. There is **no
+  error/decline callback**: per the #29 v1 amendment the consent page has no
+  decline button, so a user who doesn't connect simply never returns. Your
+  client must therefore tolerate the ceremony **never completing** (a
+  timeout / abandoned tab), not wait for an error redirect that never comes.
+- [ ] **Generate a PKCE verifier + `S256` challenge, and hold the verifier
+  across the redirect.** Only the verifier proves possession at exchange;
+  `plain` is rejected. (`randomString(43)` from `@djibb/protocol/id` is a
+  PKCE-legal verifier; the challenge is `base64url(SHA-256(verifier))`.)
+- [ ] **Start the ceremony carrying origin + challenge + label.** OAuth:
+  `GET /auth/google?connect=1&code_challenge=<challenge>&label=<label>`
+  (origin comes from the validated `Referer`). Magic-link: `POST
+  /auth/magic/request` with `connect: { origin, code_challenge, label }`.
+- [ ] **Exchange `code` + `code_verifier` at `POST /auth/connect/token`** and
+  store the returned bearer token. It's returned exactly once — the raw
+  token is never persisted server-side.
+- [ ] **Then send `Authorization: Bearer` on every API call**, via
+  `bearerToken(token, { origin })` — including the Replicache sync loop,
+  which now carries the credential too (`createReplicacheClient({ …,
+  credential })`, #59). Nothing above the transport line changes.
+- [ ] **Re-run the ceremony on expiry.** Tokens are ~90-day and
+  **non-refreshable by design** — re-connecting *is* the refresh (cheap by
+  intent; a memory-only token that reconnects per visit is a legitimate
+  posture, ADR 0024 §6). Treat a 401/403 as "reconnect," not "error out."
 
 **Either way:**
 
@@ -122,8 +162,10 @@ you only choose how the credential *arrives*.
 ## Step 3 — Entity sync (reads and writes)
 
 - [ ] Construct the Replicache client with
-  `createReplicacheClient({ accountId, listId, baseUrl, secure })`
-  from `@djibb/client/replicache`. The package never reads env — your
+  `createReplicacheClient({ accountId, listId, baseUrl, secure, credential })`
+  from `@djibb/client/replicache`. `credential` defaults to `sessionCookie()`
+  (the browser/same-site case); pass `bearerToken(token, { origin })` for an
+  off-domain client (#59). The package never reads env — your
   app injects `baseUrl`. djibb-com resolves it in `src/lib/config.js` from
   a single `VITE_DJIBB_ORIGIN` (see `apps/djibb-com/.env.example`), which
   also feeds `@djibb/client/transport` for plain fetch.
@@ -147,12 +189,12 @@ you only choose how the credential *arrives*.
   one client for a *different* mutation — would be silently skip-and-acked by
   the DO, so `pushMutation` throws on it.) `djibb contribute`/`promote`
   are the reference consumers.
-- [ ] **⚠ gap — `makePusher`/`makePuller` are still cookie-only.**
-  They hardcode `credentials: 'include'` and can't send a Bearer header, so a
-  *real* (long-lived, syncing) Replicache client can't authenticate off-domain
-  yet. `@djibb/client/transport` is now auth-parameterized (arch-review #5);
-  routing the Replicache pusher/puller through it is the remaining step, and
-  ADR 0024's off-domain client is the consumer that forces it.
+- [ ] **`makePusher`/`makePuller` carry the caller's credential** (cookie or
+  Bearer), so a *real* (long-lived, syncing) Replicache client authenticates
+  off-domain, not only a one-shot push. The credential threads in through
+  `createReplicacheClient`'s `credential` param above (defaulting to the
+  session cookie); this was the last piece of ADR 0024 item 3 (#59, closing
+  the arch-review #5 transport work).
 - [ ] Respect `schemaVersion` (currently `'1'` in
   `createReplicacheClient`). It's a **cross-client contract**: when
   stored value shapes change, every client must bump together.
@@ -221,18 +263,18 @@ Gaps above are extraction chores; these are design work.
    which the role lattice doesn't express. Conditional subtrees
    (ADR 0019) may be the seed of an answer; otherwise this is a new
    ADR before that client is honest.
-2. **The interactive credential mint (ADR 0024, Proposed) isn't built
-   yet — and it's the linchpin of the scattered-clients vision.**
-   Off-domain clients can't ride the cookie; the designated shape is a
-   connect ceremony (authorization code + PKCE over the existing
-   interactive flows) that ends by minting an `issued_credentials` row
-   and handing the token back. The worker already implements the front
-   half (`referer_origin` + redirect-back); the token endpoint, the
-   disclosure interstitial, and Bearer support in the `@djibb/client`
-   transport are the build. Branded ("Sign in with djibb") vs
-   white-label is a per-client product choice over the same machinery
-   — but the connection-moment disclosure on the worker's own surface
-   is mandatory either way (ADR 0024 §3).
+2. **The interactive credential mint (ADR 0024) is built** — items 1–3
+   landed (token endpoint + PKCE #28, disclosure interstitial #29, Bearer
+   transport #59). Off-domain clients can't ride the cookie, so they run the
+   connect ceremony (authorization code + PKCE over the existing interactive
+   flows) which ends by minting an `issued_credentials` row and handing the
+   token back — see the client-integration contract in Step 2. What remains
+   is **item 4**: the first real off-domain consumer (Secret Santa) walking
+   the whole path, which is expected to surface real-world gaps — and it is
+   itself blocked on gap #1 (item-level read secrecy). Branded ("Sign in
+   with djibb") vs white-label is a per-client product choice over the same
+   machinery, but the connection-moment disclosure on the worker's own
+   surface is mandatory either way (ADR 0024 §3).
 3. **Third-party (stranger-built) clients are gated** on two decisions
    ADR 0024 §5 names but defers: per-credential role narrowing
    (`role_ceiling` or equivalent — a stranger's client holding your
