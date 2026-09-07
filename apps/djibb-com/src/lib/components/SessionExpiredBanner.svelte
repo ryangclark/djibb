@@ -53,9 +53,29 @@
 	 * session is authorization reasoning, and it belongs somewhere it can
 	 * be tested directly rather than inside an untested `$derived`. This
 	 * component only renders the answer.
+	 *
+	 * ## The escape hatch (GH #45)
+	 *
+	 * Non-dismissible is right for the person who owns the work. It is a
+	 * trap for anyone else. The ledger fallback in `resolveEffectiveAccount`
+	 * is keyed on the entity, not the human, so on a shared device a
+	 * genuinely anonymous visitor can land here acting as an account that
+	 * left work behind — shown a banner about someone else's changes, told
+	 * to sign in as someone they are not, and unable to edit the list
+	 * anonymously until that account returns. Preserving the work by
+	 * default is still correct (discarding it silently would destroy
+	 * something real), so the way out is an *explicit* choice: "not you?
+	 * discard these and continue". `canDisownAuthBlock` says when that
+	 * may be offered — only while acting as an account the session cannot
+	 * vouch for. The discard itself is the page's (`onDisown`): it has to
+	 * close the live client before the store can be dropped, then rebuild
+	 * it as whoever the session actually says we are.
 	 */
 	import { onMount } from 'svelte';
-	import { diagnoseAuthBlock } from '@djibb/client/syncStatus';
+	import {
+		canDisownAuthBlock,
+		diagnoseAuthBlock
+	} from '@djibb/client/syncStatus';
 
 	/**
 	 * @typedef {Object} Props
@@ -75,16 +95,36 @@
 	 *   Accounts currently on the session. Empty means no session.
 	 *   `readonly` to match what `sessionState.accounts` hands over — this
 	 *   only ever reads them.
+	 * @property {() => void} onDisown
+	 *   Throw away the blocked work on this entity and rebuild the client
+	 *   as whoever the session says we are (GH #45). Irreversible; only
+	 *   ever fired by the user's own click.
+	 * @property {boolean} disowning
+	 *   A disown is in progress — disables the button and swaps its label.
+	 * @property {string} disownError
+	 *   Why the last disown failed, if it did. Empty when it didn't.
 	 */
 
 	/** @type {Props} */
-	let { status, signInHref, onRetry, actingAccountId, sessionAccounts } =
-		$props();
+	let {
+		status,
+		signInHref,
+		onRetry,
+		actingAccountId,
+		sessionAccounts,
+		onDisown,
+		disowning,
+		disownError
+	} = $props();
 
 	let visible = $derived(status.authBlocked);
 
 	let cause = $derived(
 		diagnoseAuthBlock({ actingAccountId, sessionAccounts })
+	);
+
+	let canDisown = $derived(
+		canDisownAuthBlock({ actingAccountId, sessionAccounts })
 	);
 
 	// The count is Replicache's real queue depth, so it's honest even
@@ -141,6 +181,36 @@
 			</p>
 			<a class="primary" href={signInHref}>Sign in</a>
 		{/if}
+		{#if canDisown}
+			<!-- The way out for someone who is NOT that account (GH #45).
+			     Reads as a question because that is the one fact only the
+			     person in front of the screen knows; the button is worded
+			     as the consequence, not as a soft "dismiss". -->
+			<div class="disown">
+				<p>
+					<strong>Not you?</strong>
+					{#if cause === 'signed-out'}
+						Discard those changes and carry on{#if signedInAs} as
+							{signedInAs}{/if}.
+					{:else}
+						These changes were made as an account that isn't signed
+						in on this device. Discard them to continue without it.
+					{/if}
+					This can't be undone.
+				</p>
+				<button
+					type="button"
+					class="danger"
+					disabled={disowning}
+					onclick={onDisown}
+				>
+					{disowning ? 'Removing…' : 'Discard and continue'}
+				</button>
+				{#if disownError}
+					<p class="error">{disownError}</p>
+				{/if}
+			</div>
+		{/if}
 	</aside>
 {/if}
 
@@ -163,6 +233,33 @@
 	}
 	.session-expired p {
 		margin: 0;
+	}
+	.disown {
+		flex-basis: 100%;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem 1rem;
+		align-items: center;
+		justify-content: space-between;
+		border-top: 1px solid #fecaca;
+		padding-top: 0.5rem;
+		font-size: 0.9rem;
+	}
+	.disown .danger {
+		background: none;
+		border: 1px solid #b91c1c;
+		color: #7f1d1d;
+		padding: 0.4rem 0.9rem;
+		border-radius: 0.35rem;
+		cursor: pointer;
+		flex: none;
+	}
+	.disown .danger:disabled {
+		opacity: 0.5;
+	}
+	.disown .error {
+		flex-basis: 100%;
+		font-size: 0.85rem;
 	}
 	.session-expired a.primary {
 		background: #b91c1c;

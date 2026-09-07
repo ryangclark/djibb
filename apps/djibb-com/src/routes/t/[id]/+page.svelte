@@ -1,5 +1,5 @@
 <script>
-	import { untrack } from 'svelte';
+	import { tick, untrack } from 'svelte';
 
 	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
@@ -19,6 +19,8 @@
 	import UndoToast from '$lib/components/UndoToast.svelte';
 	import { getSessionState } from '$lib/session.svelte.js';
 	import { createStrandedState } from '$lib/replicache/stranded.svelte.js';
+	import { unflushedLedger } from '$lib/replicache/ledger.js';
+	import { discardUnflushed } from '@djibb/client/unflushed';
 	import z, { ZodError } from 'zod';
 
 	let data = $derived(page.data);
@@ -52,6 +54,10 @@
 	/** @type {string | null} */
 	let actingAccountId = $state.raw(null);
 
+	// A disown (GH #45) in progress. See /l/[id]/+page.svelte.
+	let disowning = $state(false);
+	let disownError = $state('');
+
 	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
 	let toastEvent = $state(null);
 
@@ -67,6 +73,9 @@
 		// See /l/[id]/+page.svelte for the long-form comment on why
 		// this gate is necessary. tl;dr: direct nav races session load.
 		if (!sessionState.hasLoaded) return;
+
+		// Standing down for a disown — see /l/[id]/+page.svelte.
+		if (disowning) return;
 
 		// See /l/[id]/+page.svelte: the `?new=1` marker authorizes the
 		// one-time optimistic init, read untracked so stripping it (below)
@@ -172,6 +181,31 @@
 		entityId: () => data.list_id,
 		actingAccountId: () => actingAccountId
 	});
+
+	// "Not you?" — discard the blocked work and rebuild the client as
+	// whoever the session says we are (GH #45). See /l/[id]/+page.svelte
+	// for why the order (stand down → tick → drop → resume) matters.
+	async function disown() {
+		const accountId = actingAccountId;
+		if (disowning || !accountId) return;
+		disownError = '';
+		disowning = true;
+		await tick();
+		try {
+			await discardUnflushed({
+				ledger: unflushedLedger,
+				accountId,
+				entityIds: [data.list_id]
+			});
+		} catch (err) {
+			disownError =
+				'Could not remove those changes — another tab may still have ' +
+				'this template open. Close it and try again.';
+			console.error('Disown failed:', err);
+		} finally {
+			disowning = false;
+		}
+	}
 </script>
 
 {#if page.url.searchParams.get('from_invite') === '1' && sessionState.hasLoaded}
@@ -197,6 +231,9 @@
 		onRetry={() => syncStatus?.retry()}
 		{actingAccountId}
 		sessionAccounts={sessionState.accounts}
+		onDisown={disown}
+		{disowning}
+		{disownError}
 	/>
 	<StrandedWorkBanner
 		{stranded}

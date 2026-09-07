@@ -1,7 +1,11 @@
 // @ts-check
 
 import { describe, expect, it, vi } from 'vitest';
-import { createSyncTracker, diagnoseAuthBlock } from './syncStatus.js';
+import {
+	canDisownAuthBlock,
+	createSyncTracker,
+	diagnoseAuthBlock
+} from './syncStatus.js';
 
 /**
  * Minimal stand-in for the bits of the Replicache client the tracker
@@ -375,5 +379,53 @@ describe('diagnoseAuthBlock — why the pushes are refused', () => {
 				sessionAccounts: [{ id: 'a/1' }, { id: 'a/2' }]
 			})
 		).toBe('expired');
+	});
+});
+
+describe('canDisownAuthBlock — when "not you?" may be offered (GH #45)', () => {
+	// The escape hatch destroys queued work, so offering it in the wrong
+	// state is the dangerous direction. These pin exactly when it appears.
+
+	it('offers it when there is no session and the client acts as someone', () => {
+		// THE #45 case: a stale ledger claim on a shared device has an
+		// anonymous visitor acting as the account that left the work.
+		expect(
+			canDisownAuthBlock({ actingAccountId: 'a/1', sessionAccounts: [] })
+		).toBe(true);
+	});
+
+	it('offers it when the session is live but lacks the acting account', () => {
+		// Signed out of A with B still current. B is a present person who
+		// may disown A's work here and continue as themselves.
+		expect(
+			canDisownAuthBlock({
+				actingAccountId: 'a/1',
+				sessionAccounts: [{ id: 'a/2' }]
+			})
+		).toBe(true);
+	});
+
+	it('never offers it when the acting account is on the session', () => {
+		// Then the person here IS that account, and the fix is to sign in
+		// again. "Not you?" would be nonsense — and a trap.
+		expect(
+			canDisownAuthBlock({
+				actingAccountId: 'a/1',
+				sessionAccounts: [{ id: 'a/1' }, { id: 'a/2' }]
+			})
+		).toBe(false);
+	});
+
+	it('never offers it to a genuinely anonymous client', () => {
+		// No other account's work is here to disown.
+		expect(
+			canDisownAuthBlock({ actingAccountId: null, sessionAccounts: [] })
+		).toBe(false);
+		expect(
+			canDisownAuthBlock({
+				actingAccountId: null,
+				sessionAccounts: [{ id: 'a/2' }]
+			})
+		).toBe(false);
 	});
 });
