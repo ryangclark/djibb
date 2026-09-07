@@ -1,7 +1,14 @@
 <script>
+	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { OAUTH_PROVIDER_PRETTY } from '@djibb/protocol/auth/constants';
 	import { getSessionState, STATUSES } from '$lib/session.svelte';
-	import { setAccountUsername } from '$lib/api/account';
+	import {
+		setAccountUsername,
+		requestSudo,
+		deleteAccount,
+		SudoRequiredError
+	} from '$lib/api/account';
 	import { api, DjibbHttpError } from '$lib/api/client';
 	import {
 		discardUnflushed,
@@ -158,6 +165,122 @@
 
 		discarding = false;
 		signingOut = false;
+	}
+
+	// --- Danger zone: delete this identity (GH #58, ADR 0024 §3 exit path) ---
+	//
+	// A destructive, GitHub-style flow: a client "type delete" speed-bump, then
+	// a real sudo step-up (a magic-link re-auth that lands back here with
+	// `?sudo=ok`), then the irreversible confirm. Deletion is Phase 1 — the
+	// account is soft-deleted and every session/credential/pending-auth for it
+	// is revoked immediately (signed out everywhere), with the scheduled PII
+	// purge deferred to Phase 2.
+	//
+	// Stages: 'idle' → 'confirm' (typed speed-bump) → 'requesting' →
+	// 'awaiting-sudo' (email sent) → 'ready' (sudo-fresh, back from the link) →
+	// 'deleting'.
+	let dangerOpen = $state(false);
+	let deleteStage = $state('idle');
+	let deleteConfirmText = $state('');
+	let deleteError = $state('');
+	// The sudo step-up redirects the whole browser, so which account was being
+	// deleted can't live in memory across it — park it here, keyed per account.
+	const PENDING_DELETE_KEY = 'djibb.pendingDeleteAccount';
+	// Dev-only: the `_dev` seam hands back the magic-link URL so a local
+	// walk-through can skip the inbox. Never populated in production.
+	let devLandingUrl = $state('');
+
+	onMount(() => {
+		if (typeof window === 'undefined') return;
+		const params = new URLSearchParams(window.location.search);
+		if (params.get('sudo') !== 'ok') return;
+		// Only the row whose pending id matches the completed step-up unlocks —
+		// the sudo stamp is account-precise on the server, so the UI must be too.
+		const pending = sessionStorage.getItem(PENDING_DELETE_KEY);
+		if (pending !== account.id) return;
+		dangerOpen = true;
+		deleteStage = 'ready';
+		// Strip `?sudo=ok` so a refresh doesn't re-open the confirm state.
+		params.delete('sudo');
+		const qs = params.toString();
+		history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
+	});
+
+	function openDanger() {
+		dangerOpen = true;
+		deleteStage = 'confirm';
+		deleteConfirmText = '';
+		deleteError = '';
+	}
+
+	function cancelDelete() {
+		dangerOpen = false;
+		deleteStage = 'idle';
+		deleteConfirmText = '';
+		deleteError = '';
+		devLandingUrl = '';
+		if (typeof sessionStorage !== 'undefined') {
+			sessionStorage.removeItem(PENDING_DELETE_KEY);
+		}
+	}
+
+	async function startSudo() {
+		if (deleteConfirmText.trim().toLowerCase() !== 'delete') {
+			deleteError = 'Type "delete" to continue.';
+			return;
+		}
+		deleteError = '';
+		deleteStage = 'requesting';
+		try {
+			// Park the target BEFORE the redirect: consuming the emailed link
+			// reloads this page, and this is how the returning row knows it's the
+			// one to unlock.
+			sessionStorage.setItem(PENDING_DELETE_KEY, account.id);
+			const { landingUrl } = await requestSudo(account.id);
+			devLandingUrl = landingUrl ?? '';
+			deleteStage = 'awaiting-sudo';
+		} catch (err) {
+			deleteError = /** @type {Error} */ (err).message ?? String(err);
+			deleteStage = 'confirm';
+		}
+	}
+
+	async function confirmDelete() {
+		deleteError = '';
+		deleteStage = 'deleting';
+		try {
+			const { signedOut } = await deleteAccount(account.id);
+			if (typeof sessionStorage !== 'undefined') {
+				sessionStorage.removeItem(PENDING_DELETE_KEY);
+			}
+			if (signedOut) {
+				// The whole session was this one account — its cookie is cleared.
+				// Leave the app for a plain goodbye rather than snapping back to a
+				// signed-out /accounts.
+				await goto('/goodbye');
+				return;
+			}
+			// A multi-account session survives; refresh so this row drops out and
+			// the switcher re-hydrates without the deleted identity.
+			if (sessionState.status === STATUSES.idle) {
+				await sessionState.fetchSession();
+			}
+		} catch (err) {
+			if (err instanceof SudoRequiredError) {
+				// The stamp went stale (the 5-minute window elapsed) or never
+				// landed. Send them back through the step-up, not to a dead end.
+				deleteError =
+					'Your verification expired. Please confirm again to delete this account.';
+				deleteStage = 'confirm';
+				deleteConfirmText = '';
+				if (typeof sessionStorage !== 'undefined') {
+					sessionStorage.removeItem(PENDING_DELETE_KEY);
+				}
+			} else {
+				deleteError = /** @type {Error} */ (err).message ?? String(err);
+				deleteStage = 'ready';
+			}
+		}
 	}
 
 	function startEdit() {
@@ -338,6 +461,93 @@
 	</div>
 {/if}
 
+<section class="danger-zone">
+	{#if !dangerOpen}
+		<button type="button" class="danger-toggle" onclick={openDanger}>
+			Delete this account
+		</button>
+	{:else}
+		<div class="danger-box" role="group" aria-label="Delete account">
+			<p class="danger-title"><strong>Delete this account</strong></p>
+			<p class="hint">
+				This permanently deletes
+				{#if account.email}<span class="font-mono">{account.email}</span>{:else}this
+					identity{/if}. You'll be signed out everywhere and every connected app
+				loses access immediately. This can't be undone.
+			</p>
+
+			{#if deleteStage === 'confirm' || deleteStage === 'requesting'}
+				<label class="danger-field">
+					<span>Type <span class="font-mono">delete</span> to continue</span>
+					<input
+						class="border px-2 py-1 text-sm font-mono"
+						bind:value={deleteConfirmText}
+						placeholder="delete"
+						autocomplete="off"
+						disabled={deleteStage === 'requesting'}
+					/>
+				</label>
+				<div class="actions">
+					<button
+						type="button"
+						class="danger"
+						disabled={deleteStage === 'requesting'}
+						onclick={startSudo}
+					>
+						{deleteStage === 'requesting' ? 'Sending…' : 'Continue'}
+					</button>
+					<button
+						type="button"
+						class="cancel"
+						disabled={deleteStage === 'requesting'}
+						onclick={cancelDelete}>Cancel</button
+					>
+				</div>
+			{:else if deleteStage === 'awaiting-sudo'}
+				<p class="hint">
+					<strong>Check your email.</strong> We sent a confirmation link to
+					{#if account.email}<span class="font-mono">{account.email}</span>{:else}this
+						account{/if}. Open it on this device to confirm it's you, then come
+					back here to finish.
+				</p>
+				{#if devLandingUrl}
+					<p class="hint">
+						<em>Dev seam:</em>
+						<a href={devLandingUrl}>confirmation link</a>
+					</p>
+				{/if}
+				<div class="actions">
+					<button type="button" class="cancel" onclick={cancelDelete}>Cancel</button>
+				</div>
+			{:else if deleteStage === 'ready' || deleteStage === 'deleting'}
+				<p class="hint">
+					<strong>Identity confirmed.</strong> This is the point of no return.
+				</p>
+				<div class="actions">
+					<button
+						type="button"
+						class="danger"
+						disabled={deleteStage === 'deleting'}
+						onclick={confirmDelete}
+					>
+						{deleteStage === 'deleting' ? 'Deleting…' : 'Permanently delete account'}
+					</button>
+					<button
+						type="button"
+						class="cancel"
+						disabled={deleteStage === 'deleting'}
+						onclick={cancelDelete}>Cancel</button
+					>
+				</div>
+			{/if}
+
+			{#if deleteError}
+				<p class="danger-error" role="alert">{deleteError}</p>
+			{/if}
+		</div>
+	{/if}
+</section>
+
 <style>
 	.signout-error {
 		border: 1px solid #fecaca;
@@ -396,5 +606,74 @@
 	.unsynced-confirm .danger-hint {
 		margin: 0;
 		font-size: 0.8rem;
+	}
+
+	.danger-zone {
+		margin: 0.75rem 0 1rem;
+	}
+	.danger-toggle {
+		background: transparent;
+		border: none;
+		color: #b91c1c;
+		font-size: 0.85rem;
+		text-decoration: underline;
+		cursor: pointer;
+		padding: 0;
+	}
+	.danger-box {
+		border: 1px solid #fecaca;
+		background: #fef2f2;
+		color: #7f1d1d;
+		padding: 0.75rem 1rem;
+		border-radius: 0.5rem;
+	}
+	.danger-box .danger-title {
+		margin: 0 0 0.5rem;
+	}
+	.danger-box .hint {
+		font-size: 0.85rem;
+		color: #991b1b;
+		margin: 0 0 0.5rem;
+	}
+	.danger-field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		font-size: 0.85rem;
+		margin: 0.5rem 0;
+	}
+	.danger-box .actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		margin-top: 0.5rem;
+	}
+	.danger-box button {
+		padding: 0.4rem 0.9rem;
+		border-radius: 0.35rem;
+		cursor: pointer;
+	}
+	.danger-box button:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+	.danger-box button.danger {
+		background: #dc2626;
+		border: none;
+		color: white;
+	}
+	.danger-box button.cancel {
+		background: transparent;
+		border: 1px solid #d6d3d1;
+		color: #57534e;
+	}
+	.danger-error {
+		border: 1px solid #fecaca;
+		background: white;
+		color: #7f1d1d;
+		padding: 0.4rem 0.6rem;
+		border-radius: 0.35rem;
+		margin: 0.5rem 0 0;
+		font-size: 0.85rem;
 	}
 </style>
