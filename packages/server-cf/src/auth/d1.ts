@@ -365,7 +365,18 @@ export async function SoftDeleteAccountPhase1(
     // Reap the account's now-empty sessions — scoped to the ids captured
     // above (never an unrelated orphan), and only those that lost their
     // last account (a multi-account session still has other rows, so the
-    // `NOT IN` subquery excludes it).
+    // `NOT IN` subquery excludes it). The `NOT IN` is NULL-safe here because
+    // `AccountSession.session_id` is `TEXT NOT NULL` (migration 0001), so the
+    // subquery can't yield a NULL that would poison the predicate.
+    //
+    // Scoping to captured ids (rather than a blanket "delete every empty
+    // session") is deliberate: it can't touch an unrelated session, at the
+    // cost of one benign race — a session created for this account *between*
+    // the SELECT above and this batch loses its AccountSession row here but
+    // isn't in `sessionIds`, so it survives as a zero-account row. That row is
+    // inert (`GetSessionById` resolves a zero-account session to null, i.e.
+    // signed-out) and Phase 2's purge sweeps it; we accept the orphan over the
+    // broader blast radius of a global reap.
     if (sessionIds.length) {
         const placeholders = sessionIds.map(() => '?').join(', ');
         stmts.push(

@@ -563,6 +563,12 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
     // sudo link is same-device-required, so we PEEK the token to learn its
     // purpose and validate the session *before* burning it — a click on the
     // wrong device must not spend a link that can never complete there.
+    //
+    // The peek is unconditional (we can't know the purpose without reading),
+    // so the sign-in/connect paths below pay one extra SELECT before their
+    // consume. That's a deliberate trade: `/magic/consume` is a low-frequency
+    // human-auth action, not a DB hot path, and a single uniform peek-then-act
+    // shape is worth more than shaving a round trip off the common branch.
     const peeked = await peekMagicTokenRow(c.env.DJIBB_AUTH, tokenHash, now);
     if (!peeked) {
         throw new ValidationError('sign-in link is invalid or expired');
@@ -599,12 +605,16 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
         if (!consumed) {
             throw new ValidationError('sign-in link is invalid or expired');
         }
-        // Stamp the account the token's email matched. In the rare case a
-        // session holds two accounts sharing this email, this picks the
-        // first — which is fail-safe: the delete gate compares
-        // `sudo_account_id` to the account named in the delete request, so a
-        // wrong pick can only stall that flow, never authorize deleting an
-        // unintended account.
+        // Stamp the account the token's email matched. This `find` is
+        // unambiguous by construction: account resolution is email-first for
+        // every ceremony (magic is email-keyed; Google is
+        // `GetAccountByEmail ?? GetAccountByGoogleId`, oauth.ts), and
+        // `GetAccountByEmail` excludes tombstones — so no two *live* accounts
+        // ever share an email, and a session can hold at most one account per
+        // address. Even if that invariant were somehow violated, picking the
+        // first is fail-safe: the delete gate compares `sudo_account_id` to the
+        // account named in the delete request, so a wrong pick can only stall
+        // that flow, never authorize deleting an unintended account.
         await StampSessionSudo(c.env.DJIBB_AUTH, {
             sessionId: principal.sessionId,
             accountId: match.id,
