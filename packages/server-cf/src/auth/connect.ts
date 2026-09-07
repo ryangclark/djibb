@@ -307,15 +307,13 @@ export async function handleConnectToken(c: Context<HonoEnv>) {
 
 /**
  * What a ceremony captures for the disclosure page and the later mint. The
- * `account*` fields are the recognition surface (§3 rule 1); the client
+ * `account*` fields are what the page greets ("Welcome, <name>!"); the client
  * fields are threaded verbatim into {@link InsertAuthorizationCode} on
  * approval, so the exchanged code carries the same ceremony context #28 set.
  */
 export type PendingConnectionInput = {
     accountId: string;
     accountDisplayName: string | null;
-    /** Did the ceremony resolve an existing Account (→ "welcome back")? */
-    accountPreexisting: boolean;
     clientOrigin: string;
     codeChallenge: string;
     label: string | null;
@@ -326,7 +324,6 @@ export type PendingConnectionInput = {
 export type PendingConnectionRow = {
     account_id: string;
     account_display_name: string | null;
-    account_preexisting: number;
     client_origin: string;
     code_challenge: string;
     label: string | null;
@@ -354,7 +351,6 @@ export async function InsertPendingConnection(
                     handle_hash,
                     account_id,
                     account_display_name,
-                    account_preexisting,
                     client_origin,
                     code_challenge,
                     label,
@@ -362,8 +358,7 @@ export async function InsertPendingConnection(
                     time_created,
                     time_expires
                 ) VALUES (${handleHash}, ${input.accountId},
-                    ${input.accountDisplayName ?? null},
-                    ${input.accountPreexisting ? 1 : 0}, ${input.clientOrigin},
+                    ${input.accountDisplayName ?? null}, ${input.clientOrigin},
                     ${input.codeChallenge}, ${input.label ?? null},
                     ${input.boundEntityId ?? null}, ${now},
                     ${now + PENDING_TTL_SECONDS})`,
@@ -389,8 +384,7 @@ export async function GetPendingConnection(
         'GetPendingConnection',
         sql =>
             sql<PendingConnectionRow>`SELECT account_id, account_display_name,
-                    account_preexisting, client_origin, code_challenge, label,
-                    bound_entity_id
+                    client_origin, code_challenge, label, bound_entity_id
                 FROM connect_pending
                 WHERE handle_hash = ${handleHash}
                     AND time_consumed IS NULL
@@ -420,8 +414,8 @@ export async function ConsumePendingConnection(
                 WHERE handle_hash = ${handleHash}
                     AND time_consumed IS NULL
                     AND time_expires > ${now}
-                RETURNING account_id, account_display_name, account_preexisting,
-                    client_origin, code_challenge, label, bound_entity_id`,
+                RETURNING account_id, account_display_name, client_origin,
+                    code_challenge, label, bound_entity_id`,
     );
     return rows[0] ?? null;
 }
@@ -444,19 +438,18 @@ function clientName(row: PendingConnectionRow): string {
 function renderConsentPage(handle: string, row: PendingConnectionRow): string {
     const client = escapeHtml(clientName(row));
     const origin = escapeHtml(row.client_origin);
-    const preexisting = row.account_preexisting === 1;
     const name = row.account_display_name
         ? escapeHtml(row.account_display_name)
         : null;
 
-    const heading = preexisting
-        ? name
-            ? `Welcome back, ${name}`
-            : 'Welcome back'
-        : 'Connect your djibb identity';
-    const lead = preexisting
-        ? `This connects <strong>${client}</strong> to your djibb identity.`
-        : `This creates a djibb identity and connects <strong>${client}</strong> to it.`;
+    // v1 copy (ADR 0024 §3 amendment): a single, always-true greeting — the
+    // identity already exists by this point (created during the ceremony), so
+    // we don't distinguish returning-vs-new, which also avoids greeting a
+    // returning visitor in a way that reads as tracking. Connect is the one
+    // affirmative action; there is no explicit decline button — closing the
+    // page mints nothing, and an already-connected client is severed from the
+    // connected-clients surface (revoke) or by deleting the identity.
+    const heading = name ? `Welcome, ${name}!` : 'Welcome!';
 
     return `<!doctype html>
 <html lang="en">
@@ -473,23 +466,21 @@ function renderConsentPage(handle: string, row: PendingConnectionRow): string {
   h1 { font-size: 1.4rem; margin: 0 0 .5rem; }
   p { margin: 0 0 1rem; }
   .origin { color: #666; font-size: .85rem; word-break: break-all; }
-  .actions { display: flex; gap: .75rem; margin-top: 1.5rem; }
+  .actions { margin-top: 1.5rem; }
   button { font: inherit; padding: .6rem 1.1rem; border-radius: .5rem;
-           border: 1px solid #8884; cursor: pointer; flex: 1; }
-  button.approve { background: #2563eb; color: #fff; border-color: #2563eb; }
-  button.decline { background: transparent; }
+           border: 1px solid #2563eb; cursor: pointer; width: 100%;
+           background: #2563eb; color: #fff; }
 </style>
 </head>
 <body>
 <main>
   <h1>${heading}</h1>
-  <p>${lead}</p>
+  <p>This connects <strong>${client}</strong> to your djibb identity.</p>
   <p class="origin">Requested by ${origin}</p>
   <form method="post" action="/auth/connect/consent">
     <input type="hidden" name="handle" value="${escapeHtml(handle)}">
     <div class="actions">
-      <button class="decline" type="submit" name="decision" value="decline">Not now</button>
-      <button class="approve" type="submit" name="decision" value="approve">Connect</button>
+      <button type="submit">Connect</button>
     </div>
   </form>
 </main>
@@ -535,10 +526,10 @@ function consentPageHeaders(c: Context<HonoEnv>): void {
  * GET /auth/connect/consent?pending=<handle>
  *
  * The disclosure page (ADR 0024 §3). Reads the pending connection **without
- * consuming it** (idempotent render) and shows what is connecting, with an
- * Approve/Decline form. This is the one branding floor a client cannot skip:
- * the shared identity discloses the connection on its own surface before any
- * credential exists.
+ * consuming it** (idempotent render) and shows what is connecting, with a
+ * single Connect action (affirmative consent — see the POST handler). This is
+ * the one branding floor a client cannot skip: the shared identity discloses
+ * the connection on its own surface before any credential exists.
  */
 export async function handleConnectConsent(c: Context<HonoEnv>) {
     consentPageHeaders(c);
@@ -573,26 +564,16 @@ export async function handleConnectConsent(c: Context<HonoEnv>) {
     return c.html(renderConsentPage(handle, pending));
 }
 
-/** Build the client redirect after a consent decision. */
-function verifiedRedirectUrl(
-    origin: string,
-    params: Record<string, string>,
-): string {
-    const url = new URL(`${origin}/accounts/verified`);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    return url.toString();
-}
-
 /**
- * POST /auth/connect/consent   (form-encoded: handle, decision)
+ * POST /auth/connect/consent   (form-encoded: handle)
  *
- * The decision point (§3). Claims the pending connection once (approve OR
- * decline spends it), then:
- *  - **approve** → mints the authorization code #28 defined and redirects it
- *    to the client's origin (`/accounts/verified?code=`);
- *  - **decline** (or any non-approve value) → mints nothing and redirects
- *    with `?error=access_denied`, so the client learns the ceremony was
- *    abandoned. No code, and therefore no credential, ever exists.
+ * The affirmative-consent point (ADR 0024 §3, as amended in v1). Submitting
+ * the form *is* the approval — there is no decline button (closing the page
+ * mints nothing; the identity, already created during the ceremony, is
+ * withdrawn later via revoke / account deletion, not here). Claims the pending
+ * connection once, mints the authorization code #28 defined, and redirects it
+ * to the client's origin (`/accounts/verified?code=`). No code — and so no
+ * credential — comes into being without this affirmative POST.
  *
  * CSRF-exempt (see `src/index.ts`): the form posts from this worker-owned
  * page whose Origin is the API origin (not in `AUTHORIZED_DOMAINS`), and its
@@ -603,7 +584,6 @@ export async function handleConnectConsentSubmit(c: Context<HonoEnv>) {
     consentPageHeaders(c);
     const form = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>);
     const handle = typeof form.handle === 'string' ? form.handle : '';
-    const decision = typeof form.decision === 'string' ? form.decision : '';
     if (!handle) {
         return c.html(renderConsentError('This connection link is missing.'), 400);
     }
@@ -620,7 +600,7 @@ export async function handleConnectConsentSubmit(c: Context<HonoEnv>) {
         );
     }
 
-    // Re-validate the redirect target at decision time (defense in depth): the
+    // Re-validate the redirect target at consent time (defense in depth): the
     // allowlist may have changed since ceremony start, and we never redirect
     // to an origin that isn't known-good right now.
     if (!originIsAllowlisted(c.env.AUTHORIZED_DOMAINS, pending.client_origin)) {
@@ -634,16 +614,6 @@ export async function handleConnectConsentSubmit(c: Context<HonoEnv>) {
         );
     }
 
-    // Any non-approve decision declines — a malformed/unknown value must never
-    // mint. Decline is terminal: the handle is already spent above.
-    if (decision !== 'approve') {
-        return c.redirect(
-            verifiedRedirectUrl(pending.client_origin, {
-                error: 'access_denied',
-            }),
-        );
-    }
-
     const { code } = await InsertAuthorizationCode(c.env.DJIBB_AUTH, {
         accountId: pending.account_id,
         clientOrigin: pending.client_origin,
@@ -652,7 +622,7 @@ export async function handleConnectConsentSubmit(c: Context<HonoEnv>) {
         boundEntityId: pending.bound_entity_id,
         now,
     });
-    return c.redirect(
-        verifiedRedirectUrl(pending.client_origin, { code }),
-    );
+    const url = new URL(`${pending.client_origin}/accounts/verified`);
+    url.searchParams.set('code', code);
+    return c.redirect(url.toString());
 }

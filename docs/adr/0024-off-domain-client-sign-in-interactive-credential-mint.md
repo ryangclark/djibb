@@ -279,20 +279,39 @@ memory and reconnects per visit is a legitimate posture, not a failure mode.
 
    > **Implemented (#29).** A worker-owned consent page now sits between
    > ceremony verification and code issuance — no authorization code (and so
-   > no credential) exists until the user approves. On ceremony success both
-   > methods open a single-use, short-TTL **pending connection**
+   > no credential) exists until the user affirmatively consents. On ceremony
+   > success both methods open a single-use, short-TTL **pending connection**
    > (`auth/connect.ts`; migration 0017 `connect_pending`) and redirect to
    > `GET /auth/connect/consent?pending=<handle>`. That page discloses the
-   > connecting client (label + origin) and recognizes a returning identity
-   > ("welcome back, <name>") — reading the Account server-side and rendering
-   > only that, never its other clients/entities (§3 rule 2). The
-   > Approve/Decline form POSTs the handle back (CSRF-exempt like
-   > `/connect/token`; the handle is the capability): **approve** consumes the
-   > pending row and mints the #28 code, redirecting `?code=`; **decline** (or
-   > any non-approve value) mints nothing and redirects `?error=access_denied`.
-   > The handle is spent by either decision, so a connection is answered
-   > exactly once. The connected-clients surface (ADR 0022 §6) already renders
-   > the resulting labeled credential as revocable, satisfying §3 rule 3.
+   > connecting client (label + origin) and greets the identity ("Welcome,
+   > <name>!") — reading the Account server-side and rendering only that,
+   > never its other clients/entities (§3 rule 2). Submitting its single
+   > **Connect** form (CSRF-exempt like `/connect/token`; the handle is the
+   > capability) consumes the pending row and mints the #28 code, redirecting
+   > `?code=`. The connected-clients surface (ADR 0022 §6) already renders the
+   > resulting labeled credential as revocable, satisfying §3 rule 3.
+   >
+   > **v1 amendment to §3 (#29).** Two of §3's framings shifted in
+   > implementation, recorded here:
+   > 1. *Consent is affirmative, not a decline button.* The djibb Account is
+   >    created *during* the ceremony (resolve-or-create, before the page), so
+   >    a "decline" here could not un-create it — an orphan either way. Rather
+   >    than a decline that misleads, the page offers only **Connect**;
+   >    *not* connecting (closing the page) mints nothing, which is the real
+   >    "no". §3's load-bearing property holds — no **credential** without
+   >    affirmative consent — but the explicit decline affordance is gone.
+   >    Withdrawal *after* connecting is via the connected-clients revoke, or
+   >    deleting the identity (an account-deletion surface is **not yet
+   >    built** — tracked separately). Consequently there is no
+   >    `?error=access_denied` redirect, and clients need not handle one.
+   > 2. *No returning-vs-new recognition in v1.* The greeting is a single
+   >    always-true "Welcome, <name>!"; the ceremony does not tell the client
+   >    (or lean into copy) whether the identity pre-existed. This sidesteps
+   >    greeting a returning-but-declined visitor as "welcome back" and keeps
+   >    the page from implying its own creation was conditional. Recognition
+   >    (the "magic" of §3's cross-client continuity) can return later behind
+   >    a deliberate design pass; the substrate carries the display name but
+   >    not a preexisting flag.
 3. Auth-parameterize the `@djibb/client` transport (Bearer alongside
    cookie); fold the CLI's hand-rolled push/pull into it (ADR 0014 second
    consumer).

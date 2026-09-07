@@ -212,13 +212,13 @@ function pickFrontendOrigin(c: Context<HonoEnv>): string | null {
 async function resolveOrCreateAccountByEmail(
     c: Context<HonoEnv>,
     email: string
-): Promise<{ account: Account; preexisting: boolean }> {
+): Promise<Account> {
     const existing = await GetAccountByEmail(c.env.DJIBB_AUTH, email);
-    if (existing) return { account: existing, preexisting: true };
+    if (existing) return existing;
 
     const localPart = email.split('@')[0] ?? email;
     try {
-        const created = await CreateAccount(c.env, {
+        return await CreateAccount(c.env, {
             id: '',
             display_name: localPart,
             email,
@@ -232,7 +232,6 @@ async function resolveOrCreateAccountByEmail(
             time_deleted: null,
             time_updated: new Date(),
         });
-        return { account: created, preexisting: false };
     } catch (err) {
         console.error('`resolveOrCreateAccountByEmail()` error:', err);
         throw new UnexpectedError();
@@ -435,10 +434,7 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
     // matching key; Account ID is the contract boundary). Shared by both
     // terminal forms — the Account the user just proved control of is the
     // same whether the ceremony ends in a session or a minted credential.
-    const { account, preexisting } = await resolveOrCreateAccountByEmail(
-        c,
-        email
-    );
+    const account = await resolveOrCreateAccountByEmail(c, email);
 
     // Connect ceremony terminal (ADR 0024 §1, §3): no session, no cookie.
     // Rather than mint the authorization code here, open a *pending
@@ -467,7 +463,6 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
         const { handle } = await InsertPendingConnection(c.env.DJIBB_AUTH, {
             accountId: account.id,
             accountDisplayName: account.display_name || null,
-            accountPreexisting: preexisting,
             clientOrigin: origin,
             codeChallenge,
             label: updateResult.connect_label,

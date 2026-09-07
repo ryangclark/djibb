@@ -17,11 +17,9 @@
 -- the approval must mint from:
 --
 --   * `account_id` / `account_display_name` — who is connecting; the name
---     drives the "welcome back, <name>" recognition copy. Denormalized here
---     (ephemeral row, ≤ its TTL) so rendering the page is one lookup and
---     never widens into the Account's other data (§3 rule 2).
---   * `account_preexisting` — 1 iff the ceremony resolved an existing
---     Account rather than creating one, i.e. whether to say "welcome back".
+--     drives the "welcome, <name>!" greeting. Denormalized here (ephemeral
+--     row, ≤ its TTL) so rendering the page is one lookup and never widens
+--     into the Account's other data (§3 rule 2).
 --   * `client_origin` / `code_challenge` / `label` / `bound_entity_id` —
 --     handed straight to `InsertAuthorizationCode` on approve, so the code
 --     the client later exchanges carries the same ceremony context #28 built.
@@ -32,7 +30,6 @@ CREATE TABLE IF NOT EXISTS "connect_pending" (
     "handle_hash"          TEXT NOT NULL PRIMARY KEY,
     "account_id"           TEXT NOT NULL,
     "account_display_name" TEXT DEFAULT NULL,
-    "account_preexisting"  INTEGER NOT NULL DEFAULT 0,
     "client_origin"        TEXT NOT NULL,
     "code_challenge"       TEXT NOT NULL,
     "label"                TEXT DEFAULT NULL,

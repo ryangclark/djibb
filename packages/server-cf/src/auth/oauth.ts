@@ -264,11 +264,6 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
         (await GetAccountByEmail(c.env.DJIBB_AUTH, googleUserClaims.email)) ??
         (await GetAccountByGoogleId(c.env.DJIBB_AUTH, googleUserClaims.sub));
 
-    // Whether this identity already existed drives the disclosure page's
-    // "welcome back" recognition (ADR 0024 §3) — captured before the create
-    // below flips `account` to a freshly-minted one.
-    const accountPreexisting = Boolean(account);
-
     if (!account) {
         const newAccount = {
             id: '',
@@ -330,7 +325,6 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
         const { handle } = await InsertPendingConnection(c.env.DJIBB_AUTH, {
             accountId: account.id,
             accountDisplayName: account.display_name || null,
-            accountPreexisting,
             clientOrigin: connectCtx.origin,
             codeChallenge: connectCtx.codeChallenge,
             label: connectCtx.label,
