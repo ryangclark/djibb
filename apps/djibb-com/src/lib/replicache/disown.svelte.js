@@ -1,6 +1,6 @@
 // @ts-check
 import { tick } from 'svelte';
-import { discardUnflushed } from '@djibb/client/unflushed';
+import { discardUnflushed, UnflushedDiscardError } from '@djibb/client/unflushed';
 import { unflushedLedger } from './ledger.js';
 
 /**
@@ -110,13 +110,26 @@ export function createDisownController({ noun }) {
 				});
 			} catch (err) {
 				// An explicit, irreversible request we failed to carry out: say
-				// so. The claim survives a failed drop, so the next load resolves
-				// to the same account and the same banner — nothing is lost, and
-				// the likely cause (another tab holding the store) is something
-				// the user can fix.
-				error =
-					`Could not remove those changes — another tab may still have ` +
-					`this ${noun} open. Close it and try again.`;
+				// so. The claim survives a failed drop either way, so the next
+				// load resolves to the same account and the same banner —
+				// nothing is lost.
+				//
+				// But only `UnflushedDiscardError` means "the store is still
+				// held open", which is the sole case where "close the other
+				// tab" is true and actionable. `discardUnflushed` throws it
+				// exclusively for a blocked drop; anything else (a bug, a
+				// storage fault) is not tab contention, and telling the user to
+				// hunt for a tab that isn't the problem is misleading. Say the
+				// honest, generic thing there instead (review finding #2).
+				if (err instanceof UnflushedDiscardError) {
+					error =
+						`Could not remove those changes — another tab may still ` +
+						`have this ${noun} open. Close it and try again.`;
+				} else {
+					error =
+						`Could not remove those changes — something went wrong. ` +
+						`They're still here; please try again.`;
+				}
 				console.error('Disown failed:', err);
 			} finally {
 				closing = null;
