@@ -10,6 +10,7 @@ import {
     RevokeEntityBoundCredential,
 } from '../auth/d1';
 import { actingCredentialId, principalAccounts } from '../auth/principal';
+import { clientIp, enforceLimit } from '../utils/rateLimit';
 import {
     ListConnectedClients,
     ResolveAccountDisplays,
@@ -109,6 +110,46 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
     });
 
     app.use('*', HandleSession);
+
+    // Write rate limiting (GH #14). Any write to an entity URL can bring a
+    // Durable Object into existence — minting is cheap and unbounded, so a
+    // loop (e.g. the deliberately-anonymous `djibb contribute` flow) can
+    // flood the DO namespace and append unbounded items. ADR 0021's
+    // append-only `submitter` role protects existing content from vandalism
+    // but does nothing about volume; this is the volume gate.
+    //
+    // Placed right after principal resolution so the cap is principal-aware
+    // (anonymous → brutal IP-keyed cap; authenticated → looser account-keyed
+    // cap) and fires before the /push handler ever touches the DO. GET reads
+    // are left unthrottled here — they don't mint DOs; the WAF edge layer
+    // (see auth/README.md) covers pathological read floods.
+    app.use('*', async (c, next) => {
+        if (c.req.method === 'GET') {
+            await next();
+            return;
+        }
+
+        const principal = c.get('principal');
+        let over: Response | null;
+        if (principal.kind === 'anonymous') {
+            over = await enforceLimit(c, c.env.RL_ANON_WRITE, clientIp(c));
+        } else {
+            // Key by the acting Account. Prefer the active-account header
+            // when it names one of the principal's Accounts; otherwise the
+            // first Account. Any stable per-Account key throttles the
+            // principal — multi-account sessions just share their first.
+            const accounts = principalAccounts(principal);
+            const active = c.req.header(ACTIVE_ACCOUNT_HEADER);
+            const accountId =
+                (active && accounts.find(a => a.id === active)?.id) ||
+                accounts[0]?.id ||
+                'unknown-account';
+            over = await enforceLimit(c, c.env.RL_ACCT_WRITE, accountId);
+        }
+        if (over) return over;
+
+        await next();
+    });
 
     // Bound-credential enforcement (ADR 0022 §Negative, GH #20). The
     // request→Account seam carries `bound_entity_id` forward without

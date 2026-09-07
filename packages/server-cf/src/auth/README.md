@@ -93,6 +93,44 @@ drops a tombstoned account from any session it loads, and
 The djibb-native uniqueness index also excludes tombstoned rows, so a deleted
 identity's email is free to sign up again.
 
+## Rate limiting & the WAF runbook
+
+Two abuse surfaces get an always-on, in-code throttle (GH #14, #40). Both use
+**Workers Rate Limiting bindings** — a per-key sliding window with zero storage
+cost, declared in `wrangler.toml` under `[[ratelimits]]` and enforced through
+one thin helper, `src/utils/rateLimit.ts`. Per-colo, not globally exact —
+irrelevant for abuse mitigation.
+
+| binding | gates | key | why |
+| --- | --- | --- | --- |
+| `RL_ANON_WRITE` | anonymous entity writes (`/list`,`/template`,`/workspace` non-GET) | client IP | any anon write mints a DO — a `contribute`-style loop floods the namespace (#14) |
+| `RL_ACCT_WRITE` | authenticated entity writes | acting account | looser: a real editor bursts several Replicache mutations |
+| `RL_AUTH_IP` | OAuth callback + `DELETE /session/accounts` | client IP | pre/near-session auth floods (#40) |
+
+The limits in `wrangler.toml` are **starting values to tune**: brutal to a loop,
+survivable for one real anonymous contributor. GET reads are left unthrottled in
+code (they don't mint DOs). The over-limit response is a `429` with
+`{ error: 'rate_limited', retry_after_seconds }` + `Retry-After`, mirroring the
+magic-link limiter so existing client handling (`DjibbHttpError`,
+`MagicLinkRateLimitError`) applies unchanged.
+
+What this is **not**: the D1 magic-link limiter (`checkRateLimits`, `d1.ts`)
+stays scoped to the rare email path — per-request D1 writes on the hot paths
+would make the DB the new bottleneck, defeating #14.
+
+### Complementary edge layer (Cloudflare WAF — dashboard, not code)
+
+The Workers binding is the in-code floor. The WAF is a second, edge layer that
+lives in the Cloudflare dashboard (no Terraform yet — configure by hand):
+
+- **Leave on permanently:** a WAF **rate-limiting rule** (a coarse per-IP ceiling
+  well above the Workers caps, as a backstop) **+ Bot Fight Mode**. Safe defaults
+  that don't break legitimate clients.
+- **"I'm Under Attack" mode is a MANUAL panic switch only.** Left on permanently
+  its JS challenge breaks *every non-browser client* — the `djibb` CLI, anonymous
+  `contribute`, and the off-domain connect/bearer clients (#28/#29). Flip it on
+  during an active attack, flip it back off when it passes.
+
 ## Files
 
 | file | responsibility |
