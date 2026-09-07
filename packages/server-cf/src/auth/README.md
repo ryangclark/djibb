@@ -103,13 +103,20 @@ irrelevant for abuse mitigation.
 
 | binding | gates | key | why |
 | --- | --- | --- | --- |
-| `RL_ANON_WRITE` | anonymous entity writes (`/list`,`/template`,`/workspace` non-GET) | client IP | any anon write mints a DO — a `contribute`-style loop floods the namespace (#14) |
-| `RL_ACCT_WRITE` | authenticated entity writes | acting account | looser: a real editor bursts several Replicache mutations |
+| `RL_ANON_WRITE` | anonymous DO-touching routes (`/push`, `/websocket`) | client IP | these instantiate/mutate a DO — a `contribute`-style loop floods the namespace (#14) |
+| `RL_ACCT_WRITE` | the same routes, authenticated | acting account | looser: a real editor bursts several Replicache mutations |
 | `RL_AUTH_IP` | OAuth callback + `DELETE /session/accounts` | client IP | pre/near-session auth floods (#40) |
 
+The entity gate is by **route, not HTTP method** — Replicache inverts the usual
+mapping: its read/sync path is `POST /pull` (must NOT be throttled) and the
+DO-instantiating upgrade is `GET /websocket` (must BE throttled). Only `/push`
+(create + append) and `/websocket` (DO instantiation) touch the DO; the read
+routes (`/pull`, `''`, `/audit`, `/connected`) `throw NotFound` before touching
+the stub, so they neither mint DOs nor need throttling.
+
 The limits in `wrangler.toml` are **starting values to tune**: brutal to a loop,
-survivable for one real anonymous contributor. GET reads are left unthrottled in
-code (they don't mint DOs). The over-limit response is a `429` with
+survivable for one real anonymous contributor. The over-limit response is a `429`
+with
 `{ error: 'rate_limited', retry_after_seconds }` + `Retry-After`, mirroring the
 magic-link limiter so existing client handling (`DjibbHttpError`,
 `MagicLinkRateLimitError`) applies unchanged.

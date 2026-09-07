@@ -111,20 +111,31 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
 
     app.use('*', HandleSession);
 
-    // Write rate limiting (GH #14). Any write to an entity URL can bring a
-    // Durable Object into existence — minting is cheap and unbounded, so a
-    // loop (e.g. the deliberately-anonymous `djibb contribute` flow) can
+    // DO-touching rate limiting (GH #14). A request to an entity URL can
+    // bring a Durable Object into existence — minting is cheap and unbounded,
+    // so a loop (e.g. the deliberately-anonymous `djibb contribute` flow) can
     // flood the DO namespace and append unbounded items. ADR 0021's
     // append-only `submitter` role protects existing content from vandalism
     // but does nothing about volume; this is the volume gate.
     //
-    // Placed right after principal resolution so the cap is principal-aware
-    // (anonymous → brutal IP-keyed cap; authenticated → looser account-keyed
-    // cap) and fires before the /push handler ever touches the DO. GET reads
-    // are left unthrottled here — they don't mint DOs; the WAF edge layer
-    // (see auth/README.md) covers pathological read floods.
+    // Gated by ROUTE, not HTTP method: Replicache inverts the usual mapping.
+    // The two routes that instantiate/mutate the DO are `/push` (initList
+    // reconciliation + every mutation/append) and `/websocket` (the upgrade
+    // handler forwards to the stub unconditionally, even pre-init — see
+    // ~L570). The read routes (`/pull`, `''`, `/audit`, `/connected`) all
+    // `throw NotFoundError` on a missing entity *before* touching the stub,
+    // so they neither mint DOs nor need throttling here — and `/pull` is a
+    // POST, so a method-based gate would have wrongly throttled ordinary
+    // read-only sync. WAF (see auth/README.md) covers pathological read
+    // floods.
+    //
+    // Placed right after principal resolution so the cap is principal-aware:
+    // anonymous → brutal IP-keyed cap; authenticated → looser account-keyed.
+    const throttledRoutes = ['/push', '/websocket'];
     app.use('*', async (c, next) => {
-        if (c.req.method === 'GET') {
+        const path = c.req.path;
+        const isThrottled = throttledRoutes.some(r => path.endsWith(r));
+        if (!isThrottled) {
             await next();
             return;
         }

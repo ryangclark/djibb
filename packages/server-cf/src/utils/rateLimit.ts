@@ -32,6 +32,14 @@ const DEFAULT_RETRY_AFTER_SECONDS = 60;
  * `handleSudoRequest` and `magic.ts`). The fallback keeps every IP-less
  * request (local `wrangler dev`, odd proxies) sharing one brutal bucket
  * rather than each getting its own unthrottled key.
+ *
+ * Known limitation (accepted): keying anonymous traffic by IP conflates
+ * everyone behind a shared egress (CGNAT / mobile carrier / corporate NAT)
+ * into one bucket — legitimate contributors there can throttle each other,
+ * and one abuser throttles them all. There is no better key for an
+ * anonymous principal (no account to name), so this is the deliberate
+ * abuse-mitigation trade-off; tune the cap and lean on the WAF layer
+ * (see auth/README.md) rather than trying to make the key exact.
  */
 export function clientIp(c: Context<HonoEnv>): string {
     return c.req.header('CF-Connecting-IP') ?? 'unknown-ip';
