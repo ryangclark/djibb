@@ -1,6 +1,6 @@
 // @ts-check
 import { describe, expect, it } from 'vitest';
-import { newOneShotClient, pullEntity, pushMutation } from './oneshot.js';
+import { newOneShotClient, pullEntity, pushMutation, PushRefusedError } from './oneshot.js';
 
 /**
  * A stub transport recording every call, standing in for the real one.
@@ -60,8 +60,12 @@ describe('pushMutation', () => {
 		expect(typeof m.args.timestamp_client).toBe('string');
 	});
 
-	it("declares parse: 'none' — /push answers an empty 200", async () => {
-		const { transport, calls } = stubTransport();
+	it('opts into the refusal report and parses the body', async () => {
+		// `/push` answers an empty 200 by default (what Replicache's pusher
+		// expects). A one-shot pusher has no websocket, so it opts in with
+		// this header to learn about skip-and-ack refusals (GH #66) — which
+		// means the response now carries JSON to parse.
+		const { transport, calls } = stubTransport({ refusals: [] });
 		await pushMutation(transport, {
 			client: newOneShotClient(),
 			kind: 'list',
@@ -70,7 +74,51 @@ describe('pushMutation', () => {
 			args: {},
 			accountId: null
 		});
-		expect(calls[0]?.opts.parse).toBe('none');
+		expect(calls[0]?.opts.headers).toMatchObject({
+			'X-Djibb-Push-Outcomes': '1'
+		});
+		expect(calls[0]?.opts.parse).toBe('json');
+	});
+
+	it('throws PushRefusedError when the server refused the mutation', async () => {
+		// Skip-and-ack: the push 200s, but nothing was written. Without the
+		// throw the caller reports success for a dropped write — the exact
+		// silent data loss `djibb contribute` hit at the append ceiling.
+		const { transport } = stubTransport({
+			refusals: [
+				{
+					mutationId: 1,
+					status: 'precondition',
+					reason: 'append_limit',
+					message: 'append limit reached: this list is capped at 5000 items'
+				}
+			]
+		});
+
+		await expect(
+			pushMutation(transport, {
+				client: newOneShotClient(),
+				kind: 'list',
+				entityId: 'l/abc',
+				name: 'createListItem',
+				args: {},
+				accountId: null
+			})
+		).rejects.toThrow(PushRefusedError);
+	});
+
+	it('resolves normally when the server reports no refusals', async () => {
+		const { transport } = stubTransport({ refusals: [] });
+		await expect(
+			pushMutation(transport, {
+				client: newOneShotClient(),
+				kind: 'list',
+				entityId: 'l/abc',
+				name: 'createListItem',
+				args: {},
+				accountId: null
+			})
+		).resolves.toBeUndefined();
 	});
 
 	it('writes anonymously when accountId is null', async () => {

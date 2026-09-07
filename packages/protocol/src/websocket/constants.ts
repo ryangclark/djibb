@@ -35,6 +35,37 @@ export type MutationOutcomeStatus =
     | 'precondition';
 
 /**
+ * A mutation the server processed but refused to apply — the skip-and-ack
+ * shape (ADR 0020): `lastMutationID` advanced, no rows written.
+ *
+ * Interactive clients learn this from the `mutation_outcome` websocket frame
+ * above. Non-interactive ones (the `djibb` CLI: plain HTTP, one-shot client,
+ * no websocket) have no channel to receive it, so a refusal is invisible to
+ * them — the push returns 200 and the CLI reports success for a write that
+ * was dropped. This is the same fact, carried in the `/push` response body
+ * for callers that opt in with the `X-Djibb-Push-Outcomes` header. The
+ * header keeps Replicache's own pusher on the untouched empty-body path.
+ *
+ * Flat and primitive-only on purpose: it crosses a Durable Object RPC
+ * boundary, where non-serializable or recursive shapes break the types.
+ */
+export type PushMutationRefusal = {
+    mutationId: number;
+    /**
+     * `'skipped'` covers the envelope-level drops that never reach the
+     * outcome channel (unknown mutator, args that failed to parse) — still a
+     * silent no-op from the caller's point of view, which is what matters
+     * to a client that can't observe outcomes.
+     */
+    status: MutationOutcomeStatus | 'skipped';
+    reason?: string;
+    message?: string;
+};
+
+/** Request header a non-interactive client sends to opt into refusals. */
+export const PUSH_OUTCOMES_HEADER = 'X-Djibb-Push-Outcomes';
+
+/**
  * Typed wire format. Replaces the plain-string `'pull pls'` poke per
  * ADR 0006. Both directions: server → client only today; if/when
  * client → server messages are added, this discriminated union

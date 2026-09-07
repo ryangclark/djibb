@@ -109,6 +109,20 @@ export class FailedPreconditionError extends DjibbError {
     }
 }
 
+/**
+ * The structural append-volume cap refused a write (ADR 0021 / GH #66):
+ * the entity is at its live-item ceiling for open (`submitter`)
+ * submissions. See `SUBMITTER_APPEND_CEILING`.
+ *
+ * A `FailedPreconditionError` subclass, so it keeps the 412 / `precondition`
+ * shape every other precondition failure has — but is *distinguishable* at
+ * the DO dispatch site, which attaches the `append_limit` reason code the
+ * client keys its copy off. `FailedPreconditionError` is general-purpose
+ * (e.g. "Username already taken"), so without a distinct class any future
+ * mutator throwing one would be mislabeled as an append-cap refusal.
+ */
+export class AppendLimitError extends FailedPreconditionError {}
+
 export class NotFoundError extends DjibbError {
     constructor(message: string = 'Resource Not Found') {
         super(message, CoreErrorCode.NotFound, 404);

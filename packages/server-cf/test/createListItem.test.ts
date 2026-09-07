@@ -5,6 +5,7 @@ import type { PushRequestV1 } from 'replicache';
 import { DjibbList, asLocalList } from '../src/list/durable_object';
 import { IdTypes, newId } from '@djibb/protocol/id';
 import type { ListItem, Quantity } from '@djibb/protocol/list';
+import { SUBMITTER_APPEND_CEILING } from '@djibb/protocol/list/mutators/_shared';
 
 // End-to-end coverage for the "append item" path:
 //   initList push → createListItem push → verify SQL + pull patch.
@@ -480,5 +481,178 @@ describe('full browser journey: create + toggle multiple items', () => {
                     .child_element_refs
             ).toEqual([itemA.id, itemB.id]);
         }
+    });
+});
+
+/**
+ * Structural append-volume cap (ADR 0021 / GH #66). The Workers rate limit
+ * from #14/#40 (PR #65) counts a `/push` as one hit, but Replicache batches
+ * N appends into one `/push` — so a token-less `submitter` can still balloon
+ * a `default_role: 'submitter'` entity (the Contributed List). The cap lives
+ * in the `createListItem` mutator, keyed on live-item count, and refuses over
+ * the ceiling via skip-and-ack so Replicache's pusher never wedges.
+ *
+ * Seeding straight to the ceiling with raw item rows is far cheaper than
+ * pushing thousands of mutations, and the cap reads live rows regardless of
+ * how they got there.
+ */
+function seedItemsToCeiling(
+    stub: DurableObjectStub<DjibbList>,
+    count: number
+): Promise<void> {
+    return runInDurableObject(stub, async (_i, state) => {
+        for (let n = 0; n < count; n++) {
+            state.storage.sql.exec(
+                `INSERT INTO list_elements (id, name, type, version)
+                 VALUES (?, 'seed', 'item', 1);`,
+                `${IdTypes.item}/seed${n.toString().padStart(10, '0')}`
+            );
+        }
+    });
+}
+
+function countLiveItems(stub: DurableObjectStub<DjibbList>): Promise<number> {
+    return runInDurableObject(stub, async (_i, state) => {
+        const row = state.storage.sql
+            .exec(
+                `SELECT COUNT(*) AS n FROM list_elements
+                 WHERE type = 'item' AND time_deleted IS NULL;`
+            )
+            .one() as { n: number };
+        return row.n;
+    });
+}
+
+describe('createListItem structural append cap (submitter, GH #66)', () => {
+    it('skip-and-acks a submitter append once the entity hits the ceiling', async () => {
+        const { listId, stub } = getListStub('cap1');
+        const clientGroupID = 'cg_cap_1';
+        const clientID = 'c_cap_1';
+
+        await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'ownerless',
+            listId,
+            pushRequest: makeInitListPush({ clientGroupID, clientID, listId }),
+        });
+
+        await seedItemsToCeiling(stub, SUBMITTER_APPEND_CEILING);
+
+        const overCap = makeItem(listId, 'one too many');
+        const result = await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'submitter',
+            listId,
+            pushRequest: makeCreateListItemPush({
+                clientGroupID,
+                clientID,
+                item: overCap,
+                mutationId: 2,
+            }),
+        });
+
+        // Skip-and-ack: the push as a whole succeeds (no wedge / no 4xx),
+        // but the over-cap item was never written and the live count stays
+        // pinned at the ceiling.
+        expect(result.error).toBeNull();
+
+        // The refusal is reported back to the caller. A one-shot HTTP pusher
+        // (the `djibb` CLI) has no websocket to receive the `mutation_outcome`
+        // frame, so without this the drop is invisible and it prints success
+        // for a contribution that never landed (GH #66).
+        expect(result.data?.refusals).toEqual([
+            expect.objectContaining({
+                status: 'precondition',
+                reason: 'append_limit',
+            }),
+        ]);
+
+        const present = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(`SELECT id FROM list_elements WHERE id = ?;`, overCap.id)
+                .toArray()
+        );
+        expect(present).toHaveLength(0);
+        expect(await countLiveItems(stub)).toBe(SUBMITTER_APPEND_CEILING);
+
+        // ...and it writes NO mutation-log row. The log serializes the full
+        // args, and nothing prunes that table — logging refusals would leave
+        // the very storage-growth vector this cap closes (one full-payload
+        // row per over-cap attempt, forever).
+        const logged = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(
+                    `SELECT id FROM mutations WHERE name = 'createListItem';`
+                )
+                .toArray()
+        );
+        expect(logged).toHaveLength(0);
+    });
+
+    it('still admits an EDIT-role append at the ceiling — owners are uncapped', async () => {
+        const { listId, stub } = getListStub('cap2');
+        const clientGroupID = 'cg_cap_2';
+        const clientID = 'c_cap_2';
+
+        await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'ownerless',
+            listId,
+            pushRequest: makeInitListPush({ clientGroupID, clientID, listId }),
+        });
+
+        await seedItemsToCeiling(stub, SUBMITTER_APPEND_CEILING);
+
+        const item = makeItem(listId, 'owner still adds');
+        const result = await stub.handlePush({
+            authorizedAccounts: [],
+            // `ownerless` is an EDIT role (an anonymous-edit list's owner-
+            // equivalent); the cap is submitter-only, so this must land.
+            authorizedRole: 'ownerless',
+            listId,
+            pushRequest: makeCreateListItemPush({
+                clientGroupID,
+                clientID,
+                item,
+                mutationId: 2,
+            }),
+        });
+        expect(result.error).toBeNull();
+
+        const present = await runInDurableObject(stub, async (_i, state) =>
+            state.storage.sql
+                .exec(`SELECT id FROM list_elements WHERE id = ?;`, item.id)
+                .toArray()
+        );
+        expect(present).toHaveLength(1);
+        expect(await countLiveItems(stub)).toBe(SUBMITTER_APPEND_CEILING + 1);
+    });
+
+    it('admits a submitter append below the ceiling', async () => {
+        const { listId, stub } = getListStub('cap3');
+        const clientGroupID = 'cg_cap_3';
+        const clientID = 'c_cap_3';
+
+        await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'ownerless',
+            listId,
+            pushRequest: makeInitListPush({ clientGroupID, clientID, listId }),
+        });
+
+        const item = makeItem(listId, 'a normal contribution');
+        const result = await stub.handlePush({
+            authorizedAccounts: [],
+            authorizedRole: 'submitter',
+            listId,
+            pushRequest: makeCreateListItemPush({
+                clientGroupID,
+                clientID,
+                item,
+                mutationId: 2,
+            }),
+        });
+        expect(result.error).toBeNull();
+        expect(await countLiveItems(stub)).toBe(1);
     });
 });
