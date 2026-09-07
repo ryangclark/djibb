@@ -55,7 +55,7 @@
  * supplies the API origin.
  */
 
-import { dropDatabase, makeIDBName } from 'replicache';
+import { dropDatabase, makeIDBName, Replicache } from 'replicache';
 import { SCHEMA_VERSION, storeName } from './replicache.js';
 
 /** Namespace for every ledger key. One key per entity. */
@@ -269,6 +269,191 @@ export function resolveEffectiveAccount({ accountId, entityId, ledger }) {
 }
 
 /**
+ * Claims on this entity that the effective account will never drain
+ * (GH #46) — i.e. the work `resolveEffectiveAccount` deliberately
+ * declined to act as.
+ *
+ * ## Why this is a separate question
+ *
+ * The rule above gives an unconditional win to the live session, and it
+ * must: sessions here are multi-account, so a ledger claim outranking a
+ * live account would drag a genuinely different user on a shared device
+ * into someone else's store and push as them. That is strictly worse
+ * than the state it would fix.
+ *
+ * But "we correctly declined to act as A" is not the same as "there is
+ * nothing of A's here". On a device signed in as A and B, work queued
+ * as A and left unflushed (A's session dropped, or A signed out with
+ * "keep changes") sits in `A:<entity>`, while opening the entity as B
+ * opens `B:<entity>` — a different store, empty queue, pushes fine, and
+ * the indicator says **All changes saved**. Every word of that is true
+ * about B and a lie about the entity. This function is what lets the UI
+ * say the true thing instead: *another account has unsaved changes
+ * here.*
+ *
+ * Resolution stays; disclosure is the fix.
+ *
+ * ## It can over-report, by construction
+ *
+ * Claims are stamped before their mutation lands and retired only by a
+ * client acting as the claimant (see the over-claiming note above), so a
+ * claim can outlive its work — and nobody but that account can notice.
+ * A rare false "A has unsaved changes here" is the cost of never missing
+ * a true one, which is the same trade the ledger already makes. The
+ * escape hatch is that both offered actions (switch, discard) are
+ * harmless against an empty store.
+ *
+ * @param {object} input
+ * @param {ReturnType<typeof createUnflushedLedger>} input.ledger
+ * @param {string} input.entityId
+ * @param {string | null} input.effectiveAccountId The account this
+ *   client is actually acting as — from `resolveEffectiveAccount`, not
+ *   from the session. They differ on exactly the paths that matter.
+ * @returns {string[]} account ids, least-recent first
+ */
+export function strandedClaims({ ledger, entityId, effectiveAccountId }) {
+	return ledger
+		.accountsFor(entityId)
+		.filter(accountId => accountId !== effectiveAccountId);
+}
+
+/**
+ * Ask the store itself how much unflushed work an account actually has
+ * for an entity — without acting as that account.
+ *
+ * ## Why this exists
+ *
+ * `strandedClaims` reads the ledger, and the ledger is a *guess*: claims
+ * are stamped before their mutation fires (they must be — see the
+ * over-claiming note at the top of this file), and only a client acting
+ * as the claimant ever retires one. On the #46 path the claimant is by
+ * definition not here, so a stale claim is not merely possible, it is
+ * unretirable — and #47 renders it to a human as "another account has
+ * unsaved changes on this list". A guess is not good enough to interrupt
+ * someone with.
+ *
+ * The truth was on disk the whole time. `A:<entity>` is a real
+ * Replicache store with a real queue. The only reason we never asked is
+ * that the code which opens that store is a client *acting as A* — and
+ * doing that while B is current is the one thing that must never happen
+ * (it would push as A: the shared-device hazard that makes the
+ * resolution rule in `resolveEffectiveAccount` non-negotiable).
+ *
+ * But opening the store and acting as the account are **separable**.
+ * Open it with a deliberately inert transport, count, close. No network,
+ * therefore no push, therefore none of the hazard.
+ *
+ * ## What a result means (this asymmetry is the whole design)
+ *
+ * - **`n > 0` is trustworthy.** Those mutations are durable. Shout about
+ *   them; count them.
+ * - **`0` is NOT evidence of absence.** Replicache moves mutations from
+ *   its in-memory dag to the persistent one on its own schedule and
+ *   exposes no `persist()`, so work enqueued moments ago by a live tab is
+ *   invisible here. Zero means "nothing durable *yet*".
+ * - **A throw is not a zero.** See `awaitReady` below.
+ *
+ * So callers may go **silent** on zero. They must not *delete* on it:
+ * retiring a claim whose mutation is about to be persisted by another tab
+ * would leave that work durable, unclaimed, and unreachable — which is
+ * GH #43, rebuilt by hand, by the very code meant to be more careful than
+ * #43 was. Retirement stays the claimant's job.
+ *
+ * @param {object} input
+ * @param {string} input.accountId The account whose store to look inside.
+ * @param {string} input.entityId
+ * @param {import('replicache').MutatorDefs} input.mutators
+ *   The real mutator set. Replicache **replays pending mutations on
+ *   open**, and an unknown mutator name throws — so a probe with no
+ *   mutators cannot read a non-empty queue, which is the only queue worth
+ *   reading. Injected rather than imported so this module stays a
+ *   transport-shaped seam (ADR 0014) and the entity kind isn't baked in.
+ * @param {(name: string, mutators: import('replicache').MutatorDefs) => ProbeClient} [input.openStore]
+ *   Seam for tests.
+ * @returns {Promise<number>} durable pending mutations in that store
+ */
+export async function probeUnflushed({
+	accountId,
+	entityId,
+	mutators,
+	openStore = openInertClient
+}) {
+	const client = openStore(storeName(accountId, entityId), mutators);
+	try {
+		await awaitReady(client);
+		const pending = await client.experimentalPendingMutations();
+		return pending.length;
+	} finally {
+		// Not optional, and not merely tidy: `dropDatabase` **blocks rather
+		// than rejects** while any connection to the store is open (see
+		// `discardUnflushed`). A leaked probe connection would hang the
+		// "Discard them" button this very count is used to offer.
+		await client.close();
+	}
+}
+
+/**
+ * A Replicache instance that cannot talk to anything.
+ *
+ * The inert pusher is the safety property of the whole design, so it is
+ * worth being blunt: a probe that pushes is a probe that acts as an
+ * account the user did not choose, on a device that may not be theirs.
+ * It reports HTTP 200 without sending a byte — verified safe by
+ * `probe.spike.test.js`, which proves Replicache does not treat a
+ * pusher's success as confirmation (that only ever arrives via a pull's
+ * `lastMutationID`), so the mutations survive the probe and still flush
+ * afterwards.
+ *
+ * @typedef {{
+ *   query: (fn: (tx: import('replicache').ReadTransaction) => unknown) => Promise<unknown>,
+ *   experimentalPendingMutations: () => Promise<readonly unknown[]>,
+ *   close: () => Promise<void>
+ * }} ProbeClient
+ *
+ * @param {string} name
+ * @param {import('replicache').MutatorDefs} mutators
+ * @returns {ProbeClient}
+ */
+function openInertClient(name, mutators) {
+	const inert = async () => ({
+		httpRequestInfo: { httpStatusCode: 200, errorMessage: '' }
+	});
+
+	return new Replicache({
+		name,
+		// Shared with the create and drop paths so the probe cannot drift
+		// away from the store it is supposed to be probing.
+		schemaVersion: SCHEMA_VERSION,
+		mutators,
+		pusher: inert,
+		puller: inert,
+		pullInterval: null
+	});
+}
+
+/**
+ * Wait for a freshly-constructed client to be usable.
+ *
+ * `experimentalPendingMutations()` on a not-yet-open client **throws**
+ * (`Missing head main`) rather than returning empty — so this is not
+ * politeness, it is the difference between reading the queue and reading
+ * nothing. And when it does throw, that throw must be allowed to
+ * propagate: a probe that caught its way to `0` would report "nothing
+ * here" about a queue it never managed to read, and the caller would go
+ * silent over real, recoverable work. Unknown is not zero.
+ *
+ * A `query()` is the wait: it cannot resolve until the store is open.
+ * (`clientID` looks like the more obvious readiness signal and is not —
+ * it's a plain string, so awaiting it is a no-op. Easy to "fix" this into
+ * a race.)
+ *
+ * @param {ProbeClient} client
+ */
+async function awaitReady(client) {
+	await client.query(tx => tx.get('djibb.probe.ready'));
+}
+
+/**
  * The nuclear option behind the sign-out prompt: throw away every
  * unflushed mutation this account holds in this browser.
  *
@@ -309,6 +494,12 @@ export function resolveEffectiveAccount({ accountId, entityId, ledger }) {
  * @param {object} input
  * @param {ReturnType<typeof createUnflushedLedger>} input.ledger
  * @param {string} input.accountId
+ * @param {string[]} [input.entityIds] Discard only these entities'
+ *   stores rather than every one this account holds. Sign-out is
+ *   account-wide and passes nothing; the stranded-work banner (GH #46)
+ *   speaks for one entity and must not throw away the account's work on
+ *   the lists the user isn't even looking at. Ids with no claim for this
+ *   account are ignored — there is no store of ours to drop.
  * @param {number} [input.timeoutMs=5000] Per-store deadline.
  * @param {(dbName: string) => Promise<void>} [input.dropStore] Seam for tests.
  * @returns {Promise<string[]>} the entity ids whose stores were dropped
@@ -317,10 +508,17 @@ export function resolveEffectiveAccount({ accountId, entityId, ledger }) {
 export async function discardUnflushed({
 	ledger,
 	accountId,
+	entityIds,
 	timeoutMs = 5000,
 	dropStore = dropDatabase
 }) {
-	const entities = ledger.entitiesFor(accountId);
+	const claimed = ledger.entitiesFor(accountId);
+	// Intersect rather than trust the caller's list: dropping a store for
+	// an entity this account never claimed would delete someone's work on
+	// the strength of a stale prop.
+	const entities = entityIds
+		? claimed.filter(id => entityIds.includes(id))
+		: claimed;
 	/** @type {string[]} */
 	const dropped = [];
 	/** @type {string[]} */

@@ -5,8 +5,10 @@
 	import { api, DjibbHttpError } from '$lib/api/client';
 	import {
 		discardUnflushed,
+		probeUnflushed,
 		UnflushedDiscardError
 	} from '@djibb/client/unflushed';
+	import { mutators } from '@djibb/protocol/list/mutators/client';
 	import { unflushedLedger } from '$lib/replicache/ledger.js';
 
 	/**
@@ -37,9 +39,55 @@
 	let discarding = $state(false);
 	let signOutError = $state('');
 
-	function handleSignOut() {
+	// Does the user still have another account here after this sign-out?
+	// It changes what we can honestly promise (GH #46). "Sign back in and
+	// they'll finish saving on their own" is true on an empty session —
+	// signing back in makes this account current, the store reopens, the
+	// queue drains. It is NOT true while another account remains: the
+	// current account is workspace-derived, so the session keeps offering
+	// the *other* one, we keep opening its store, and this account's work
+	// keeps sitting there untouched. Promising otherwise would be exactly
+	// the reassurance-over-stranded-work this whole area exists to remove.
+	let otherAccountsRemain = $derived(
+		sessionState.accounts.some((a) => a.id !== account.id)
+	);
+
+	async function handleSignOut() {
 		if (signingOut) return;
-		stuckEntities = unflushedLedger.entitiesFor(account.id);
+
+		// The ledger is an index of stores worth opening, not an answer: a
+		// claim is stamped before its mutation fires and can outlive it. So
+		// don't turn sign-out into a decision on the strength of a claim —
+		// open each store and count what's actually in it. A prompt that
+		// warns about work that isn't there trains people to click through
+		// the one time it is.
+		//
+		// A store we cannot read is treated as stuck (the `catch`): warning
+		// about work that might not exist is recoverable; skipping the
+		// prompt for work that does is not.
+		signingOut = true;
+		try {
+			const claimed = unflushedLedger.entitiesFor(account.id);
+			/** @type {string[]} */
+			const confirmed = [];
+			for (const entityId of claimed) {
+				try {
+					const count = await probeUnflushed({
+						accountId: account.id,
+						entityId,
+						mutators
+					});
+					if (count > 0) confirmed.push(entityId);
+				} catch (err) {
+					console.error('Could not probe unflushed work:', entityId, err);
+					confirmed.push(entityId);
+				}
+			}
+			stuckEntities = confirmed;
+		} finally {
+			signingOut = false;
+		}
+
 		if (stuckEntities.length > 0) {
 			// Don't surprise anyone: unsaved work turns sign-out into a
 			// decision rather than a button.
@@ -242,11 +290,22 @@
 		</p>
 		<!-- Lead with the reassuring truth: signing out is not
 		     destructive here. The queue outlives the session, so this is
-		     a "come back and finish" state, not a "lose your work" one. -->
-		<p class="hint">
-			They're kept on this device. Sign back in as this account and they'll
-			finish saving on their own.
-		</p>
+		     a "come back and finish" state, not a "lose your work" one.
+		     But keep the reassurance inside what's actually guaranteed —
+		     see `otherAccountsRemain`. -->
+		{#if otherAccountsRemain}
+			<p class="hint">
+				They're kept on this device. Because you're still signed in to another
+				account, djibb will keep working as that one — so these changes stay
+				put until you make this account current again. Any list they're on will
+				say so.
+			</p>
+		{:else}
+			<p class="hint">
+				They're kept on this device. Sign back in as this account and they'll
+				finish saving on their own.
+			</p>
+		{/if}
 		<div class="actions">
 			<button
 				type="button"
