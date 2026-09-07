@@ -21,8 +21,7 @@
 
 import * as Effect from 'effect/Effect';
 import { z } from 'zod';
-import { createDate, isWithinExpirationDate } from 'oslo';
-import { SESSION_EXPIRATION } from './constants';
+import { SESSION_EXPIRATION_MS } from './constants';
 import {
     FailedPreconditionError,
     NotFoundError,
@@ -66,6 +65,21 @@ export type DatabaseSession = {
 } & SessionAttributes;
 
 /**
+ * `now + ms` as a Date. Replaces oslo's `createDate` (deprecated; GH #52).
+ */
+function expiryFromNow(ms: number): Date {
+    return new Date(Date.now() + ms);
+}
+
+/**
+ * Whether `date` is still in the future. Replaces oslo's
+ * `isWithinExpirationDate` (deprecated; GH #52).
+ */
+function isInFuture(date: Date): boolean {
+    return date.getTime() > Date.now();
+}
+
+/**
  * Creates a new user session.
  *
  * If you provide a Session ID, we merge the given `attributes` with
@@ -80,7 +94,7 @@ export async function CreateSession(
         fresh: true,
         id: newId('session'),
         time_created: new Date(),
-        time_expires: createDate(SESSION_EXPIRATION),
+        time_expires: expiryFromNow(SESSION_EXPIRATION_MS),
         ...attributes,
     };
 
@@ -321,7 +335,7 @@ export async function ValidateSession(d1: D1Database, sessionId: string) {
     }
 
     // Check session expiration
-    if (!isWithinExpirationDate(databaseSession.time_expires)) {
+    if (!isInFuture(databaseSession.time_expires)) {
         try {
             await DeleteSession(d1, databaseSession.id);
         } catch (error) {
@@ -348,14 +362,13 @@ export async function ValidateSession(d1: D1Database, sessionId: string) {
     // Calculate session refresh point, which is half the full
     // expiration time.
     const refreshDate = new Date(
-        databaseSession.time_expires.getTime() -
-            SESSION_EXPIRATION.milliseconds() / 2
+        databaseSession.time_expires.getTime() - SESSION_EXPIRATION_MS / 2
     );
 
     // Refresh session, if within refresh cutoff.
-    if (!isWithinExpirationDate(refreshDate)) {
+    if (!isInFuture(refreshDate)) {
         session.fresh = true;
-        session.time_expires = createDate(SESSION_EXPIRATION);
+        session.time_expires = expiryFromNow(SESSION_EXPIRATION_MS);
 
         try {
             await updateSessionExpiration(d1, {
