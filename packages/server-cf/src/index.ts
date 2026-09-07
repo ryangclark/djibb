@@ -94,7 +94,7 @@ app.use(
         const originHeader = c.req.header('Origin') || '';
         const originVerified = verifyRequestOrigin(
             originHeader,
-            c.env.AUTHORIZED_DOMAINS.split(';')
+            c.env.AUTHORIZED_DOMAINS
         );
 
         // CORS middleware.
@@ -145,10 +145,7 @@ app.use(
         if (
             !originHeader ||
             !hostHeader ||
-            !verifyRequestOrigin(
-                originHeader,
-                c.env.AUTHORIZED_DOMAINS.split(';')
-            )
+            !verifyRequestOrigin(originHeader, c.env.AUTHORIZED_DOMAINS)
         ) {
             return c.body(null, 403);
         }
