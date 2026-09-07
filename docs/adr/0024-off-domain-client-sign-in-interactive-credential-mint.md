@@ -1,7 +1,8 @@
 # ADR 0024: Off-domain client sign-in — the interactive credential mint
 
 - **Status:** Accepted. **Sequencing item 1 (token endpoint + authorization-code
-  tail) implemented in #28** — see the note under Sequencing below; items 2–5
+  tail) implemented in #28, item 2 (§3 disclosure interstitial) implemented in
+  #29** — see the notes under Sequencing below; items 3–5
   remain deferred as written. Amends ADR 0010 (the interactive ceremony gains a
   second terminal form: a minted credential, not only a same-site session) and
   ADR 0022 (fills the "device-flow mint UX" hole it named out of scope; the
@@ -262,8 +263,10 @@ memory and reconnects per visit is a legitimate posture, not a failure mode.
    > verifier for an ordinary ADR 0022 `issued_credentials` row (`auth/connect.ts`;
    > migration 0016 `connect_authorization_codes`). Both interactive methods can
    > start a connect ceremony behind the `AUTHORIZED_DOMAINS` allowlist and
-   > terminate by redirecting a code to `<origin>/accounts/verified?code=` **in
-   > place of** the `djibb-session` cookie: OAuth carries the ceremony context
+   > terminate **in place of** the `djibb-session` cookie by handing off toward
+   > a code at `<origin>/accounts/verified?code=` (as of #29 that hand-off goes
+   > through the §3 disclosure page first — item 2 below): OAuth carries the
+   > ceremony context
    > (origin, challenge, label) in a short-lived httpOnly `djibb_connect` cookie
    > (same-browser round-trip); magic-link carries it on the token row
    > (`magic_link_tokens.connect_*`) so it survives the cross-device email hop.
@@ -273,6 +276,42 @@ memory and reconnects per visit is a legitimate posture, not a failure mode.
    > revocable — `role_ceiling` (§5a) stays deferred.
 2. Disclosure interstitial: the §3 connection-moment surface, designed as
    product, not as an error page.
+
+   > **Implemented (#29).** A worker-owned consent page now sits between
+   > ceremony verification and code issuance — no authorization code (and so
+   > no credential) exists until the user affirmatively consents. On ceremony
+   > success both methods open a single-use, short-TTL **pending connection**
+   > (`auth/connect.ts`; migration 0017 `connect_pending`) and redirect to
+   > `GET /auth/connect/consent?pending=<handle>`. That page discloses the
+   > connecting client (label + origin) and greets the identity ("Welcome,
+   > <name>!") — reading the Account server-side and rendering only that,
+   > never its other clients/entities (§3 rule 2). Submitting its single
+   > **Connect** form (CSRF-exempt like `/connect/token`; the handle is the
+   > capability) consumes the pending row and mints the #28 code, redirecting
+   > `?code=`. The connected-clients surface (ADR 0022 §6) already renders the
+   > resulting labeled credential as revocable, satisfying §3 rule 3.
+   >
+   > **v1 amendment to §3 (#29).** Two of §3's framings shifted in
+   > implementation, recorded here:
+   > 1. *Consent is affirmative, not a decline button.* The djibb Account is
+   >    created *during* the ceremony (resolve-or-create, before the page), so
+   >    a "decline" here could not un-create it — an orphan either way. Rather
+   >    than a decline that misleads, the page offers only **Connect**;
+   >    *not* connecting (closing the page) mints nothing, which is the real
+   >    "no". §3's load-bearing property holds — no **credential** without
+   >    affirmative consent — but the explicit decline affordance is gone.
+   >    Withdrawal *after* connecting is via the connected-clients revoke, or
+   >    deleting the identity (an account-deletion surface is **not yet
+   >    built** — tracked separately). Consequently there is no
+   >    `?error=access_denied` redirect, and clients need not handle one.
+   > 2. *No returning-vs-new recognition in v1.* The greeting is a single
+   >    always-true "Welcome, <name>!"; the ceremony does not tell the client
+   >    (or lean into copy) whether the identity pre-existed. This sidesteps
+   >    greeting a returning-but-declined visitor as "welcome back" and keeps
+   >    the page from implying its own creation was conditional. Recognition
+   >    (the "magic" of §3's cross-client continuity) can return later behind
+   >    a deliberate design pass; the substrate carries the display name but
+   >    not a preexisting flag.
 3. Auth-parameterize the `@djibb/client` transport (Bearer alongside
    cookie); fold the CLI's hand-rolled push/pull into it (ADR 0014 second
    consumer).

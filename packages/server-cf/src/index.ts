@@ -139,6 +139,17 @@ app.use(
             return;
         }
 
+        // Connect-ceremony disclosure decision (ADR 0024 §3) is exempt for the
+        // same reason as /magic/consume: the approve/decline form posts from
+        // the worker's own consent page, whose Origin is API_ORIGIN (not in
+        // AUTHORIZED_DOMAINS). Its authenticity is the single-use `pending`
+        // handle in the body — a secret only the browser that finished the
+        // ceremony was handed. See workers/src/auth/connect.ts.
+        if (c.req.path === '/auth/connect/consent') {
+            await next();
+            return;
+        }
+
         const originHeader = c.req.header('Origin');
 
         const hostHeader = c.req.header('Host');

@@ -46,7 +46,8 @@ import {
     sessionCookieAttributes,
     CookieNames,
 } from './constants';
-import { InsertAuthorizationCode, originIsAllowlisted } from './connect';
+import { InsertPendingConnection, originIsAllowlisted } from './connect';
+import { escapeHtml } from '../utils/html';
 import type { Account } from '@djibb/protocol/account';
 
 // ─── Tunables ───────────────────────────────────────────────────────────────
@@ -435,10 +436,13 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
     // same whether the ceremony ends in a session or a minted credential.
     const account = await resolveOrCreateAccountByEmail(c, email);
 
-    // Connect ceremony terminal (ADR 0024 §1): mint an authorization code
-    // for the client's origin and hand it back — no session, no cookie. The
-    // two terminal forms stay cleanly separate (ADR 0024 §Negative): this
-    // branch returns before any session work below.
+    // Connect ceremony terminal (ADR 0024 §1, §3): no session, no cookie.
+    // Rather than mint the authorization code here, open a *pending
+    // connection* and send the browser to the worker's disclosure page — the
+    // code (and so the credential) is minted only if the user approves there.
+    // The two terminal forms stay cleanly separate (ADR 0024 §Negative): this
+    // branch returns before any session work below. The land page follows
+    // `redirect`, so it points at the worker's own consent surface.
     if (updateResult.purpose === MAGIC_PURPOSE_CONNECT) {
         const origin = updateResult.connect_origin;
         const codeChallenge = updateResult.connect_code_challenge;
@@ -448,23 +452,24 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
             !originIsAllowlisted(c.env.AUTHORIZED_DOMAINS, origin)
         ) {
             // A connect token with a missing/now-unauthorized origin can't be
-            // redirected anywhere safe. Should be unreachable (validated at
-            // /request), but never redirect to an unvetted origin.
+            // completed safely. Should be unreachable (validated at /request),
+            // but never hand off to an unvetted origin.
             console.error(
                 '`handleMagicConsume()` connect token bad origin "%s"',
                 origin
             );
             throw new UnexpectedError();
         }
-        const { code } = await InsertAuthorizationCode(c.env.DJIBB_AUTH, {
+        const { handle } = await InsertPendingConnection(c.env.DJIBB_AUTH, {
             accountId: account.id,
+            accountDisplayName: account.display_name || null,
             clientOrigin: origin,
             codeChallenge,
             label: updateResult.connect_label,
         });
-        const url = new URL(`${origin}/accounts/verified`);
-        url.searchParams.set('code', code);
-        return c.json({ redirect: url.toString(), account_id: account.id });
+        return c.json({
+            redirect: `/auth/connect/consent?pending=${encodeURIComponent(handle)}`,
+        });
     }
 
     // Mint session. Merge into any existing session so multi-Account-
@@ -504,18 +509,9 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
 
 // ─── Interstitial rendering ─────────────────────────────────────────────────
 
-function escapeAttr(s: string): string {
-    return s
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
 function renderLanding(rawToken: string, next: string): string {
-    const tokenAttr = escapeAttr(rawToken);
-    const nextAttr = escapeAttr(next);
+    const tokenAttr = escapeHtml(rawToken);
+    const nextAttr = escapeHtml(next);
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -590,7 +586,7 @@ function renderLandingError(message: string): string {
 </head>
 <body>
 <h1>Sign-in error</h1>
-<p>${escapeAttr(message)}</p>
+<p>${escapeHtml(message)}</p>
 </body>
 </html>`;
 }

@@ -14,7 +14,7 @@ import {
     OAUTH_REDIRECT_URI,
 } from './constants';
 import {
-    InsertAuthorizationCode,
+    InsertPendingConnection,
     originIsAllowlisted,
     type ConnectCeremonyContext,
 } from './connect';
@@ -291,12 +291,13 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
         }
     }
 
-    // Connect ceremony terminal (ADR 0024 §1): if the flow was started as a
-    // connect ceremony, mint an authorization code and redirect it back to
-    // the client's origin — *instead of* creating a session or setting the
-    // `djibb-session` cookie. The two terminal forms stay cleanly separate
-    // (ADR 0024 §Negative): this branch returns before any session work, so
-    // a connect flow can never also yield a cookie.
+    // Connect ceremony terminal (ADR 0024 §1, §3): if the flow was started as
+    // a connect ceremony, do NOT create a session or set the `djibb-session`
+    // cookie. Instead of minting the authorization code here, open a *pending
+    // connection* and hand the user to the worker's disclosure page (§3): the
+    // code — and so the credential — comes into being only if they approve
+    // there. The two terminal forms stay cleanly separate (ADR 0024
+    // §Negative): this branch returns before any session work below.
     const connectRaw = getCookie(c, CookieNames.Connect);
     if (connectRaw) {
         deleteCookie(c, CookieNames.Connect);
@@ -307,28 +308,29 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
             console.error('`/google/verify` malformed connect cookie');
             throw new ValidationError('Invalid Request!');
         }
-        // Re-validate the origin at redirect time (defense in depth): the
-        // allowlist may have changed since ceremony start, and a redirect
-        // target must always be a known-good origin.
+        // Re-validate the origin at hand-off time (defense in depth): the
+        // allowlist may have changed since ceremony start, and the pending
+        // connection must only ever point at a known-good origin.
         if (
             !connectCtx.origin ||
             !connectCtx.codeChallenge ||
             !originIsAllowlisted(c.env.AUTHORIZED_DOMAINS, connectCtx.origin)
         ) {
             console.error(
-                '`/google/verify` connect redirect to unauthorized origin "%s"',
+                '`/google/verify` connect to unauthorized origin "%s"',
                 connectCtx.origin
             );
             throw new UnexpectedError();
         }
-        const { code } = await InsertAuthorizationCode(c.env.DJIBB_AUTH, {
+        const { handle } = await InsertPendingConnection(c.env.DJIBB_AUTH, {
             accountId: account.id,
+            accountDisplayName: account.display_name || null,
             clientOrigin: connectCtx.origin,
             codeChallenge: connectCtx.codeChallenge,
             label: connectCtx.label,
         });
-        const url = new URL(`${connectCtx.origin}/accounts/verified`);
-        url.searchParams.set('code', code);
+        const url = new URL('/auth/connect/consent', OAUTH_REDIRECT_URI.base(c));
+        url.searchParams.set('pending', handle);
         return c.redirect(url.toString());
     }
 
