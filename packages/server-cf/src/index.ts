@@ -31,6 +31,15 @@ export type Bindings = {
     // Email (Cloudflare Email Sending)
     EMAIL: SendEmail;
     EMAIL_FROM: string;
+
+    // Workers Rate Limiting bindings (GH #14, #40). Declared in
+    // wrangler.toml under `[[ratelimits]]`; enforced via
+    // `src/utils/rateLimit.ts`. `RL_ANON_WRITE` / `RL_ACCT_WRITE` gate
+    // entity writes (keyed by IP / account); `RL_AUTH_IP` gates the auth
+    // endpoints (OAuth callback, session detach) per IP.
+    RL_ANON_WRITE: RateLimit;
+    RL_ACCT_WRITE: RateLimit;
+    RL_AUTH_IP: RateLimit;
 };
 
 export type Variables = {

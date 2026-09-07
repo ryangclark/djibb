@@ -33,6 +33,7 @@ import {
     SoftDeleteAccountPhase1,
 } from './d1';
 import type { Account } from '@djibb/protocol/account';
+import { clientIp, enforceLimit } from '../utils/rateLimit';
 
 /**
  * Sudo-mode freshness window (GH #58). A destructive account action is
@@ -144,6 +145,11 @@ Auth_App.post('/account/delete', async c => {
 });
 
 Auth_App.delete('/session/accounts', async c => {
+    // Rate limit the session-detach path per IP (GH #40). Keyed by IP
+    // (pre/post-auth both fine — it re-mints a session on each call).
+    const over = await enforceLimit(c, c.env.RL_AUTH_IP, clientIp(c));
+    if (over) return over;
+
     // Inherently session-only: this mutates the cookie session (drops an
     // Account, re-mints). A bearer credential has no session to edit.
     const principal = c.get('principal');
@@ -208,8 +214,6 @@ Auth_App.delete('/session/accounts', async c => {
 
     const newAccounts = [...accounts];
     newAccounts.splice(indexOf, 1);
-
-    // TODO: rate-limit this.
 
     let session;
     try {

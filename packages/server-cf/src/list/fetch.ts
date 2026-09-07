@@ -10,6 +10,7 @@ import {
     RevokeEntityBoundCredential,
 } from '../auth/d1';
 import { actingCredentialId, principalAccounts } from '../auth/principal';
+import { clientIp, enforceLimit } from '../utils/rateLimit';
 import {
     ListConnectedClients,
     ResolveAccountDisplays,
@@ -109,6 +110,57 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
     });
 
     app.use('*', HandleSession);
+
+    // DO-touching rate limiting (GH #14). A request to an entity URL can
+    // bring a Durable Object into existence — minting is cheap and unbounded,
+    // so a loop (e.g. the deliberately-anonymous `djibb contribute` flow) can
+    // flood the DO namespace and append unbounded items. ADR 0021's
+    // append-only `submitter` role protects existing content from vandalism
+    // but does nothing about volume; this is the volume gate.
+    //
+    // Gated by ROUTE, not HTTP method: Replicache inverts the usual mapping.
+    // The two routes that instantiate/mutate the DO are `/push` (initList
+    // reconciliation + every mutation/append) and `/websocket` (the upgrade
+    // handler forwards to the stub unconditionally, even pre-init — see
+    // ~L570). The read routes (`/pull`, `''`, `/audit`, `/connected`) all
+    // `throw NotFoundError` on a missing entity *before* touching the stub,
+    // so they neither mint DOs nor need throttling here — and `/pull` is a
+    // POST, so a method-based gate would have wrongly throttled ordinary
+    // read-only sync. WAF (see auth/README.md) covers pathological read
+    // floods.
+    //
+    // Placed right after principal resolution so the cap is principal-aware:
+    // anonymous → brutal IP-keyed cap; authenticated → looser account-keyed.
+    const throttledRoutes = ['/push', '/websocket'];
+    app.use('*', async (c, next) => {
+        const path = c.req.path;
+        const isThrottled = throttledRoutes.some(r => path.endsWith(r));
+        if (!isThrottled) {
+            await next();
+            return;
+        }
+
+        const principal = c.get('principal');
+        let over: Response | null;
+        if (principal.kind === 'anonymous') {
+            over = await enforceLimit(c, c.env.RL_ANON_WRITE, clientIp(c));
+        } else {
+            // Key by the acting Account. Prefer the active-account header
+            // when it names one of the principal's Accounts; otherwise the
+            // first Account. Any stable per-Account key throttles the
+            // principal — multi-account sessions just share their first.
+            const accounts = principalAccounts(principal);
+            const active = c.req.header(ACTIVE_ACCOUNT_HEADER);
+            const accountId =
+                (active && accounts.find(a => a.id === active)?.id) ||
+                accounts[0]?.id ||
+                'unknown-account';
+            over = await enforceLimit(c, c.env.RL_ACCT_WRITE, accountId);
+        }
+        if (over) return over;
+
+        await next();
+    });
 
     // Bound-credential enforcement (ADR 0022 §Negative, GH #20). The
     // request→Account seam carries `bound_entity_id` forward without

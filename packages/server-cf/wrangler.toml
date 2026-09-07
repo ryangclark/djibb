@@ -20,6 +20,31 @@ bindings = [
   { name = "DJIBB_LIST", class_name = "DjibbList" },
 ]
 
+# Workers Rate Limiting bindings (GH #14, #40). Each binding is one fixed
+# {limit, period} sliding window with zero storage cost; distinct caps need
+# distinct bindings, and `period` must be 10 or 60. These are the in-code,
+# always-on limiter — see src/utils/rateLimit.ts and the WAF runbook in
+# src/auth/README.md for the complementary edge layer.
+#
+# Limits are STARTING VALUES to tune: a human editing a list via Replicache
+# bursts several mutations, so the account cap is loose; the anonymous cap
+# must be brutal to a `contribute`-style loop yet survivable for one real
+# anonymous contributor.
+[[ratelimits]]
+name = "RL_ANON_WRITE"      # anonymous entity writes → DO-creation flood
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }
+
+[[ratelimits]]
+name = "RL_ACCT_WRITE"      # authenticated entity writes (looser)
+namespace_id = "1002"
+simple = { limit = 600, period = 60 }
+
+[[ratelimits]]
+name = "RL_AUTH_IP"         # auth endpoints (OAuth callback, detach), per IP
+namespace_id = "1003"
+simple = { limit = 20, period = 60 }
+
 # Durable Object migrations.
 # Docs: https://developers.cloudflare.com/workers/learning/using-durable-objects#configure-durable-object-classes-with-migrations
 [[migrations]]

@@ -25,6 +25,7 @@ import {
 } from './google';
 import { FlagRouter, MOCK_AUTH_MODE } from '../flags';
 import type { HonoEnv } from '..';
+import { clientIp, enforceLimit } from '../utils/rateLimit';
 
 export async function handleGetMockSession(c: Context<HonoEnv>) {
     if (!FlagRouter.featureIsEnabled(MOCK_AUTH_MODE)) {
@@ -204,6 +205,12 @@ export async function handleInitOAuthGoogle(c: Context<HonoEnv>) {
  * Cookies.
  */
 export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
+    // Rate limit the OAuth callback per IP (GH #40). Pre-session — no
+    // principal yet — so IP is the only stable key. Gates the code-for-
+    // tokens exchange + session mint against a callback flood.
+    const over = await enforceLimit(c, c.env.RL_AUTH_IP, clientIp(c));
+    if (over) return over;
+
     const code = c.req.query('code');
     const state = c.req.query('state');
 
@@ -340,9 +347,8 @@ export async function handleVerifyOAuthGoogle(c: Context<HonoEnv>) {
     const fromSessionId =
         principal.kind === 'session' ? principal.sessionId : undefined;
 
-    // @TODO: Need to rate limit this stuff.
-    // Perhaps by using CF's new service, with key of something like
-    // `${getCurrentRoute()}::${getRequestIPAddress()}` or something.
+    // Callback flood protection lives at the top of this handler now
+    // (per-IP `RL_AUTH_IP`, GH #40) — see `enforceLimit` above.
 
     let session;
     try {
