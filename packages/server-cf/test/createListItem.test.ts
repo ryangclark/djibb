@@ -556,6 +556,17 @@ describe('createListItem structural append cap (submitter, GH #66)', () => {
         // pinned at the ceiling.
         expect(result.error).toBeNull();
 
+        // The refusal is reported back to the caller. A one-shot HTTP pusher
+        // (the `djibb` CLI) has no websocket to receive the `mutation_outcome`
+        // frame, so without this the drop is invisible and it prints success
+        // for a contribution that never landed (GH #66).
+        expect(result.data?.refusals).toEqual([
+            expect.objectContaining({
+                status: 'precondition',
+                reason: 'append_limit',
+            }),
+        ]);
+
         const present = await runInDurableObject(stub, async (_i, state) =>
             state.storage.sql
                 .exec(`SELECT id FROM list_elements WHERE id = ?;`, overCap.id)

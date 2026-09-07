@@ -63,6 +63,47 @@ export function newOneShotClient() {
 }
 
 /**
+ * The server processed the push but refused to apply a mutation — the
+ * skip-and-ack shape (ADR 0020): it acked the mutation so the pusher won't
+ * wedge, advanced `lastMutationID`, and wrote nothing.
+ *
+ * An interactive client sees this on the `mutation_outcome` websocket frame
+ * and rolls its optimistic write back. A one-shot HTTP pusher has no such
+ * channel, so without this the refusal is *invisible*: the push 200s and the
+ * caller reports success for a write that was dropped (GH #66 — `djibb
+ * contribute` printed `✓ contributed <slug>` and exited 0 when the
+ * Contributed List was at its append ceiling). Turning it into a throw is
+ * what makes the silent drop loud.
+ *
+ * Permanent by construction — every refusal reason (append cap, role gate,
+ * failed preflight, unparseable args) is a decision, not a transient fault.
+ * Callers must NOT retry it.
+ */
+export class PushRefusedError extends Error {
+	/** @param {PushRefusal[]} refusals */
+	constructor(refusals) {
+		const first = refusals[0];
+		super(
+			first?.message ??
+				`push refused (${first?.status ?? 'unknown'}${
+					first?.reason ? `: ${first.reason}` : ''
+				})`
+		);
+		this.name = 'PushRefusedError';
+		/** Every refusal the server reported for this push. */
+		this.refusals = refusals;
+	}
+}
+
+/**
+ * @typedef {object} PushRefusal
+ * @property {number} mutationId
+ * @property {'auth'|'stale'|'gone'|'precondition'|'skipped'} status
+ * @property {string} [reason] Structured code, e.g. `append_limit`.
+ * @property {string} [message] Human-readable server copy.
+ */
+
+/**
  * The logical mutation each client has been pushed with, keyed by identity.
  * The DO's dedup makes *misuse* silent: reuse one client for a second,
  * different mutation and the DO acks it as "from the past" without writing —
@@ -112,7 +153,12 @@ export async function pushMutation(
 	}
 	pushedIntent.set(client, intent);
 
-	await transport.post(`/${kind}/push?id=${encodeURIComponent(entityId)}`, {
+	/** @type {{refusals?: PushRefusal[]}} */
+	const result = await transport.post(`/${kind}/push?id=${encodeURIComponent(entityId)}`, {
+		// Opt into the refusal report. Without it `/push` answers an empty
+		// 200 (what Replicache's own pusher expects) and a skip-and-ack is
+		// indistinguishable from success — see `PushRefusedError`.
+		headers: { 'X-Djibb-Push-Outcomes': '1' },
 		json: {
 			profileID,
 			clientGroupID: client.clientGroupID,
@@ -132,10 +178,13 @@ export async function pushMutation(
 				}
 			]
 		},
-		// `/push` answers `new Response(null, { status: 200 })` — an empty 200,
-		// so there is nothing to parse.
-		parse: 'none'
+		// With the opt-in header above the server answers a JSON body
+		// (`{refusals}`), so it is parsed rather than skipped.
+		parse: 'json'
 	});
+
+	const refusals = result?.refusals ?? [];
+	if (refusals.length > 0) throw new PushRefusedError(refusals);
 }
 
 /** One element op from a `/pull` response patch. */

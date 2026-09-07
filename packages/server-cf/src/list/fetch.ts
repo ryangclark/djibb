@@ -18,6 +18,7 @@ import {
     partitionConnectedClients,
 } from '../auth/d1';
 import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
+import { PUSH_OUTCOMES_HEADER } from '@djibb/protocol/websocket/constants';
 
 import {
     BadRequestError,
@@ -533,7 +534,7 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
         const listId = c.get('list').name ?? c.get('entity_id');
         if (!listId) throw new UnexpectedError('invalid listId');
 
-        const { error } = await c.get('list').handlePush({
+        const { data: pushResult, error } = await c.get('list').handlePush({
             authorizedAccounts: principalAccounts(c.get('principal')),
             authorizedRole: c.get('authorized_role'),
             listId,
@@ -555,6 +556,18 @@ export function makeEntityRouter(entityType: EntityType): Hono<HonoEnv> {
                 },
             );
         }
+        // Skip-and-ack refusals (ADR 0020) are normally observed on the
+        // `mutation_outcome` websocket frame. A non-interactive client (the
+        // `djibb` CLI: plain HTTP, one-shot client, no websocket) has no such
+        // channel, so a refused write is invisible to it — the push 200s and
+        // the CLI reports success for a mutation that was dropped (GH #66).
+        // Opting in with this header returns those refusals in the body.
+        // Replicache's own pusher never sends it and keeps the empty-body
+        // 200 it expects, so the browser path is byte-identical.
+        if (c.req.header(PUSH_OUTCOMES_HEADER)) {
+            return c.json({ refusals: pushResult?.refusals ?? [] });
+        }
+
         return new Response(null, { status: 200 });
     });
 

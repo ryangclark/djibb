@@ -35,6 +35,7 @@ import {
     WS_QUERY_CLIENT_ID,
     WS_STATE,
     type MutationOutcomeStatus,
+    type PushMutationRefusal,
     type WSMessage,
 } from '@djibb/protocol/websocket/constants';
 import type { Bindings } from '..';
@@ -1084,6 +1085,11 @@ export class DjibbList extends DurableObject {
         // themselves live next to the tails they feed.
         let intent = emptyPostCommitIntent();
 
+        // Skip-and-ack refusals, returned to callers that opt in via the
+        // `X-Djibb-Push-Outcomes` header (see `list/fetch.ts`). Replicache's
+        // own pusher never opts in and keeps the empty-body 200 it expects.
+        const refusals: PushMutationRefusal[] = [];
+
         for (let i = 0; i < pushRequest.mutations.length; i++) {
             const mutation = pushRequest.mutations[i];
 
@@ -1191,6 +1197,12 @@ export class DjibbList extends DurableObject {
                     // this, Replicache would retry the push forever.
                     replicacheClient.lastMutationId = mutation.id;
                     replicacheClient.lastModifiedVersion = listVersion;
+                    refusals.push({
+                        mutationId: mutation.id,
+                        status: preflight.status,
+                        reason: preflight.reason,
+                        message: preflight.message,
+                    });
                     console.log({
                         ackedMutationId: mutation.id,
                         didMutate: false,
@@ -1201,7 +1213,7 @@ export class DjibbList extends DurableObject {
                 }
             }
 
-            const { ackedMutationId, didMutate } = this.handleMutation(
+            const { ackedMutationId, didMutate, refusal } = this.handleMutation(
                 authorizedAccounts,
                 authorizedRole,
                 expectedMutationId,
@@ -1223,6 +1235,7 @@ export class DjibbList extends DurableObject {
                 replicacheClient.lastMutationId = ackedMutationId;
                 replicacheClient.lastModifiedVersion = listVersion;
             }
+            if (refusal) refusals.push(refusal);
             console.log({ ackedMutationId, didMutate, listVersion });
         }
 
@@ -1336,9 +1349,11 @@ export class DjibbList extends DurableObject {
 
         this.poke();
 
-        // Replicache: the response body to the push endpoint is
-        // ignored.
-        // return Promise.resolve();
+        // Replicache itself ignores the push response body — the worker only
+        // serializes this for callers that opted in with the
+        // `X-Djibb-Push-Outcomes` header (see `list/fetch.ts`). Flat and
+        // primitive-only so it survives the DO RPC boundary.
+        return { refusals };
     }
 
     /**
@@ -1353,7 +1368,11 @@ export class DjibbList extends DurableObject {
         mutation: MutationV1,
         nextVersion: number,
         actingCredentialId: string | null = null
-    ): { ackedMutationId: number | null; didMutate: boolean } {
+    ): {
+        ackedMutationId: number | null;
+        didMutate: boolean;
+        refusal?: PushMutationRefusal;
+    } {
         // Check the Mutation's ID matches the Expected ID.
         if (expectedMutationId !== mutation.id) {
             console.log(
@@ -1422,13 +1441,25 @@ export class DjibbList extends DurableObject {
                     error?.toString()
                 );
             }
-            return { ackedMutationId: mutation.id, didMutate: false };
+            return {
+                ackedMutationId: mutation.id,
+                didMutate: false,
+                refusal: {
+                    mutationId: envelope.id,
+                    status: 'auth',
+                    reason: 'terminal_mutator_requires_interactive_client',
+                },
+            };
         }
 
         let mutationStatus: MutationStatus = 'unknown';
         // Set by the append-cap branch below: a refused append must not
         // write a mutation-log row (see the comment there).
         let suppressMutationLog = false;
+        // The skip-and-ack fact, surfaced to opt-in (non-interactive)
+        // callers via the `/push` response body. Interactive clients read
+        // the same fact off the `mutation_outcome` websocket frame.
+        let refusal: PushMutationRefusal | undefined;
 
         try {
             const result = executeServerMutation(envelopeResult.mutation, {
@@ -1480,6 +1511,11 @@ export class DjibbList extends DurableObject {
                         'auth'
                     );
                     mutationStatus = 'skipped';
+                    refusal = {
+                        mutationId: envelope.id,
+                        status: 'auth',
+                        reason: result.reason,
+                    };
                 } else {
                     // Unauthenticated request (no session — `HandleSession`
                     // blanks an expired/invalid cookie to null rather than
@@ -1506,6 +1542,11 @@ export class DjibbList extends DurableObject {
                     `\`handleMutation()\` skipped "${envelope.name}": ${result.reason}`
                 );
                 mutationStatus = 'skipped';
+                refusal = {
+                    mutationId: envelope.id,
+                    status: 'skipped',
+                    reason: result.reason,
+                };
             }
         } catch (error) {
             console.error(
@@ -1535,6 +1576,12 @@ export class DjibbList extends DurableObject {
                     { reason: 'append_limit', message: error.message }
                 );
                 mutationStatus = 'skipped';
+                refusal = {
+                    mutationId: envelope.id,
+                    status: 'precondition',
+                    reason: 'append_limit',
+                    message: error.message,
+                };
                 // Do NOT log this one. The shared tail below writes a
                 // `mutations` row carrying the full serialized args, and
                 // nothing prunes that table — so logging a refusal would
@@ -1577,6 +1624,7 @@ export class DjibbList extends DurableObject {
         return {
             ackedMutationId: mutation.id,
             didMutate: mutationStatus === 'succeeded',
+            refusal,
         };
     }
 

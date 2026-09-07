@@ -38,7 +38,12 @@ import {
     createTransport,
     DjibbHttpError,
 } from '@djibb/client/transport';
-import { newOneShotClient, pullEntity, pushMutation } from '@djibb/client/oneshot';
+import {
+    newOneShotClient,
+    pullEntity,
+    pushMutation,
+    PushRefusedError,
+} from '@djibb/client/oneshot';
 
 /** Total items in a group, recursing through nested subgroups. */
 function groupItemCount(g: MarkdownGroup): number {
@@ -483,6 +488,11 @@ async function pushWithRetry(fn: () => Promise<void>, attempts = 5): Promise<voi
         try {
             return await fn();
         } catch (err) {
+            // A refusal is a server *decision* (append cap, role gate, failed
+            // preflight), not a transient fault — it was already acked, so
+            // every retry would re-send a mutation the DO dedupes away and
+            // just delay the error. Surface it immediately (GH #66).
+            if (err instanceof PushRefusedError) throw err;
             lastErr = err;
             if (i < attempts - 1) await sleep(400 * (i + 1));
         }
@@ -710,6 +720,30 @@ async function cmdContribute(args: string[]): Promise<number> {
             console.error(
                 c.red('✗ the Contributed List does not exist yet.') +
                     ' Ask the operator to bootstrap it with `djibb promote`.'
+            );
+            return 1;
+        }
+        // The server accepted the request but refused the write (GH #66).
+        // Without this the push 200s and we'd print `✓ contributed` for a
+        // contribution that was dropped — the anonymous submitter is below
+        // the view floor (ADR 0021), so we cannot verify by reading back.
+        if (err instanceof PushRefusedError) {
+            const cap = err.refusals.some(r => r.reason === 'append_limit');
+            console.error(
+                c.red('✗ your contribution was not accepted: ') + err.message
+            );
+            if (cap) {
+                console.error(
+                    c.dim(
+                        '  The Contributed List is at its submission ceiling. ' +
+                            'Nothing was added — ask the operator to curate it.'
+                    )
+                );
+            }
+            // The Blank pushed above DID land; say so rather than implying
+            // the whole command was a no-op.
+            console.error(
+                c.dim(`  (the blank ${blankId} was created and still exists)`)
             );
             return 1;
         }
