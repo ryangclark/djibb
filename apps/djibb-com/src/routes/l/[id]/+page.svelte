@@ -1,5 +1,5 @@
 <script>
-	import { tick, untrack } from 'svelte';
+	import { untrack } from 'svelte';
 
 	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
@@ -19,8 +19,7 @@
 	import UndoToast from '$lib/components/UndoToast.svelte';
 	import { getSessionState } from '$lib/session.svelte.js';
 	import { createStrandedState } from '$lib/replicache/stranded.svelte.js';
-	import { unflushedLedger } from '$lib/replicache/ledger.js';
-	import { discardUnflushed } from '@djibb/client/unflushed';
+	import { createDisownController } from '$lib/replicache/disown.svelte.js';
 	import z, { ZodError } from 'zod';
 
 	let data = $derived(page.data);
@@ -64,12 +63,11 @@
 	/** @type {string | null} */
 	let actingAccountId = $state.raw(null);
 
-	// A disown (GH #45) in progress: the user has said "not me" to blocked
-	// work and asked for it to be thrown away. While true the init effect
-	// stands down, which is what closes the live client — a store cannot
-	// be dropped while we hold it open. See `disown` below.
-	let disowning = $state(false);
-	let disownError = $state('');
+	// The "Discard and continue" escape hatch (GH #45). Owns the
+	// `disowning` flag the init effect below stands down on, and the
+	// load-bearing drop ordering — shared with the template page so the two
+	// can't drift. See disown.svelte.js.
+	const disownController = createDisownController({ noun: 'list' });
 
 	/** @type {import('$lib/replicache/withUndo.svelte.js').ToastEvent | null} */
 	let toastEvent = $state(null);
@@ -94,7 +92,7 @@
 		// Standing down for a disown: the cleanup below has just closed the
 		// client (or is about to), and the next run — once the store is
 		// gone and the claim with it — resolves the account afresh.
-		if (disowning) return;
+		if (disownController.disowning) return;
 
 		// The `?new=1` marker authorizes the one-time optimistic init for a
 		// genuine creation. Read it untracked: we strip it from the URL the
@@ -191,55 +189,15 @@
 		return () => {
 			unbindKeymap();
 			replicacheList.syncStatus.close();
-			replicacheList.client.close();
+			// Hand the close promise to the disown controller: when this
+			// cleanup runs *because* a disown is standing the client down, the
+			// store drop must wait for the connection to actually close, not
+			// just for close() to be called (GH #45 review). Harmless
+			// otherwise — it only captures the promise while disowning.
+			disownController.handoffClose(replicacheList.client.close());
 			ws?.close(1000);
 		};
 	});
-
-	/**
-	 * "Discard and continue" — discard the blocked work and continue as
-	 * whoever the session actually says we are (GH #45).
-	 *
-	 * The order is load-bearing. `discardUnflushed` drops the account's
-	 * IndexedDB store, and `deleteDatabase` *blocks* (never rejects) while
-	 * any connection to it is open — including our own live client's. So:
-	 * flip `disowning`, which makes the init effect stand down and run its
-	 * cleanup (`client.close()`); wait a tick for that to happen; then drop
-	 * the store and, with it, the ledger claim; then clear the flag, which
-	 * re-runs the effect. `resolveEffectiveAccount` now finds no claim and
-	 * hands back the session's own answer — `null` for the anonymous
-	 * visitor this exists for, or the current account if there is one.
-	 *
-	 * Scoped to this entity, like the stranded banner's discard: the person
-	 * saying "not me" is looking at one list, and the same account's work
-	 * on other lists is not theirs to destroy from here.
-	 */
-	async function disown() {
-		const accountId = actingAccountId;
-		if (disowning || !accountId) return;
-		disownError = '';
-		disowning = true;
-		await tick();
-		try {
-			await discardUnflushed({
-				ledger: unflushedLedger,
-				accountId,
-				entityIds: [data.list_id]
-			});
-		} catch (err) {
-			// An explicit, irreversible request that we failed to carry out:
-			// say so. The claim survives a failed drop, so the next load
-			// resolves to the same account and the same banner — nothing is
-			// lost, and the likely cause (another tab holding the store) is
-			// something the user can fix.
-			disownError =
-				'Could not remove those changes — another tab may still have ' +
-				'this list open. Close it and try again.';
-			console.error('Disown failed:', err);
-		} finally {
-			disowning = false;
-		}
-	}
 
 	// Pending mutations are keyed to this entity's client, so bring the
 	// user back here after signing in — that's where the queue drains.
@@ -288,9 +246,10 @@
 		onRetry={() => syncStatus?.retry()}
 		{actingAccountId}
 		sessionAccounts={sessionState.accounts}
-		onDisown={disown}
-		{disowning}
-		{disownError}
+		onDisown={() =>
+			disownController.disown({ entityId: data.list_id, accountId: actingAccountId })}
+		disowning={disownController.disowning}
+		disownError={disownController.error}
 	/>
 	<StrandedWorkBanner
 		{stranded}
