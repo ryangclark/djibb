@@ -44,6 +44,7 @@ import {
     CreateSession,
     InsertMagicLinkToken,
     MAGIC_RATE_LIMITS,
+    peekMagicTokenRow,
     StampSessionSudo,
 } from './d1';
 import { randomString } from '@djibb/protocol/id';
@@ -556,41 +557,54 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
     const tokenHash = await hashToken(rawToken);
     const now = Math.floor(Date.now() / 1000);
 
-    const updateResult = await consumeMagicTokenRow(
-        c.env.DJIBB_AUTH,
-        tokenHash,
-        now
-    );
-
-    if (!updateResult) {
+    // Sudo step-up terminal (GH #58). Re-proves the *current* session's
+    // identity: no account is created and no session is minted. Unlike
+    // sign-in/connect (device-agnostic, so consume-first is correct), a
+    // sudo link is same-device-required, so we PEEK the token to learn its
+    // purpose and validate the session *before* burning it — a click on the
+    // wrong device must not spend a link that can never complete there.
+    const peeked = await peekMagicTokenRow(c.env.DJIBB_AUTH, tokenHash, now);
+    if (!peeked) {
         throw new ValidationError('sign-in link is invalid or expired');
     }
 
-    // Sudo step-up terminal (GH #58). Re-proves the *current* session's
-    // identity: no account is created and no session is minted. Handled
-    // before the resolve-or-create + session paths below, and requires the
-    // consuming request to already be that session (the land page's
-    // consume POST carries the cookie, so this is same-browser by
-    // construction).
-    if (updateResult.purpose === MAGIC_PURPOSE_SUDO) {
+    if (peeked.purpose === MAGIC_PURPOSE_SUDO) {
         const principal = c.get('principal');
         if (principal.kind !== 'session') {
             // The confirmation must complete in the browser that holds the
-            // session. Elevating a session you're not in is impossible, so
-            // fail with guidance rather than silently.
+            // session. The token is NOT consumed on this failure, so the
+            // user can still click it on the right device.
             throw new ValidationError(
                 'Open this confirmation on the device where you are signed in.'
             );
         }
-        const target = updateResult.target_email.toLowerCase();
+        const target = peeked.target_email.toLowerCase();
         const match = principal.accounts.find(
             account => (account.email ?? '').toLowerCase() === target
         );
         if (!match) {
+            // Not consumed — see above.
             throw new ValidationError(
                 'This confirmation does not match the signed-in account.'
             );
         }
+        // Only now spend the single-use token (atomic). A concurrent
+        // consume or a just-lapsed TTL between peek and here → null → same
+        // invalid-link failure, and nothing is stamped.
+        const consumed = await consumeMagicTokenRow(
+            c.env.DJIBB_AUTH,
+            tokenHash,
+            now
+        );
+        if (!consumed) {
+            throw new ValidationError('sign-in link is invalid or expired');
+        }
+        // Stamp the account the token's email matched. In the rare case a
+        // session holds two accounts sharing this email, this picks the
+        // first — which is fail-safe: the delete gate compares
+        // `sudo_account_id` to the account named in the delete request, so a
+        // wrong pick can only stall that flow, never authorize deleting an
+        // unintended account.
         await StampSessionSudo(c.env.DJIBB_AUTH, {
             sessionId: principal.sessionId,
             accountId: match.id,
@@ -602,6 +616,18 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
             throw new UnexpectedError();
         }
         return c.json({ redirect: `${frontendOrigin}/accounts?sudo=ok` });
+    }
+
+    // Non-sudo: consume-first (burning the single-use token is correct for
+    // these device-agnostic flows).
+    const updateResult = await consumeMagicTokenRow(
+        c.env.DJIBB_AUTH,
+        tokenHash,
+        now
+    );
+
+    if (!updateResult) {
+        throw new ValidationError('sign-in link is invalid or expired');
     }
 
     if (

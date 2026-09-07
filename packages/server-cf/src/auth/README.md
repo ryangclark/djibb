@@ -73,8 +73,11 @@ deletion as a real exit path, so it's built as a **user-facing verb**
   (`accounts.time_deleted`) and, in one atomic batch, revokes every issued
   credential, removes the account from every session (reaping sessions left
   empty; a multi-account session keeps its other accounts), and drops the
-  identity's pending magic-link / connect-code / connect-pending rows. "Delete"
+  identity's in-flight connect ceremonies (codes + pending consents). "Delete"
   is felt instantly — signed out everywhere, every connected client dead.
+  (Email-keyed magic-link tokens are left alone — they can't resurrect a
+  tombstoned identity, and deleting by email would be collateral on any other
+  account sharing the address.)
 - **Sudo mode** (`POST /auth/sudo/request` → a `purpose='sudo'` magic-link →
   consumed via `/auth/magic/consume`) — a GitHub-style re-auth. Consuming the
   link stamps the *current* session sudo-fresh (`sessions.time_sudo` +

@@ -198,11 +198,7 @@ describe('SoftDeleteAccountPhase1', () => {
         const live1 = await CreateCredential(env.DJIBB_AUTH, { accountId });
         const live2 = await CreateCredential(env.DJIBB_AUTH, { accountId });
 
-        await SoftDeleteAccountPhase1(env.DJIBB_AUTH, {
-            accountId,
-            email,
-            now: NOW,
-        });
+        await SoftDeleteAccountPhase1(env.DJIBB_AUTH, { accountId, now: NOW });
 
         expect((await accountRow(accountId))!.time_deleted).toBe(NOW);
         // Both live credentials fail the seam now (revoked).
@@ -220,11 +216,7 @@ describe('SoftDeleteAccountPhase1', () => {
         const soloSession = await sessionOver([a]);
         const sharedSession = await sessionOver([a, b]);
 
-        await SoftDeleteAccountPhase1(env.DJIBB_AUTH, {
-            accountId: a,
-            email: 'a@example.com',
-            now: NOW,
-        });
+        await SoftDeleteAccountPhase1(env.DJIBB_AUTH, { accountId: a, now: NOW });
 
         // The account is gone from every session.
         expect(await accountSessionIds(a)).toEqual([]);
@@ -234,26 +226,12 @@ describe('SoftDeleteAccountPhase1', () => {
         expect(shared!.accounts.map(x => x.id)).toEqual([b]);
     });
 
-    it('drops the identity’s pending auth but not another account’s', async () => {
+    it('drops the identity’s in-flight connect ceremonies (account-scoped)', async () => {
         const email = 'me@example.com';
         const accountId = await insertAccount({ email });
         const other = await insertAccount({ email: 'other@example.com' });
 
-        // Seed pending-auth rows for both identities.
-        await env.DJIBB_AUTH.prepare(
-            `INSERT INTO magic_link_tokens
-                (token_hash, target_email, purpose, time_created, time_expires)
-             VALUES (?, ?, 'signin', ?, ?)`,
-        )
-            .bind(await hashToken('mine'), email, NOW, NOW + 900)
-            .run();
-        await env.DJIBB_AUTH.prepare(
-            `INSERT INTO magic_link_tokens
-                (token_hash, target_email, purpose, time_created, time_expires)
-             VALUES (?, ?, 'signin', ?, ?)`,
-        )
-            .bind(await hashToken('theirs'), 'other@example.com', NOW, NOW + 900)
-            .run();
+        // This identity's connect code + pending consent…
         await env.DJIBB_AUTH.prepare(
             `INSERT INTO connect_authorization_codes
                 (code_hash, account_id, client_origin, code_challenge, time_created, time_expires)
@@ -268,27 +246,48 @@ describe('SoftDeleteAccountPhase1', () => {
         )
             .bind('pending-mine', accountId, ALLOWED_ORIGIN, NOW, NOW + 600)
             .run();
+        // …and another account's, which must survive.
+        await env.DJIBB_AUTH.prepare(
+            `INSERT INTO connect_authorization_codes
+                (code_hash, account_id, client_origin, code_challenge, time_created, time_expires)
+             VALUES (?, ?, ?, 'chal', ?, ?)`,
+        )
+            .bind('code-theirs', other, ALLOWED_ORIGIN, NOW, NOW + 300)
+            .run();
 
-        await SoftDeleteAccountPhase1(env.DJIBB_AUTH, {
-            accountId,
-            email,
-            now: NOW,
-        });
+        await SoftDeleteAccountPhase1(env.DJIBB_AUTH, { accountId, now: NOW });
 
-        const magic = await env.DJIBB_AUTH.prepare(
-            'SELECT target_email FROM magic_link_tokens',
-        ).all<{ target_email: string }>();
-        expect(magic.results.map(r => r.target_email)).toEqual([
-            'other@example.com',
-        ]);
         const codes = await env.DJIBB_AUTH.prepare(
-            'SELECT COUNT(*) AS n FROM connect_authorization_codes',
-        ).first<{ n: number }>();
-        expect(codes!.n).toBe(0);
+            'SELECT account_id FROM connect_authorization_codes',
+        ).all<{ account_id: string }>();
+        expect(codes.results.map(r => r.account_id)).toEqual([other]);
         const pending = await env.DJIBB_AUTH.prepare(
             'SELECT COUNT(*) AS n FROM connect_pending',
         ).first<{ n: number }>();
         expect(pending!.n).toBe(0);
+    });
+
+    it('does NOT delete magic-link tokens (email-keyed; would be collateral)', async () => {
+        const email = 'shared@example.com';
+        const accountId = await insertAccount({ email });
+        await env.DJIBB_AUTH.prepare(
+            `INSERT INTO magic_link_tokens
+                (token_hash, target_email, purpose, time_created, time_expires)
+             VALUES (?, ?, 'signin', ?, ?)`,
+        )
+            .bind(await hashToken('pending'), email, NOW, NOW + 900)
+            .run();
+
+        await SoftDeleteAccountPhase1(env.DJIBB_AUTH, { accountId, now: NOW });
+
+        // The token survives — it keys on email, not account, and can only
+        // resolve to a live account or a fresh one (never the tombstone).
+        const n = await env.DJIBB_AUTH.prepare(
+            'SELECT COUNT(*) AS n FROM magic_link_tokens WHERE target_email = ?',
+        )
+            .bind(email)
+            .first<{ n: number }>();
+        expect(n!.n).toBe(1);
     });
 });
 
@@ -433,6 +432,33 @@ describe('magic sudo-consume stamps the session', () => {
             time_sudo: null,
             sudo_account_id: null,
         });
+    });
+
+    it('does NOT burn the token when clicked on the wrong device (retryable)', async () => {
+        const email = 'retry@example.com';
+        const accountId = await insertAccount({ email });
+        const sessionId = await sessionOver([accountId]);
+        await seedSudoToken(email, 'retry-token');
+
+        // Wrong device: no session cookie → refused, token untouched.
+        const wrong = await post('/auth/magic/consume', {
+            body: { token: 'retry-token' },
+        });
+        expect(wrong.status).toBe(400);
+        expect(await GetSessionSudo(env.DJIBB_AUTH, sessionId)).toEqual({
+            time_sudo: null,
+            sudo_account_id: null,
+        });
+
+        // Same link, now on the signed-in device → completes.
+        const right = await post('/auth/magic/consume', {
+            cookie: cookieFor(sessionId),
+            body: { token: 'retry-token' },
+        });
+        expect(right.status).toBe(200);
+        expect(
+            (await GetSessionSudo(env.DJIBB_AUTH, sessionId))!.sudo_account_id,
+        ).toBe(accountId);
     });
 });
 

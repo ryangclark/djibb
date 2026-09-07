@@ -124,11 +124,7 @@ Auth_App.post('/account/delete', async c => {
     const callerSingleAccount = principal.accounts.length === 1;
 
     try {
-        await SoftDeleteAccountPhase1(c.env.DJIBB_AUTH, {
-            accountId,
-            email: account.email ? account.email.toLowerCase() : null,
-            now,
-        });
+        await SoftDeleteAccountPhase1(c.env.DJIBB_AUTH, { accountId, now });
     } catch (error) {
         console.error('`POST /account/delete` cascade error:', error);
         throw new UnexpectedError();

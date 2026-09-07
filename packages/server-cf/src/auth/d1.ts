@@ -296,26 +296,42 @@ export async function GetSessionSudo(
  *   2. Revoke every live issued credential for the account — the whole
  *      point of "delete" as the connect-ceremony withdraw path: every
  *      connected client dies immediately, not at purge time.
- *   3. Remove the account from every session *in place* (drop its
- *      `AccountSession` rows), then delete sessions left with no
- *      accounts. A multi-account session (the same human's other
- *      accounts) keeps its id and its other accounts — going further
- *      than the detach-only `DELETE /auth/session/accounts`, without
- *      logging the survivor out of its remaining accounts.
- *   4. Drop pending auth the identity could still complete: magic-link
- *      tokens for its email, and any in-flight connect codes / pending
- *      consents.
+ *   3. Remove the account from every session. A session whose *only*
+ *      member is this account is deleted; a multi-account session (the
+ *      same human's other accounts) keeps its id and its other accounts,
+ *      going further than the detach-only `DELETE /auth/session/accounts`
+ *      without logging the survivor out of its remaining accounts. The
+ *      reap is scoped to *this account's* sessions — an unrelated
+ *      orphaned session is never collateral.
+ *   4. Drop the identity's in-flight connect ceremonies (codes + pending
+ *      consents), which are account-scoped.
  *
- * `email` is the account's canonical (lowercased) email; pass null for
- * an emailless account (magic tokens key on email, so there are none to
- * drop). Atomicity needs the raw D1 batch API (sql-d1 has none), lifted
- * via `d1Try` like `CreateSession`/`DeleteSession`.
+ * Deliberately does NOT touch `magic_link_tokens`: those key on
+ * `target_email`, not `account_id`, so deleting by email would be
+ * collateral on any other account sharing the address — and it buys no
+ * security, since `GetAccountByEmail` already filters tombstoned rows, so
+ * a lingering token resolves to a live account or creates a fresh one, it
+ * can never resurrect the deleted identity. Atomicity needs the raw D1
+ * batch API (sql-d1 has none), lifted via `d1Try` like
+ * `CreateSession`/`DeleteSession`.
  */
 export async function SoftDeleteAccountPhase1(
     d1: D1Database,
-    args: { accountId: string; email: string | null; now: number },
+    args: { accountId: string; now: number },
 ): Promise<void> {
-    const { accountId, email, now } = args;
+    const { accountId, now } = args;
+
+    // Capture the account's session ids up front — they're needed to scope
+    // the reap, but the `AccountSession` delete below erases the evidence,
+    // so we read before we write.
+    const sessionRows = await runD1(
+        d1,
+        'SoftDeleteAccountPhase1.sessions',
+        sql =>
+            sql<{ session_id: string }>`
+                SELECT session_id FROM AccountSession WHERE account_id = ${accountId}`,
+    );
+    const sessionIds = sessionRows.map(r => r.session_id);
 
     const stmts: Array<D1PreparedStatement> = [
         d1
@@ -332,21 +348,12 @@ export async function SoftDeleteAccountPhase1(
                  WHERE account_id = ? AND time_revoked IS NULL`,
             )
             .bind(now, accountId),
+        // Remove the account from every session first (FK-safe: a session
+        // row can't be deleted while an AccountSession row still references
+        // it). A multi-account session keeps its other rows and survives.
         d1
             .prepare(`DELETE FROM AccountSession WHERE account_id = ?`)
             .bind(accountId),
-        // Reap sessions left with no accounts (the account's single-account
-        // sessions; a multi-account session still has its other rows and
-        // survives). LEFT JOIN … IS NULL, not a bound id-list, so it's one
-        // static statement regardless of how many sessions the account had.
-        d1.prepare(
-            `DELETE FROM sessions
-             WHERE id IN (
-                 SELECT s.id FROM sessions s
-                 LEFT JOIN AccountSession a ON a.session_id = s.id
-                 WHERE a.session_id IS NULL
-             )`,
-        ),
         d1
             .prepare(`DELETE FROM connect_authorization_codes WHERE account_id = ?`)
             .bind(accountId),
@@ -355,11 +362,20 @@ export async function SoftDeleteAccountPhase1(
             .bind(accountId),
     ];
 
-    if (email) {
+    // Reap the account's now-empty sessions — scoped to the ids captured
+    // above (never an unrelated orphan), and only those that lost their
+    // last account (a multi-account session still has other rows, so the
+    // `NOT IN` subquery excludes it).
+    if (sessionIds.length) {
+        const placeholders = sessionIds.map(() => '?').join(', ');
         stmts.push(
             d1
-                .prepare(`DELETE FROM magic_link_tokens WHERE target_email = ?`)
-                .bind(email),
+                .prepare(
+                    `DELETE FROM sessions
+                     WHERE id IN (${placeholders})
+                       AND id NOT IN (SELECT session_id FROM AccountSession)`,
+                )
+                .bind(...sessionIds),
         );
     }
 
@@ -1224,6 +1240,38 @@ export async function consumeMagicTokenRow(
                     AND time_expires > ${now}
                 RETURNING target_email, purpose, connect_origin,
                     connect_code_challenge, connect_label`,
+    );
+    return rows[0] ?? null;
+}
+
+/**
+ * Read a live magic-link token's `purpose`/`target_email` **without
+ * consuming it** (GH #58). The sign-in and connect flows consume-first
+ * (device-agnostic — burning the single-use token is correct), but a
+ * sudo step-up is same-device-required, so its handler must learn the
+ * purpose and validate the calling session *before* spending the token —
+ * otherwise a click on the wrong device burns a link that can never
+ * complete. Same eligibility predicate as `consumeMagicTokenRow`
+ * (unknown / consumed / expired all → null, indistinguishable); the
+ * atomic single-use claim still happens in `consumeMagicTokenRow`, which
+ * this only precedes.
+ */
+export async function peekMagicTokenRow(
+    d1: D1Database,
+    tokenHash: string,
+    now: number,
+): Promise<{ target_email: string; purpose: string } | null> {
+    const rows = await runD1(
+        d1,
+        'peekMagicTokenRow',
+        sql =>
+            sql<{ target_email: string; purpose: string }>`
+                SELECT target_email, purpose
+                FROM magic_link_tokens
+                WHERE token_hash = ${tokenHash}
+                    AND time_consumed IS NULL
+                    AND time_expires > ${now}
+                LIMIT 1`,
     );
     return rows[0] ?? null;
 }
