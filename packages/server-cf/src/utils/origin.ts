@@ -23,22 +23,41 @@ function safeUrlHost(value: string): string | null {
 }
 
 /**
+ * Split the raw `AUTHORIZED_DOMAINS` env value (a `;`-separated list) into
+ * entries, **trimming surrounding whitespace** and dropping empties. Taking
+ * the raw string (rather than a pre-`split` array) means every caller parses
+ * it one way — and closes a latent footgun: a config like `a.com; b.com`
+ * (space after the `;`) would otherwise leave ` b.com` unmatchable and
+ * fail-close a legitimate origin to a 403. Shared with `originIsAllowlisted`
+ * (`auth/connect.ts`) so both allowlist matchers normalize identically.
+ */
+export function parseAuthorizedDomains(
+    authorizedDomains: string | undefined,
+): string[] {
+    if (!authorizedDomains) return [];
+    return authorizedDomains
+        .split(';')
+        .map(entry => entry.trim())
+        .filter(Boolean);
+}
+
+/**
  * True iff `origin` (a request's `Origin` header value) has the same host as
- * one of `allowedDomains`. Returns false for a missing origin, an empty
- * allowlist, or an unparseable origin. Allowlist entries without a scheme
- * are treated as hosts (parsed under a synthetic `https://` prefix).
+ * one of the `;`-separated `authorizedDomains`. Returns false for a missing
+ * origin, an empty allowlist, or an unparseable origin. Allowlist entries
+ * without a scheme are treated as hosts (parsed under a synthetic `https://`
+ * prefix).
  */
 export function verifyRequestOrigin(
     origin: string | null | undefined,
-    allowedDomains: readonly string[],
+    authorizedDomains: string | undefined,
 ): boolean {
-    if (!origin || allowedDomains.length === 0) return false;
+    if (!origin) return false;
 
     const originHost = safeUrlHost(origin);
     if (!originHost) return false;
 
-    for (const domain of allowedDomains) {
-        if (!domain) continue;
+    for (const domain of parseAuthorizedDomains(authorizedDomains)) {
         const domainHost =
             domain.startsWith('http://') || domain.startsWith('https://')
                 ? safeUrlHost(domain)

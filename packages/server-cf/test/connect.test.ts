@@ -42,6 +42,10 @@ import {
     hashSecret,
 } from '../src/auth/d1';
 import { hashToken } from '../src/auth/magic';
+import {
+    parseAuthorizedDomains,
+    verifyRequestOrigin,
+} from '../src/utils/origin';
 import { newId } from '@djibb/protocol/id';
 import { ensureD1Schema, resetWorkspaceData } from './helpers/d1';
 
@@ -121,6 +125,50 @@ describe('originIsAllowlisted', () => {
         expect(originIsAllowlisted('', 'a.com')).toBe(false);
         expect(originIsAllowlisted(undefined, 'a.com')).toBe(false);
         expect(originIsAllowlisted('a.com', null)).toBe(false);
+    });
+
+    it('tolerates whitespace around allowlist entries', () => {
+        // `a.com; b.com` (space after ;) must still match b.com — the
+        // untrimmed footgun the shared parser closes.
+        expect(originIsAllowlisted('a.com; b.com', 'b.com')).toBe(true);
+        expect(originIsAllowlisted('  a.com ;\tb.com  ', 'a.com')).toBe(true);
+    });
+});
+
+describe('parseAuthorizedDomains', () => {
+    it('splits, trims, and drops empties', () => {
+        expect(parseAuthorizedDomains('a.com; b.com ;;  c.com')).toEqual([
+            'a.com',
+            'b.com',
+            'c.com',
+        ]);
+        expect(parseAuthorizedDomains('')).toEqual([]);
+        expect(parseAuthorizedDomains(undefined)).toEqual([]);
+    });
+});
+
+describe('verifyRequestOrigin', () => {
+    it('matches by host, scheme-agnostically, and tolerates whitespace', () => {
+        // Allowlist entry as a full origin; request Origin same host.
+        expect(
+            verifyRequestOrigin('http://localhost:5173', 'http://localhost:5173'),
+        ).toBe(true);
+        // Bare-host allowlist entry matches an https origin of that host.
+        expect(verifyRequestOrigin('https://djibb.com', 'djibb.com')).toBe(true);
+        // Whitespace-padded entry still matches.
+        expect(
+            verifyRequestOrigin('https://app.djibb.com', 'a.com; app.djibb.com'),
+        ).toBe(true);
+    });
+
+    it('rejects a missing origin, empty allowlist, unparseable origin, or non-member', () => {
+        expect(verifyRequestOrigin('', 'a.com')).toBe(false);
+        expect(verifyRequestOrigin('https://a.com', '')).toBe(false);
+        expect(verifyRequestOrigin('https://a.com', undefined)).toBe(false);
+        expect(verifyRequestOrigin('not a url', 'a.com')).toBe(false);
+        expect(verifyRequestOrigin('https://evil.com', 'a.com;b.com')).toBe(
+            false,
+        );
     });
 });
 

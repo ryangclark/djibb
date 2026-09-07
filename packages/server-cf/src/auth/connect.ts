@@ -41,6 +41,7 @@ import { BadRequestError } from '@djibb/protocol/errors';
 import { randomString } from '@djibb/protocol/id';
 import { runD1 } from '../effect/d1';
 import { CreateCredential, hashSecret } from './d1';
+import { parseAuthorizedDomains } from '../utils/origin';
 
 // ─── Tunables ───────────────────────────────────────────────────────────────
 
@@ -92,8 +93,11 @@ export function originIsAllowlisted(
     authorizedDomains: string | undefined,
     origin: string | null | undefined,
 ): boolean {
-    if (!authorizedDomains || !origin) return false;
-    return authorizedDomains.split(';').filter(Boolean).includes(origin);
+    if (!origin) return false;
+    // Same parse as the CSRF host-matcher (`utils/origin.ts`) so both
+    // allowlist checks normalize `AUTHORIZED_DOMAINS` identically — trimmed,
+    // empties dropped — and can't disagree on a whitespace-padded entry.
+    return parseAuthorizedDomains(authorizedDomains).includes(origin);
 }
 
 // ─── PKCE ─────────────────────────────────────────────────────────────────
