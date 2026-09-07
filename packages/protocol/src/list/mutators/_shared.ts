@@ -41,6 +41,26 @@ export const APPEND_ROLES: readonly AuthorizationRole[] = [
 ] as const;
 
 /**
+ * Structural append-volume cap (ADR 0021 / GH #66). The `submitter` role
+ * is the anonymous, append-only vector (the operator-owned Contributed
+ * List, `default_role: 'submitter'`): no account, no token, and Replicache
+ * batches N appends into a single `/push`, so the per-request Workers rate
+ * limit from #14/#40 (PR #65) counts a fat batch as one hit and can't bound
+ * per-item volume. This ceiling is the volume counterpart to the role's
+ * vandalism protection — enforced in `createListItem` where the write lands
+ * (`ctx.store.countLiveListItems()`), so it holds no matter how the client
+ * packs its batches. Full editors/owners (`EDIT_ROLES`) are intentionally
+ * NOT capped: they own the list; only the append-only stranger is bounded.
+ *
+ * A STARTING VALUE to tune (like the #14/#40 rate-limit caps): high enough
+ * that a real Contributed List never bumps it in normal use, low enough
+ * that a runaway `djibb contribute` loop can't balloon storage. Archiving
+ * an item frees a slot (the count is of *live* rows), so a curated list
+ * self-heals back under the cap.
+ */
+export const SUBMITTER_APPEND_CEILING = 5000;
+
+/**
  * Roles permitted to change who can access the list. Tighter than
  * `EDIT_ROLES` — an editor or checker can mutate list state, but only
  * an admin or owner can re-grant access. `ownerless` is intentionally

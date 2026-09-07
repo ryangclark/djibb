@@ -41,6 +41,7 @@ import type { Bindings } from '..';
 import {
     BadMutationError,
     DjibbError,
+    FailedPreconditionError,
     NotFoundError,
     type SerializedDjibbError,
     TablesAlreadyInitializedError,
@@ -1510,6 +1511,24 @@ export class DjibbList extends DurableObject {
 
             if (error instanceof UnauthorizedError) {
                 throw error;
+            } else if (error instanceof FailedPreconditionError) {
+                // Structural cap refusal (ADR 0021 append-volume / GH #66):
+                // the mutator rejected because the entity is at its item
+                // ceiling for open (`submitter`) submissions. This is
+                // permanent for this push — surface it over the outcome
+                // channel as `precondition` (the taxonomy's "outstanding-cap"
+                // status; see websocket/constants.ts) so the client rolls the
+                // optimistic add back with a reason, then skip-and-ack below
+                // (advance lastMutationID, write no rows) so Replicache's
+                // pusher doesn't wedge on a retried 4xx. `append_limit` is the
+                // structured reason code the client keys its copy off.
+                this.emitMutationOutcome(
+                    envelope.clientID,
+                    envelope.id,
+                    'precondition',
+                    { reason: 'append_limit', message: error.message }
+                );
+                mutationStatus = 'skipped';
             } else if (error instanceof DjibbError) {
                 mutationStatus = 'skipped';
             } else {

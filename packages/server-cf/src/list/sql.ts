@@ -313,6 +313,26 @@ export function getLiveItemCasRow(
         | undefined;
 }
 
+/**
+ * Count the live (non-archived) `item` rows on this entity. Backs the
+ * structural append-volume cap (ADR 0021 / GH #66): the submitter role is
+ * an append-only vector, and Replicache batches N appends into one `/push`
+ * — so a per-request HTTP rate limit can't see per-item volume. The mutator
+ * reads this count where the write actually lands, so the ceiling holds
+ * regardless of how requests are batched. `time_deleted IS NULL` mirrors
+ * every other "live row" predicate here (e.g. `getLiveItemCasRow`), so an
+ * archived item frees a slot back under the cap.
+ */
+export function countLiveListItems(sql: SqlStorage): number {
+    const row = sql
+        .exec(
+            `SELECT COUNT(*) AS n FROM list_elements
+             WHERE type = 'item' AND time_deleted IS NULL;`
+        )
+        .one() as { n: number };
+    return row.n;
+}
+
 // Queries the database for entries with a version greater than the
 // given version.
 export function getChangedElements(sql: SqlStorage, previousVersion: number) {

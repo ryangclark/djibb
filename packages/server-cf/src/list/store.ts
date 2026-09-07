@@ -79,6 +79,7 @@ export function createSqlStorageEntityStore(storage: SqlStorage): EntityStore {
         getLiveWorkspaceCasRow: bind(sql.getLiveWorkspaceCasRow),
         getLiveGroupParentRef: bind(sql.getLiveGroupParentRef),
         getLiveItemCasRow: bind(sql.getLiveItemCasRow),
+        countLiveListItems: bind(sql.countLiveListItems),
         getChangedElements: bind(sql.getChangedElements),
         InitializeTables: bind(sql.InitializeTables),
         getEntityId: bind(sql.getEntityId),

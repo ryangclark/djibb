@@ -1,10 +1,11 @@
 import { z } from 'zod';
 
-import { BadMutationError } from '@djibb/protocol/errors';
+import { BadMutationError, FailedPreconditionError } from '@djibb/protocol/errors';
+import { AuthorizationRoleEnum } from '@djibb/protocol/auth/rules';
 import { ListElementUnion, ListItemSchema } from '@djibb/protocol/list';
 import { IdTypes } from '@djibb/protocol/id';
 import { ListSchema, TemplateSchema } from '@djibb/protocol/list';
-import { APPEND_ROLES, toStoredValue } from './_shared';
+import { APPEND_ROLES, SUBMITTER_APPEND_CEILING, toStoredValue } from './_shared';
 import type { ClientMutator, Inverse, ServerMutator } from './_shared';
 
 export const argsSchema = z.object({
@@ -19,7 +20,26 @@ export const name = 'createListItem' as const;
 // every other mutator stays gated on `EDIT_ROLES`.
 export const requiredRole = APPEND_ROLES;
 
-export const server: ServerMutator<Args> = ({ item }, { store, nextVersion }) => {
+export const server: ServerMutator<Args> = ({ item }, { store, role, nextVersion }) => {
+    // Structural append-volume cap (ADR 0021 / GH #66). `submitter` is the
+    // one append-only role widened into this mutator's gate, and the only
+    // role a token-less anonymous stranger resolves to on a `default_role:
+    // 'submitter'` entity. Bound its total live-item volume here — where the
+    // write actually lands — so the cap holds regardless of how Replicache
+    // packs mutations into a `/push` (the per-request rate limit from
+    // #14/#40 can't see per-item volume). EDIT_ROLES (owner/editor/…) skip
+    // this: they own the list and curate it. Permanent for this push: throw
+    // a `FailedPreconditionError`, which the DO maps to a `precondition`
+    // outcome + skip-and-ack (see `handleMutation`), so the optimistic add
+    // rolls back with a reason and Replicache's pusher never wedges.
+    if (
+        role === AuthorizationRoleEnum.enum.submitter &&
+        store.countLiveListItems() >= SUBMITTER_APPEND_CEILING
+    ) {
+        throw new FailedPreconditionError(
+            `append limit reached: this list is capped at ${SUBMITTER_APPEND_CEILING} items for open submissions`
+        );
+    }
     store.insertListItem({ ...item, version: nextVersion });
     store.appendChildElementRef(item.parent_element_ref, item.id);
 };
