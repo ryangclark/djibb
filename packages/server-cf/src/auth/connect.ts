@@ -42,6 +42,7 @@ import { randomString } from '@djibb/protocol/id';
 import { runD1 } from '../effect/d1';
 import { CreateCredential, hashSecret } from './d1';
 import { parseAuthorizedDomains } from '../utils/origin';
+import { base64UrlSha256 } from '../utils/base64url';
 
 // ─── Tunables ───────────────────────────────────────────────────────────────
 
@@ -101,26 +102,6 @@ export function originIsAllowlisted(
 }
 
 // ─── PKCE ─────────────────────────────────────────────────────────────────
-
-/**
- * Base64url (no padding) of SHA-256(input). This is the PKCE `S256`
- * transform: a client sends `code_challenge = BASE64URL(SHA256(verifier))`
- * at ceremony start and proves possession of `verifier` at exchange.
- */
-async function base64UrlSha256(input: string): Promise<string> {
-    const digest = await crypto.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(input),
-    );
-    let binary = '';
-    for (const byte of new Uint8Array(digest)) {
-        binary += String.fromCharCode(byte);
-    }
-    return btoa(binary)
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/, '');
-}
 
 /**
  * Constant-time string compare. Guards the PKCE challenge comparison

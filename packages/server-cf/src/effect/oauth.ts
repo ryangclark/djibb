@@ -1,14 +1,16 @@
-import { Google } from 'arctic';
 import * as Context from 'effect/Context';
 import * as Data from 'effect/Data';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
 import { z } from 'zod';
 
+import { exchangeGoogleAuthorizationCode } from '../auth/google';
+
 /**
  * GoogleIdentity Effect service (ADR 0015, docs/plans/effect-adoption.md
- * Phase 2): the OAuth callback's external interaction — arctic's
- * code-for-tokens exchange plus the userinfo claims fetch — as one
+ * Phase 2): the OAuth callback's external interaction — the Google
+ * code-for-tokens exchange (`auth/google.ts`) plus the userinfo claims
+ * fetch — as one
  * named operation with a typed error channel, replacing the ad-hoc
  * try/catch + unguarded fetch in `auth/oauth.ts`.
  *
@@ -73,21 +75,22 @@ export type GoogleOAuthConfig = {
     readonly redirectUri: string;
 };
 
-/** Live Layer: arctic against real Google endpoints. */
+/** Live Layer: our in-house Google OIDC client against real endpoints. */
 export const GoogleIdentityLive = (
     config: GoogleOAuthConfig,
 ): Layer.Layer<GoogleIdentity> =>
     Layer.succeed(GoogleIdentity, {
         exchangeCode: (code, codeVerifier) =>
             Effect.gen(function* () {
-                const google = new Google(
-                    config.clientId,
-                    config.clientSecret,
-                    config.redirectUri,
-                );
                 const tokens = yield* Effect.tryPromise({
                     try: () =>
-                        google.validateAuthorizationCode(code, codeVerifier),
+                        exchangeGoogleAuthorizationCode({
+                            clientId: config.clientId,
+                            clientSecret: config.clientSecret,
+                            redirectUri: config.redirectUri,
+                            code,
+                            codeVerifier,
+                        }),
                     catch: cause => new OAuthExchangeError({ cause }),
                 });
                 const response = yield* Effect.tryPromise({
@@ -96,7 +99,7 @@ export const GoogleIdentityLive = (
                             'https://openidconnect.googleapis.com/v1/userinfo',
                             {
                                 headers: {
-                                    Authorization: `Bearer ${tokens.accessToken()}`,
+                                    Authorization: `Bearer ${tokens.accessToken}`,
                                 },
                             },
                         ),

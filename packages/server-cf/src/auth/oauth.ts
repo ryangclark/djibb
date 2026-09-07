@@ -1,5 +1,3 @@
-import { Google } from 'arctic';
-import { generateCodeVerifier, generateState } from 'arctic';
 import type { Context } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { CookieOptions } from 'hono/utils/cookie';
@@ -20,6 +18,11 @@ import {
     originIsAllowlisted,
     type ConnectCeremonyContext,
 } from './connect';
+import {
+    createGoogleAuthorizationURL,
+    generateGoogleCodeVerifier,
+    generateGoogleState,
+} from './google';
 import { FlagRouter, MOCK_AUTH_MODE } from '../flags';
 import type { HonoEnv } from '..';
 
@@ -82,8 +85,8 @@ export async function handleGetMockSession(c: Context<HonoEnv>) {
  * we will validate Google's authorization code.
  */
 export async function handleInitOAuthGoogle(c: Context<HonoEnv>) {
-    const baseState = generateState();
-    const codeVerifier = generateCodeVerifier();
+    const baseState = generateGoogleState();
+    const codeVerifier = generateGoogleCodeVerifier();
 
     // Pending invite token: read from `?invite=<token>`. We carry it
     // through OAuth two ways for defense-in-depth: a cookie (primary,
@@ -95,15 +98,15 @@ export async function handleInitOAuthGoogle(c: Context<HonoEnv>) {
         ? `${baseState}.${encodeURIComponent(inviteToken)}`
         : baseState;
 
-    const google = new Google(
-        c.env.OAUTH_GOOGLE_CLIENT_ID,
-        c.env.OAUTH_GOOGLE_CLIENT_SECRET,
-        OAUTH_REDIRECT_URI.base(c) + OAUTH_REDIRECT_URI.google
-    );
-
     const SCOPES = ['profile', 'email']; // "openid" always included
 
-    const url: URL = google.createAuthorizationURL(state, codeVerifier, SCOPES);
+    const url: URL = await createGoogleAuthorizationURL({
+        clientId: c.env.OAUTH_GOOGLE_CLIENT_ID,
+        redirectUri: OAUTH_REDIRECT_URI.base(c) + OAUTH_REDIRECT_URI.google,
+        state,
+        codeVerifier,
+        scopes: SCOPES,
+    });
 
     // These may need to be updated at some point idk.
     const cookieOpts: CookieOptions = {
