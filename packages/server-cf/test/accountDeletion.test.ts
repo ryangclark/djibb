@@ -522,6 +522,11 @@ describe('POST /auth/account/delete', () => {
             body: { account_id: a },
         });
         expect(res.status).toBe(403);
+        // The load-bearing safety property (review of #61, finding #1): a sudo
+        // stamped for one account can NEVER delete another. Assert the outcome,
+        // not just the status — account `a` must be fully untouched.
+        expect(await res.json()).toEqual({ error: 'sudo_required' });
+        expect((await accountRow(a))!.time_deleted).toBeNull();
     });
 
     it('deletes the identity and clears the cookie for a single-account session', async () => {
