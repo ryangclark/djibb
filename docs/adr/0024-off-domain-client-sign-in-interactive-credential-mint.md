@@ -2,14 +2,16 @@
 
 - **Status:** Accepted. **Sequencing item 1 (token endpoint + authorization-code
   tail) implemented in #28, item 2 (§3 disclosure interstitial) implemented in
-  #29** — see the notes under Sequencing below; items 3–5
-  remain deferred as written. Amends ADR 0010 (the interactive ceremony gains a
+  #29, item 3 (transport Bearer auth-parameterization + CLI fold) implemented in
+  arch-review #5 and completed here (persistent Replicache client)** — see the
+  notes under Sequencing below; items 4–5 remain deferred as written. Amends
+  ADR 0010 (the interactive ceremony gains a
   second terminal form: a minted credential, not only a same-site session) and
   ADR 0022 (fills the "device-flow mint UX" hole it named out of scope; the
   `issued_credentials` substrate is unchanged). Does not touch authorization
   (ADR 0021).
 - **Date:** 2026-07-04
-- **Layer:** protocol, server-cf
+- **Layer:** protocol, server-cf, client
 
 ## Context
 
@@ -196,11 +198,14 @@ memory and reconnects per visit is a legitimate posture, not a failure mode.
 - The worker's ceremony pages (interstitial, hosted sign-in) become a
   user-facing product surface with real design stakes — §3's disclosure
   lives or dies on that copy and flow.
-- `@djibb/client`'s pusher/puller are cookie-only (`credentials: 'include'`);
+- ~~`@djibb/client`'s pusher/puller are cookie-only (`credentials: 'include'`);
   the transport must be auth-parameterized to carry `Authorization: Bearer`
-  before any off-domain Replicache client works. (The CLI's hand-rolled
-  push/pull was the first consumer; this is the second — extraction is due
-  per ADR 0014's rule.)
+  before any off-domain Replicache client works.~~ **Resolved (item 3):** the
+  shared transport and one-shot push/pull carry a `Credential` (cookie / Bearer
+  / anonymous), and the persistent Replicache client (`createReplicacheClient`)
+  now takes one too — cookie stays the default, so djibb.com is unchanged. (The
+  CLI's hand-rolled push/pull was the first consumer; the persistent client is
+  the second — the ADR 0014 extraction is done.)
 - Bearer tokens in browsers are XSS-stealable; §6's expiry recommendation
   mitigates but does not eliminate. Accepted for v1 with first-party clients.
 - The code redirect suppresses the session cookie for that flow (§1.3); the
@@ -315,6 +320,25 @@ memory and reconnects per visit is a legitimate posture, not a failure mode.
 3. Auth-parameterize the `@djibb/client` transport (Bearer alongside
    cookie); fold the CLI's hand-rolled push/pull into it (ADR 0014 second
    consumer).
+
+   > **Implemented (arch-review #5 + this PR).** The credentialed-fetch
+   > transport (`@djibb/client/transport`) already carries all three
+   > presentations — `sessionCookie()`, `bearerToken(token, { origin })`,
+   > and `anonymous({ origin })` — and the CLI's hand-rolled push/pull was
+   > folded onto it via the extracted one-shot helper
+   > (`@djibb/client/oneshot`) in arch-review #5 (`9d7c5dd06`); the CLI now
+   > presents a Bearer token or nothing through that shared substrate rather
+   > than a second copy. The remaining gap — the **persistent Replicache
+   > sync loop** (`createReplicacheClient` / `makePusher` / `makePuller`),
+   > which was still hardcoded `credentials: 'include'` — is closed here:
+   > those take an optional `credential` (defaulting to `sessionCookie()`,
+   > so djibb.com is unchanged), so an off-domain client can now drive a real
+   > sync loop with a ceremony-minted Bearer token, not only a one-shot push.
+   > (The worker still gates non-GET requests on an `AUTHORIZED_DOMAINS`
+   > `Origin`; a browser cannot set `Origin`, so an off-domain *browser* sync
+   > client is unblocked at the transport but still awaits the §5(b)
+   > registration stance for its origin — the CLI, which sets `Origin`
+   > explicitly, works today.)
 4. First consumer: the Secret Santa client end-to-end on its own domain —
    proving ceremony, storage posture, and revocation before any third party
    exists.

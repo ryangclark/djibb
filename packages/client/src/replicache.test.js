@@ -1,7 +1,8 @@
 // @ts-check
 
-import { describe, expect, it, vi } from 'vitest';
-import { storeName, wrapMutators } from './replicache.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { makePuller, makePusher, storeName, wrapMutators } from './replicache.js';
+import { bearerToken, sessionCookie } from './transport.js';
 
 /**
  * Records the order of everything that happens, because ordering — not
@@ -107,6 +108,70 @@ describe('wrapMutators — unflushed-work claim (GH #43)', () => {
 		await mutate.setName({ name: 'x' });
 
 		expect(rawMutate.setName).toHaveBeenCalled();
+	});
+});
+
+describe('makePusher / makePuller — credential presentation (ADR 0024 item 3)', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	/** Stub `fetch` and return the recorded init of the single call. */
+	function stubFetch(status = 200, body = '{}') {
+		const fetchMock = vi.fn(
+			async (/** @type {any} */ _url, /** @type {any} */ _init) =>
+				new Response(body, {
+					status,
+					headers: { 'Content-Type': 'application/json' }
+				})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+		return fetchMock;
+	}
+
+	it('sends the session cookie by default (unchanged pre-Bearer behavior)', async () => {
+		const fetchMock = stubFetch();
+		await makePusher('https://api.example/list/push', sessionCookie())(
+			/** @type {any} */ ({}),
+			'req-1'
+		);
+		const init = /** @type {any} */ (fetchMock.mock.calls[0]?.[1]);
+		expect(init?.credentials).toBe('include');
+		// No Authorization header on the cookie path.
+		expect(init?.headers).not.toHaveProperty('Authorization');
+		// Protocol headers are always present.
+		expect(init?.headers).toMatchObject({
+			'Content-Type': 'application/json',
+			'X-Replicache-RequestID': 'req-1'
+		});
+	});
+
+	it('carries a Bearer token + Origin for an off-domain client', async () => {
+		const fetchMock = stubFetch();
+		const credential = bearerToken('tok-123', { origin: 'https://client.example' });
+		await makePuller('https://api.example/list/pull', credential)(
+			/** @type {any} */ ({}),
+			'req-2'
+		);
+		const init = /** @type {any} */ (fetchMock.mock.calls[0]?.[1]);
+		// Bearer clients omit ambient credentials — the token is the identity.
+		expect(init?.credentials).toBe('omit');
+		expect(init?.headers).toMatchObject({
+			Authorization: 'Bearer tok-123',
+			Origin: 'https://client.example',
+			'Content-Type': 'application/json',
+			'X-Replicache-RequestID': 'req-2'
+		});
+	});
+
+	it('reports the push status to the observer', async () => {
+		stubFetch(403);
+		const onStatus = vi.fn();
+		await makePusher('https://api.example/list/push', sessionCookie(), onStatus)(
+			/** @type {any} */ ({}),
+			'req-3'
+		);
+		expect(onStatus).toHaveBeenCalledWith(403);
 	});
 });
 
