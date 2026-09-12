@@ -2118,13 +2118,17 @@ export function setReplicacheClientGroup(
             const insertChanges = affectedRows(sql);
             const EXPECTED_CHANGES = 1;
             if (insertChanges !== EXPECTED_CHANGES) {
-                console.log(
+                console.error(
                     '`setReplicacheClientGroup()` INSERT query changes - got:',
                     insertChanges,
                     'expected:',
                     EXPECTED_CHANGES
                 );
-                // throw new UnexpectedError('replicache client not inserted');
+                // A new client we just tried to INSERT must land exactly one
+                // row; anything else means the client group is missing state
+                // a downstream pull would read as complete. Fail loudly
+                // rather than swallow it.
+                throw new UnexpectedError('replicache client not inserted');
             }
         }
     }
