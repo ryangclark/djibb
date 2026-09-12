@@ -2133,3 +2133,101 @@ export function setReplicacheClientGroup(
         }
     }
 }
+
+/**
+ * Client-group id prefixes that identify a *stable, single-writer*
+ * identity the platform re-uses forever, and so must NEVER be garbage-
+ * collected (GH #35). These writers rely on `last_mutation_id`
+ * continuity across their (possibly long-idle) lifetime: reaping one and
+ * letting it return would reset the server's view to `lastMutationID: 0`
+ * and re-apply already-acked mutations — the double-apply bug arch-review
+ * #5 closed.
+ *
+ *   - `cg_cascade:<workspaceId>` — the workspace DO's cascade writer
+ *     (`workspace/cascade.ts`); one row-pair per workspace, forever.
+ *   - `cg_signup_<accountId>`    — the personal-workspace mint at signup
+ *     (`workspace/service.ts`); one-shot but re-converges on retry.
+ *   - `cg_cli:`                  — reserved for a future stable operator
+ *     identity for `djibb promote` (GH #35 "Also worth deciding").
+ *
+ * Anonymous `contribute` / browser clients use random `cg_...` ids that
+ * match none of these, so they remain eligible for GC.
+ */
+const GC_RESERVED_CLIENT_GROUP_PREFIXES = [
+    'cg_cascade:',
+    'cg_signup_',
+    'cg_cli:',
+] as const;
+
+/**
+ * Garbage-collect Replicache bookkeeping rows in the entity DO's SQLite
+ * (GH #35). `handlePush` persists a `replicache_clients` +
+ * `replicache_client_groups` row-pair per client; on a public write
+ * surface (`djibb contribute` against a `submitter` list) every
+ * contribution mints a fresh one-shot client, so the tables grow without
+ * bound and nothing ever reclaims them.
+ *
+ * The reclamation signal is **version lag**: a one-shot writer's
+ * `last_modified_version` freezes at the list version it wrote against,
+ * so as the list advances it falls arbitrarily far behind, while a client
+ * that keeps pushing stays current. We drop any client more than
+ * `maxVersionLag` versions behind `currentVersion`, then drop any client
+ * group left with no clients. This is Replicache's documented "collect
+ * clients far behind the current version" pattern; `maxVersionLag` is a
+ * starting value to tune (generous, so a merely-idle interactive client
+ * that could still return isn't reaped mid-life).
+ *
+ * Reserved single-writer identities (`GC_RESERVED_CLIENT_GROUP_PREFIXES`)
+ * are excluded outright — see that constant. Callable every reconcile
+ * tick: when `currentVersion <= maxVersionLag` the cutoff is
+ * non-positive and both DELETEs no-op (e.g. a workspace DO, whose entity
+ * row isn't a list/template so `getListVersion` reads 0).
+ *
+ * Returns the number of client + client-group rows deleted (for logging).
+ */
+export function garbageCollectReplicacheClients(
+    sql: SqlStorage,
+    currentVersion: number,
+    maxVersionLag: number
+): { clientsDeleted: number; clientGroupsDeleted: number } {
+    const cutoff = currentVersion - maxVersionLag;
+    if (cutoff <= 0) {
+        // Nothing can be strictly below a non-positive cutoff
+        // (`last_modified_version` is a non-negative version), so skip
+        // the writes entirely.
+        return { clientsDeleted: 0, clientGroupsDeleted: 0 };
+    }
+
+    const notReserved = GC_RESERVED_CLIENT_GROUP_PREFIXES.map(
+        () => `client_group_id NOT LIKE ?`
+    ).join(' AND ');
+    const reservedPatterns = GC_RESERVED_CLIENT_GROUP_PREFIXES.map(
+        (p) => `${p}%`
+    );
+
+    sql.exec(
+        `DELETE FROM replicache_clients
+        WHERE last_modified_version < ?
+            AND ${notReserved};`,
+        cutoff,
+        ...reservedPatterns
+    );
+    const clientsDeleted = affectedRows(sql);
+
+    // Reap client groups orphaned by the delete above (no remaining
+    // clients). Same reserved-prefix guard, keyed on the group's own id.
+    const notReservedGroups = GC_RESERVED_CLIENT_GROUP_PREFIXES.map(
+        () => `id NOT LIKE ?`
+    ).join(' AND ');
+    sql.exec(
+        `DELETE FROM replicache_client_groups
+        WHERE ${notReservedGroups}
+            AND id NOT IN (
+                SELECT DISTINCT client_group_id FROM replicache_clients
+            );`,
+        ...reservedPatterns
+    );
+    const clientGroupsDeleted = affectedRows(sql);
+
+    return { clientsDeleted, clientGroupsDeleted };
+}
