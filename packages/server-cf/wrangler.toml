@@ -41,7 +41,7 @@ namespace_id = "1002"
 simple = { limit = 600, period = 60 }
 
 [[ratelimits]]
-name = "RL_AUTH_IP"         # auth endpoints (OAuth callback, detach), per IP
+name = "RL_AUTH_IP"         # auth endpoints (OAuth callback, session detach, connect/token), per IP
 namespace_id = "1003"
 simple = { limit = 20, period = 60 }
 

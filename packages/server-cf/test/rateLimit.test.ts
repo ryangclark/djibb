@@ -308,7 +308,11 @@ describe('OAuth callback → RL_AUTH_IP (per IP)', () => {
 
 describe('connect-ceremony token exchange → RL_AUTH_IP (per IP, GH #70)', () => {
     it('throttles the (limit+1)th POST /connect/token with a 429', async () => {
-        const ip = `198.51.100.${Math.floor(Math.random() * 250) + 1}`;
+        // Distinct subnet from the OAuth-callback test (198.51.100.0/24):
+        // both share the RL_AUTH_IP bucket, which persists across tests in
+        // this run, so a same-IP pick would spend this test's warm-up hits
+        // on the OAuth test's tab and 429 early.
+        const ip = `192.0.2.${Math.floor(Math.random() * 250) + 1}`;
 
         // The first `limit` calls pass the gate (they 4xx downstream on the
         // empty body — `invalid_grant`/400 — but that is past the limiter).
