@@ -58,6 +58,7 @@ import {
     getMutationLog,
     type MutationLogEntry,
     getReplicacheClientGroupById,
+    ensureListElementIndexes,
     InitializeTables,
     setListVersion,
     setMutation,
@@ -291,6 +292,20 @@ export class DjibbList extends DurableObject {
             } catch (error) {
                 console.error(
                     'Unexpected error ensuring pending_invites table:',
+                    error
+                );
+                throw error;
+            }
+
+            // Forward-migration for GH #39: create the entity DO's SQLite
+            // indexes on every constructor pass. `CREATE INDEX IF NOT
+            // EXISTS` makes this safe for fresh DOs and DOs that came up
+            // before the indexes existed alike.
+            try {
+                ensureListElementIndexes(this.sql);
+            } catch (error) {
+                console.error(
+                    'Unexpected error ensuring list_elements indexes:',
                     error
                 );
                 throw error;

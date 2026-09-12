@@ -82,6 +82,7 @@ export function createSqlStorageEntityStore(storage: SqlStorage): EntityStore {
         atOrOverLiveItemLimit: bind(sql.atOrOverLiveItemLimit),
         getChangedElements: bind(sql.getChangedElements),
         InitializeTables: bind(sql.InitializeTables),
+        ensureListElementIndexes: bind(sql.ensureListElementIndexes),
         getEntityId: bind(sql.getEntityId),
         getListVersion: bind(sql.getListVersion),
         setListVersion: bind(sql.setListVersion),

@@ -41,6 +41,22 @@ import type { MutationEnvelope, MutationStatus } from '@djibb/protocol/list/muta
  */
 
 /**
+ * Rows actually changed by the most recent INSERT/UPDATE/DELETE on this
+ * SQLite connection, via the `changes()` function. This is the correct
+ * primitive for "did my write find its row?" assertions.
+ *
+ * `SqlStorage.rowsWritten` is NOT: it is an I/O / billing metric that also
+ * counts index-page writes, so a single-row UPDATE reports 2 the moment its
+ * table carries one index — and any row-found assertion built on it starts
+ * throwing bogus `NotFoundError`s. `changes()` is index-invariant and
+ * returns 0 on a miss. Call it immediately after the mutating `exec`, before
+ * any other statement that modifies rows runs. See GH #68.
+ */
+function affectedRows(sql: SqlStorage): number {
+    return Number(sql.exec('SELECT changes() AS changes;').one().changes);
+}
+
+/**
  * Writes an entity-typed (list or template) row to the DO sql. Per ADR
  * 0003 the DO is authoritative for every entity field — `authorization_rules`,
  * `workspace_id`, `forked_from_id` are stored on the row itself rather than
@@ -331,14 +347,13 @@ export function getLiveItemCasRow(
  * `LIMIT 1 OFFSET limit - 1` stops the moment the answer is known, bounding
  * each call at `limit` rows no matter how large the list grows.
  *
- * Deliberately NOT index-backed. An index on `(type, time_deleted)` would
- * make this an index-only walk, but adding ANY index to `list_elements`
- * inflates `SqlStorage`'s `rowsWritten` (index writes count toward it), and
- * this module uses `rowsWritten` as a row-found assertion in several places
- * — `archiveEntity` starts throwing `NotFoundError` with `rowsWritten=2`,
- * and `setReplicacheClientGroup`'s expectations break too. Indexing
- * `list_elements` therefore requires auditing every `rowsWritten` check
- * first; until then the OFFSET bound is the mitigation.
+ * Index-backed as of GH #39: `idx_list_elements_type_time_deleted` on
+ * `(type, time_deleted)` turns this into an index range that reads only up
+ * to `limit` entries. This was previously avoided because adding any index
+ * to `list_elements` inflates `SqlStorage.rowsWritten`, which several
+ * row-found assertions here relied on; those now use `changes()` via
+ * {@link affectedRows} (GH #68), so the index is safe and the OFFSET bound
+ * is now a walk over the index rather than the table.
  */
 export function atOrOverLiveItemLimit(sql: SqlStorage, limit: number): boolean {
     // A non-positive ceiling means "no appends allowed" — the probe below
@@ -426,7 +441,43 @@ export function getChangedElements(sql: SqlStorage, previousVersion: number) {
     return result;
 }
 
-// TODO: create indexes for many of these tables!
+/**
+ * Create the entity DO's SQLite indexes if absent (GH #39). Additive and
+ * idempotent (`CREATE INDEX IF NOT EXISTS`), so it's safe to run on every
+ * DO load: a fresh DO (just past {@link InitializeTables}) and a DO that
+ * came up before this landed both converge to the same shape. The DO has no
+ * migration framework, so this constructor-time forward-migration is how
+ * existing DOs pick the indexes up — it mirrors `ensurePendingInvitesTable`.
+ *
+ * Indexes match this module's real query shapes, not every column:
+ *  - `list_elements(type, time_deleted)` — the "live rows of a type"
+ *    predicate shared by the append-cap probe ({@link atOrOverLiveItemLimit})
+ *    and every entity/item type scan. `time_deleted IS NULL` is this
+ *    module's most common filter.
+ *  - `list_elements(version)` — {@link getChangedElements}' `version > ?`,
+ *    the read run on every pull.
+ *  - `replicache_clients(client_group_id)` — the per-group client fan-out
+ *    ({@link getReplicacheClientGroupById}), read while assembling every
+ *    pull's CVR. `id` lookups are already covered by the PRIMARY KEY.
+ *
+ * Safe only because the row-found assertions no longer read
+ * `SqlStorage.rowsWritten` (which index-page writes inflate) — they now use
+ * `changes()` via {@link affectedRows} (GH #68).
+ */
+export function ensureListElementIndexes(sql: SqlStorage) {
+    sql.exec(
+        `CREATE INDEX IF NOT EXISTS idx_list_elements_type_time_deleted
+         ON list_elements(type, time_deleted);`
+    );
+    sql.exec(
+        `CREATE INDEX IF NOT EXISTS idx_list_elements_version
+         ON list_elements(version);`
+    );
+    sql.exec(
+        `CREATE INDEX IF NOT EXISTS idx_replicache_clients_group
+         ON replicache_clients(client_group_id);`
+    );
+}
 
 /**
  * Initializes SQL tables and default values. Should only be run once
@@ -494,18 +545,9 @@ export function InitializeTables(
         );`
     );
 
-    /**
-     * LLM-suggested indexes:
-     *
-     * Useful if you're querying or joining based on parent_element_ref (e.g., getting all children of a parent).
-     *      CREATE INDEX idx_list_elements_parent_ref ON list_elements(parent_element_ref);
-     *
-     * Speeds up queries that filter out deleted rows (WHERE time_deleted IS NULL), which is common in soft-delete patterns
-     *      CREATE INDEX idx_list_elements_not_deleted ON list_elements(time_deleted);
-     *
-     * Helps if you're syncing or filtering based on recent changes, such as in replication or audit logic.
-     *      CREATE INDEX idx_list_elements_updated_version ON list_elements(time_updated, version);
-     */
+    // Indexes are created by `ensureListElementIndexes` (GH #39), run on
+    // every DO load so fresh and pre-existing DOs converge — not here,
+    // where `InitializeTables` runs at most once per DO.
 
     // Initialize the Mutations table, which stores actions as a
     // running history of the list.
@@ -560,7 +602,7 @@ export function InitializeTables(
         )`
     );
 
-    // TODO: do the above tables need indexes??
+    // Indexes for these tables live in `ensureListElementIndexes` (GH #39).
 }
 
 // function createMutation(sql: SqlStorage, mutation: Mutation) {
@@ -653,7 +695,7 @@ export function getListVersion(sql: SqlStorage) {
 export function setListVersion(sql: SqlStorage, version: number) {
     ListSchema.shape.version.parse(version);
 
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements
         SET
             time_updated = CURRENT_TIMESTAMP,
@@ -663,10 +705,11 @@ export function setListVersion(sql: SqlStorage, version: number) {
     );
 
     // TODO: should be able to remove this after things are stable
-    if (cursor.rowsWritten !== 1) {
+    const changed = affectedRows(sql);
+    if (changed !== 1) {
         console.error(
-            '`setListVersion()` rowsWritten got %d wanted %d',
-            cursor.rowsWritten,
+            '`setListVersion()` changes got %d wanted %d',
+            changed,
             1
         );
     }
@@ -727,7 +770,7 @@ export function renameEntity(
         version,
     }: { entityId: string; name: string; version: number }
 ): void {
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements
         SET
             name = ?,
@@ -740,9 +783,10 @@ export function renameEntity(
         version,
         entityId
     );
-    if (cursor.rowsWritten !== 1) {
+    const changed = affectedRows(sql);
+    if (changed !== 1) {
         throw new NotFoundError(
-            `\`renameEntity()\` entity "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+            `\`renameEntity()\` entity "${entityId}" not found (changes=${changed})`
         );
     }
 }
@@ -783,7 +827,7 @@ export function archiveEntity(
         cascadeSource?: string | null;
     }
 ): void {
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements
         SET
             time_deleted = CURRENT_TIMESTAMP,
@@ -796,9 +840,10 @@ export function archiveEntity(
         version,
         entityId
     );
-    if (cursor.rowsWritten !== 1) {
+    const changed = affectedRows(sql);
+    if (changed !== 1) {
         throw new NotFoundError(
-            `\`archiveEntity()\` entity "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+            `\`archiveEntity()\` entity "${entityId}" not found (changes=${changed})`
         );
     }
 }
@@ -820,7 +865,7 @@ export function unarchiveEntity(
     sql: SqlStorage,
     { entityId, version }: { entityId: string; version: number }
 ): void {
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements
         SET
             time_deleted = NULL,
@@ -832,9 +877,10 @@ export function unarchiveEntity(
         version,
         entityId
     );
-    if (cursor.rowsWritten !== 1) {
+    const changed = affectedRows(sql);
+    if (changed !== 1) {
         throw new NotFoundError(
-            `\`unarchiveEntity()\` entity "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+            `\`unarchiveEntity()\` entity "${entityId}" not found (changes=${changed})`
         );
     }
 }
@@ -856,7 +902,7 @@ export function unarchiveEntityAndClearSlot(
     sql: SqlStorage,
     { entityId, version }: { entityId: string; version: number }
 ): void {
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements
         SET
             time_deleted = NULL,
@@ -869,9 +915,10 @@ export function unarchiveEntityAndClearSlot(
         version,
         entityId
     );
-    if (cursor.rowsWritten !== 1) {
+    const changed = affectedRows(sql);
+    if (changed !== 1) {
         throw new NotFoundError(
-            `\`unarchiveEntityAndClearSlot()\` workspace "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+            `\`unarchiveEntityAndClearSlot()\` workspace "${entityId}" not found (changes=${changed})`
         );
     }
 }
@@ -1056,7 +1103,7 @@ export function setEntityMetaField(
     const nextMeta =
         Object.keys(current).length === 0 ? null : JSON.stringify(current);
 
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements
         SET
             meta = ?,
@@ -1070,7 +1117,7 @@ export function setEntityMetaField(
         entityId,
         entityType
     );
-    return cursor.rowsWritten === 1 ? 'applied' : 'gone';
+    return affectedRows(sql) === 1 ? 'applied' : 'gone';
 }
 
 /**
@@ -1087,7 +1134,7 @@ export function renameWorkspaceEntity(
         version,
     }: { workspaceId: string; name: string; version: number }
 ): void {
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements
         SET
             name = ?,
@@ -1100,9 +1147,10 @@ export function renameWorkspaceEntity(
         version,
         workspaceId
     );
-    if (cursor.rowsWritten !== 1) {
+    const changed = affectedRows(sql);
+    if (changed !== 1) {
         throw new NotFoundError(
-            `\`renameWorkspaceEntity()\` workspace "${workspaceId}" not found (rowsWritten=${cursor.rowsWritten})`
+            `\`renameWorkspaceEntity()\` workspace "${workspaceId}" not found (changes=${changed})`
         );
     }
 }
@@ -1123,7 +1171,7 @@ export function bumpWorkspaceVersion(
     sql: SqlStorage,
     { workspaceId, version }: { workspaceId: string; version: number },
 ): void {
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements
         SET
             version = ?,
@@ -1134,9 +1182,10 @@ export function bumpWorkspaceVersion(
         version,
         workspaceId,
     );
-    if (cursor.rowsWritten !== 1) {
+    const changed = affectedRows(sql);
+    if (changed !== 1) {
         throw new NotFoundError(
-            `\`bumpWorkspaceVersion()\` workspace "${workspaceId}" not found (rowsWritten=${cursor.rowsWritten})`,
+            `\`bumpWorkspaceVersion()\` workspace "${workspaceId}" not found (changes=${changed})`,
         );
     }
 }
@@ -1154,7 +1203,7 @@ export function setEntityDescription(
         version,
     }: { entityId: string; description: string; version: number }
 ): void {
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements
         SET
             description = ?,
@@ -1167,9 +1216,10 @@ export function setEntityDescription(
         version,
         entityId
     );
-    if (cursor.rowsWritten !== 1) {
+    const changed = affectedRows(sql);
+    if (changed !== 1) {
         throw new NotFoundError(
-            `\`setEntityDescription()\` entity "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+            `\`setEntityDescription()\` entity "${entityId}" not found (changes=${changed})`
         );
     }
 }
@@ -1196,7 +1246,7 @@ export function setEntityAuthorizationRules(
         version: number;
     }
 ): void {
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements
         SET
             authorization_rules = ?,
@@ -1209,9 +1259,10 @@ export function setEntityAuthorizationRules(
         version,
         entityId
     );
-    if (cursor.rowsWritten !== 1) {
+    const changed = affectedRows(sql);
+    if (changed !== 1) {
         throw new NotFoundError(
-            `\`setEntityAuthorizationRules()\` entity "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+            `\`setEntityAuthorizationRules()\` entity "${entityId}" not found (changes=${changed})`
         );
     }
 }
@@ -1242,7 +1293,7 @@ export function setEntityWorkspaceId(
         version,
     }: { entityId: string; workspace_id: string; version: number }
 ): void {
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements
         SET
             workspace_id = ?,
@@ -1255,9 +1306,10 @@ export function setEntityWorkspaceId(
         version,
         entityId
     );
-    if (cursor.rowsWritten !== 1) {
+    const changed = affectedRows(sql);
+    if (changed !== 1) {
         throw new NotFoundError(
-            `\`setEntityWorkspaceId()\` entity "${entityId}" not found (rowsWritten=${cursor.rowsWritten})`
+            `\`setEntityWorkspaceId()\` entity "${entityId}" not found (changes=${changed})`
         );
     }
 }
@@ -1272,7 +1324,7 @@ export function setItemValueAndVersion(
         version,
     }: { itemId: string; value: Quantity; version: number }
 ): void {
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements
         SET
             value = ?,
@@ -1286,9 +1338,10 @@ export function setItemValueAndVersion(
         itemId
     );
 
-    if (cursor.rowsWritten !== 1) {
+    const changed = affectedRows(sql);
+    if (changed !== 1) {
         throw new NotFoundError(
-            `\`setItemValueAndVersion()\` item "${itemId}" not found (rowsWritten=${cursor.rowsWritten})`
+            `\`setItemValueAndVersion()\` item "${itemId}" not found (changes=${changed})`
         );
     }
 }
@@ -1380,14 +1433,14 @@ export function updateListItemFields(
     params.push(version);
     params.push(itemId);
 
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements SET ${setClauses.join(', ')}
          WHERE id = ?
            AND type = 'item'
            AND time_deleted IS NULL;`,
         ...params
     );
-    return cursor.rowsWritten === 1 ? 'applied' : 'gone';
+    return affectedRows(sql) === 1 ? 'applied' : 'gone';
 }
 
 // Read the CAS-relevant columns for one item by id. Returns `null`
@@ -1530,14 +1583,14 @@ export function updateListGroupFields(
     params.push(version);
     params.push(groupId);
 
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements SET ${setClauses.join(', ')}
          WHERE id = ?
            AND type = 'group'
            AND time_deleted IS NULL;`,
         ...params
     );
-    return cursor.rowsWritten === 1 ? 'applied' : 'gone';
+    return affectedRows(sql) === 1 ? 'applied' : 'gone';
 }
 
 function readGroupForCAS(
@@ -1784,7 +1837,7 @@ export function setElementAsDeleted(
     elementId: string
     // mutation: Mutation
 ) {
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements SET
             time_deleted = CURRENT_TIMESTAMP
         WHERE id = ?
@@ -1793,22 +1846,9 @@ export function setElementAsDeleted(
         // mutation.timestamp_server
     );
 
-    // Not sure the best way to determine if the query result was
-    // empty for an UPDATE query... This is the docs way of doing it
-    // for a SELECT:
-    // let rawResult = cursor.raw().next();
-    // if (rawResult.done) {
-    // }
+    const EXPECTED_CHANGES = 1;
 
-    // if (cursor.rowsWritten !== 1) {
-    //     throw new Error(
-    //         `\`setElementAsDeleted()\` query error: expected \`rowsWritten\` to be "1", got "${cursor.rowsWritten}"`
-    //     );
-    // }
-
-    const EXPECTED_ROWS_WRITTEN = 1;
-
-    return cursor.rowsWritten === EXPECTED_ROWS_WRITTEN;
+    return affectedRows(sql) === EXPECTED_CHANGES;
 
     // I think you'd call `createMutation` directly, no?
     // A deletion is a "side effect" of a mutation, so it
@@ -2011,7 +2051,7 @@ export function setListItemValue(sql: SqlStorage, listItem: ListItem) {
         throw new UnexpectedError();
     }
 
-    const cursor = sql.exec(
+    sql.exec(
         `UPDATE list_elements SET
             time_updated = CURRENT_TIMESTAMP,
             value = ?
@@ -2021,9 +2061,9 @@ export function setListItemValue(sql: SqlStorage, listItem: ListItem) {
         listItem.id
     );
 
-    const EXPECTED_ROWS_WRITTEN = 1;
+    const EXPECTED_CHANGES = 1;
 
-    return cursor.rowsWritten === EXPECTED_ROWS_WRITTEN;
+    return affectedRows(sql) === EXPECTED_CHANGES;
 }
 
 export function setReplicacheClientGroup(
@@ -2040,7 +2080,7 @@ export function setReplicacheClientGroup(
     );
 
     for (const client of clientGroup.clients) {
-        const updateCursor = sql.exec(
+        sql.exec(
             `UPDATE replicache_clients
             SET last_modified_version = ?, last_mutation_id = ?
             WHERE id = ?;`,
@@ -2048,18 +2088,19 @@ export function setReplicacheClientGroup(
             client.lastMutationId,
             client.id
         );
+        const updateChanges = affectedRows(sql);
 
         console.log(
-            '`setReplicacheClientGroup()` UPDATE query rowsWritten:',
-            updateCursor.rowsWritten,
+            '`setReplicacheClientGroup()` UPDATE query changes:',
+            updateChanges,
             'expected:',
             0 // would expect 1 if we already had the client in the DB
         );
 
-        if (updateCursor.rowsWritten === 0) {
+        if (updateChanges === 0) {
             // Assume there was no row to update, so it's a new client.
             // Insert it.
-            const insertCursor = sql.exec(
+            sql.exec(
                 `INSERT INTO replicache_clients (
                     id,
                     client_group_id,
@@ -2074,18 +2115,15 @@ export function setReplicacheClientGroup(
                 client.lastMutationId
             );
 
-            const EXPECTED_ROWS_WRITTEN = 1;
-            if (insertCursor.rowsWritten !== EXPECTED_ROWS_WRITTEN) {
+            const insertChanges = affectedRows(sql);
+            const EXPECTED_CHANGES = 1;
+            if (insertChanges !== EXPECTED_CHANGES) {
                 console.log(
-                    '`setReplicacheClientGroup()` INSERT query rowsWritten - got:',
-                    insertCursor.rowsWritten,
+                    '`setReplicacheClientGroup()` INSERT query changes - got:',
+                    insertChanges,
                     'expected:',
-                    EXPECTED_ROWS_WRITTEN
+                    EXPECTED_CHANGES
                 );
-                // console.log(
-                //     'insertCursor.rowsWritten',
-                //     insertCursor.rowsWritten
-                // );
                 // throw new UnexpectedError('replicache client not inserted');
             }
         }
