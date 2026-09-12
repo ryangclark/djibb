@@ -44,6 +44,7 @@ import { CreateCredential, hashSecret } from './d1';
 import { parseAuthorizedDomains } from '../utils/origin';
 import { base64UrlSha256 } from '../utils/base64url';
 import { escapeHtml } from '../utils/html';
+import { clientIp, enforceLimit } from '../utils/rateLimit';
 
 // ─── Tunables ───────────────────────────────────────────────────────────────
 
@@ -252,6 +253,16 @@ const TokenBodySchema = z.object({
  * the ceremony holds — not a cookie or a same-origin POST.
  */
 export async function handleConnectToken(c: Context<HonoEnv>) {
+    // Rate limit the token exchange per IP (GH #70). Pre-session — the
+    // caller is authenticated only by the body-carried code + PKCE
+    // verifier, not a principal — so IP is the stable key. Gates the
+    // code-consume + credential mint against an exchange flood (and a
+    // code-guessing loop, though the SHA-256 keyspace already makes that
+    // hopeless). Distinct from `/sudo/request`, which sends an email and is
+    // gated by the ADR 0010 D1 limiter (`checkRateLimits`) instead.
+    const over = await enforceLimit(c, c.env.RL_AUTH_IP, clientIp(c));
+    if (over) return over;
+
     const body = await c.req.json().catch(() => null);
     const parsed = TokenBodySchema.safeParse(body);
     if (!parsed.success) {
