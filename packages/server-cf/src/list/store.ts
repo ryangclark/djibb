@@ -87,6 +87,9 @@ export function createSqlStorageEntityStore(storage: SqlStorage): EntityStore {
         getListVersion: bind(sql.getListVersion),
         setListVersion: bind(sql.setListVersion),
         getReplicacheClientGroupById: bind(sql.getReplicacheClientGroupById),
+        garbageCollectReplicacheClients: bind(
+            sql.garbageCollectReplicacheClients
+        ),
         renameEntity: bind(sql.renameEntity),
         archiveEntity: bind(sql.archiveEntity),
         unarchiveEntity: bind(sql.unarchiveEntity),

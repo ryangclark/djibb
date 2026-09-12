@@ -2133,3 +2133,114 @@ export function setReplicacheClientGroup(
         }
     }
 }
+
+/**
+ * Client-group id prefixes that identify a *stable, single-writer*
+ * identity the platform re-uses forever, and so must NEVER be garbage-
+ * collected (GH #35). These writers rely on `last_mutation_id`
+ * continuity across their (possibly long-idle) lifetime: reaping one and
+ * letting it return would reset the server's view to `lastMutationID: 0`
+ * and re-apply already-acked mutations — the double-apply bug arch-review
+ * #5 closed.
+ *
+ *   - `cg_cascade:<workspaceId>` — the workspace DO's cascade writer
+ *     (`workspace/cascade.ts`); one row-pair per workspace, forever.
+ *   - `cg_signup_<accountId>`    — the personal-workspace mint at signup
+ *     (`workspace/service.ts`); one-shot but re-converges on retry.
+ *   - `cg_cli:`                  — reserved for a future stable operator
+ *     identity for `djibb promote` (GH #35 "Also worth deciding").
+ *
+ * Anonymous `contribute` / browser clients use random `cg_...` ids that
+ * match none of these, so they remain eligible for GC.
+ */
+const GC_RESERVED_CLIENT_GROUP_PREFIXES = [
+    'cg_cascade:',
+    'cg_signup_',
+    'cg_cli:',
+] as const;
+
+/**
+ * Garbage-collect Replicache bookkeeping rows in the entity DO's SQLite
+ * (GH #35). `handlePush` persists a `replicache_clients` +
+ * `replicache_client_groups` row-pair per client; on a public write
+ * surface (`djibb contribute` against a `submitter` list) every
+ * contribution mints a fresh one-shot client, so the tables grow without
+ * bound and nothing ever reclaims them.
+ *
+ * The reclamation signal is **version lag**: a one-shot writer's
+ * `last_modified_version` freezes at the list version it wrote against,
+ * so as the list advances it falls arbitrarily far behind, while a client
+ * that keeps pushing stays current. We drop any client more than
+ * `maxVersionLag` versions behind `currentVersion`, then drop any client
+ * group left with no clients. This is Replicache's documented "collect
+ * clients far behind the current version" pattern.
+ *
+ * **Residual double-apply risk (not eliminated, only bounded).** A
+ * *non-reserved* interactive client that goes idle while a high-churn
+ * list advances past the threshold gets reaped; if it later returns with
+ * a higher local `lastMutationID`, the server (now rowless) reports 0 and
+ * re-applies its already-acked mutations — the same class of bug the
+ * reserved-prefix exclusion prevents for stable writers. `maxVersionLag`
+ * is the only lever: set it comfortably above the max plausible
+ * idle-then-return window for a real editor. A tune knob, not a proof of
+ * safety — the reserved prefixes get certainty; everyone else gets a
+ * threshold.
+ *
+ * Reserved single-writer identities (`GC_RESERVED_CLIENT_GROUP_PREFIXES`)
+ * are excluded outright — see that constant. Callable every reconcile
+ * tick: when `currentVersion <= maxVersionLag` the cutoff is
+ * non-positive and both DELETEs no-op — e.g. a **list still younger than
+ * `maxVersionLag` versions** (a workspace DO never reaches here at all:
+ * `handleReconcile` early-returns when `getEntityId` finds no
+ * list/template row).
+ *
+ * Returns the number of client + client-group rows deleted (for logging).
+ */
+export function garbageCollectReplicacheClients(
+    sql: SqlStorage,
+    currentVersion: number,
+    maxVersionLag: number
+): { clientsDeleted: number; clientGroupsDeleted: number } {
+    const cutoff = currentVersion - maxVersionLag;
+    if (cutoff <= 0) {
+        // Nothing can be strictly below a non-positive cutoff
+        // (`last_modified_version` is a non-negative version), so skip
+        // the writes entirely.
+        return { clientsDeleted: 0, clientGroupsDeleted: 0 };
+    }
+
+    // Match the reserved prefixes *literally*: `_` (and `%`) are LIKE
+    // wildcards, so a bare `cg_signup_%` would spare unrelated ids — hence
+    // the ESCAPE clause + escaped patterns.
+    const notReserved = GC_RESERVED_CLIENT_GROUP_PREFIXES.map(
+        () => `client_group_id NOT LIKE ? ESCAPE '\\'`
+    ).join(' AND ');
+    const reservedPatterns = GC_RESERVED_CLIENT_GROUP_PREFIXES.map(
+        (p) => `${p.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`
+    );
+
+    sql.exec(
+        `DELETE FROM replicache_clients
+        WHERE last_modified_version < ?
+            AND ${notReserved};`,
+        cutoff,
+        ...reservedPatterns
+    );
+    const clientsDeleted = affectedRows(sql);
+
+    // Reap client groups orphaned by the delete above (no remaining
+    // clients). No reserved-prefix guard needed here: reserved clients are
+    // never deleted, so a reserved group always retains ≥1 client and the
+    // orphan subquery already spares it (and a genuinely clientless
+    // reserved group is harmless to drop — `INSERT OR IGNORE` recreates
+    // it; continuity lives in the client row, not the group row).
+    sql.exec(
+        `DELETE FROM replicache_client_groups
+        WHERE id NOT IN (
+            SELECT DISTINCT client_group_id FROM replicache_clients
+        );`
+    );
+    const clientGroupsDeleted = affectedRows(sql);
+
+    return { clientsDeleted, clientGroupsDeleted };
+}

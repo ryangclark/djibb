@@ -53,6 +53,7 @@ import {
     ensureMutationsCredentialColumn,
     getChangedElements,
     getElementById,
+    garbageCollectReplicacheClients,
     getEntityId,
     getListVersion,
     getMutationLog,
@@ -1873,6 +1874,19 @@ export class DjibbList extends DurableObject {
      */
     static readonly RECONCILE_HEALTHY_MS = 24 * 60 * 60 * 1000;
     static readonly RECONCILE_RETRY_INITIAL_MS = 5 * 60 * 1000;
+    /**
+     * Version-lag threshold for the Replicache client-table GC folded
+     * into reconcile (GH #35). A client whose `last_modified_version` is
+     * more than this many versions behind the list's current version is
+     * reaped along with any client group it empties. Set it comfortably
+     * above the max plausible idle-then-return window for a real editor:
+     * reaping a non-reserved client that later returns re-opens the
+     * double-apply risk (see `garbageCollectReplicacheClients`), so this
+     * threshold is the only guard for the non-reserved class — a tune
+     * knob, not a proof of safety. A starting value like the rate-limit
+     * caps. `static` so tests can drive it down without faking versions.
+     */
+    static REPLICACHE_CLIENT_GC_MAX_VERSION_LAG = 1000;
     /** Storage key holding the next retry interval (ms) after a
      *  failed alarm-driven emit. Absent ⇒ last run succeeded. */
     static readonly RECONCILE_RETRY_KEY = 'reconcile:nextRetryMs';
@@ -2338,6 +2352,30 @@ export class DjibbList extends DurableObject {
             await this.ctx.storage.put(
                 DjibbList.RECONCILE_RETRY_KEY,
                 nextDelayMs
+            );
+        }
+
+        // Replicache client-table GC (GH #35). Local SQLite only, so it
+        // runs every tick independent of the D1 drift check above (and of
+        // whether that threw). Guarded so a GC failure can't derail the
+        // reconcile re-arm — an unswept row-pair is cheap; a stalled
+        // reconcile clock is not.
+        try {
+            const { clientsDeleted, clientGroupsDeleted } =
+                garbageCollectReplicacheClients(
+                    this.sql,
+                    getListVersion(this.sql),
+                    DjibbList.REPLICACHE_CLIENT_GC_MAX_VERSION_LAG
+                );
+            if (clientsDeleted > 0 || clientGroupsDeleted > 0) {
+                console.log(
+                    `\`handleReconcile()\` GC reaped ${clientsDeleted} replicache_clients, ${clientGroupsDeleted} client_groups`
+                );
+            }
+        } catch (error) {
+            console.error(
+                '`handleReconcile()` replicache client GC threw:',
+                error
             );
         }
 
