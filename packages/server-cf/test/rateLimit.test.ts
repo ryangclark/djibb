@@ -1,5 +1,5 @@
 /**
- * System-wide rate limiting (GH #14, #40).
+ * System-wide rate limiting (GH #14, #40, #70).
  *
  * Drives `worker.fetch` through the full CORS/CSRF + HandleSession pipeline
  * (like `accountDeletion.test.ts`) to prove the three Workers Rate Limiting
@@ -16,6 +16,9 @@
  *      not the shared window.
  *   5. The OAuth callback hits `RL_AUTH_IP` (keyed by IP): the (limit+1)th
  *      call is a 429 before any OAuth validation runs.
+ *   6. The connect-ceremony token exchange (`POST /connect/token`) shares
+ *      `RL_AUTH_IP` (keyed by IP): the (limit+1)th call is a 429 before the
+ *      body parse / code consume (GH #70).
  *
  * The `@cloudflare/vitest-pool-workers` miniflare DOES simulate the
  * `[[ratelimits]]` bindings (in-memory per-key buckets), so these run
@@ -201,6 +204,25 @@ async function oauthCallback(ip: string): Promise<Response> {
     return res;
 }
 
+async function connectToken(ip: string): Promise<Response> {
+    // No valid code/verifier — but the per-IP limiter runs before the body
+    // parse, so it fires before the `invalid_grant`/400 the empty body would
+    // otherwise produce. `/connect/token` is CSRF-exempt (body-authenticated),
+    // so no Origin header is needed.
+    const req = new Request(`${ORIGIN}/auth/connect/token`, {
+        method: 'POST',
+        headers: {
+            'CF-Connecting-IP': ip,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+    });
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(req, env, ctx);
+    await waitOnExecutionContext(ctx);
+    return res;
+}
+
 describe('anonymous entity writes → RL_ANON_WRITE (per IP)', () => {
     it('throttles the (limit+1)th write with a 429 + Retry-After', async () => {
         const entityId = newId('list');
@@ -281,5 +303,32 @@ describe('OAuth callback → RL_AUTH_IP (per IP)', () => {
         const over = await oauthCallback(ip);
         expect(over.status).toBe(429);
         expect(over.headers.get('Retry-After')).toBeTruthy();
+    });
+});
+
+describe('connect-ceremony token exchange → RL_AUTH_IP (per IP, GH #70)', () => {
+    it('throttles the (limit+1)th POST /connect/token with a 429', async () => {
+        // Distinct subnet from the OAuth-callback test (198.51.100.0/24):
+        // both share the RL_AUTH_IP bucket, which persists across tests in
+        // this run, so a same-IP pick would spend this test's warm-up hits
+        // on the OAuth test's tab and 429 early.
+        const ip = `192.0.2.${Math.floor(Math.random() * 250) + 1}`;
+
+        // The first `limit` calls pass the gate (they 4xx downstream on the
+        // empty body — `invalid_grant`/400 — but that is past the limiter).
+        for (let i = 0; i < AUTH_IP_LIMIT; i++) {
+            const res = await connectToken(ip);
+            expect(res.status).not.toBe(429);
+        }
+
+        const over = await connectToken(ip);
+        expect(over.status).toBe(429);
+        expect(over.headers.get('Retry-After')).toBeTruthy();
+        const body = (await over.json()) as {
+            error: string;
+            retry_after_seconds: number;
+        };
+        expect(body.error).toBe('rate_limited');
+        expect(body.retry_after_seconds).toBeGreaterThan(0);
     });
 });
