@@ -1878,10 +1878,12 @@ export class DjibbList extends DurableObject {
      * Version-lag threshold for the Replicache client-table GC folded
      * into reconcile (GH #35). A client whose `last_modified_version` is
      * more than this many versions behind the list's current version is
-     * reaped along with any client group it empties. Deliberately
-     * generous — an interactive client that might still return advances
-     * its version by pushing, so only long-idle / one-shot writers fall
-     * this far behind. A starting value to tune, like the rate-limit
+     * reaped along with any client group it empties. Set it comfortably
+     * above the max plausible idle-then-return window for a real editor:
+     * reaping a non-reserved client that later returns re-opens the
+     * double-apply risk (see `garbageCollectReplicacheClients`), so this
+     * threshold is the only guard for the non-reserved class — a tune
+     * knob, not a proof of safety. A starting value like the rate-limit
      * caps. `static` so tests can drive it down without faking versions.
      */
     static REPLICACHE_CLIENT_GC_MAX_VERSION_LAG = 1000;

@@ -192,7 +192,22 @@ describe('garbageCollectReplicacheClients (version-lag reap)', () => {
         );
     });
 
-    it('no-ops when the cutoff is non-positive (e.g. a workspace DO at v0)', async () => {
+    it('reaps ids that match the reserved prefix only via LIKE wildcards', async () => {
+        const { stub } = await initDo('gc-wildcard-1');
+        // `cgAsignupB` matches the *unescaped* pattern `cg_signup_%` (the
+        // `_`s are single-char wildcards) but is NOT the literal
+        // `cg_signup_` prefix, so it must still be reaped (GH #35 review).
+        await seedClient(stub, 'cgAsignupB', 'c_wildcard', 1);
+
+        const res = await runInDurableObject(stub, (_i, state) =>
+            garbageCollectReplicacheClients(state.storage.sql, 5000, 1000),
+        );
+
+        expect(res.clientsDeleted).toBe(1);
+        expect(await clientIds(stub)).not.toContain('c_wildcard');
+    });
+
+    it('no-ops when the cutoff is non-positive (e.g. a list younger than the lag)', async () => {
         const { stub } = await initDo('gc-noop-1');
         await seedClient(stub, 'cg_anything', 'c_anything', 0);
 
