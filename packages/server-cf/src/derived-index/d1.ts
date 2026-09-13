@@ -765,6 +765,45 @@ export async function ListTrashedEntitiesForAccount(
     return parseRows(TrashedEntitySchema, rows, 'ListTrashedEntitiesForAccount');
 }
 
+/**
+ * Every List/Template the account is a member of — *any* role, live or
+ * trashed — the input to account-deletion Phase 2's relinquish cascade
+ * (GH #64, `auth/purge.ts`). Reads the `entity_memberships` projection
+ * rather than enumerating the DO namespace, which is what lets the purge
+ * find them from the D1-based worker.
+ *
+ * All roles, not just `owner`: a full identity erasure must remove the
+ * departing account from every entity's `authorization_rules`, otherwise
+ * a scrubbed identity is left dangling as an admin/editor/viewer member
+ * (GH #64 review). `relinquishOwnershipOnPurge` transfers ownership when
+ * the account is the owner and simply drops it otherwise.
+ *
+ * No `time_deleted` filter: a soft-deleted (trashed) entity still names
+ * the account in its rules and could be restored, so it must be
+ * relinquished too. Workspaces are intentionally excluded — Phase 2's
+ * scope is shared Lists/Templates; a personal workspace's disposition is a
+ * separate cascade. Hard-deleted entities whose DO is gone are handled
+ * idempotently downstream (the mutator no-ops `gone`), so a stale
+ * projection row is harmless.
+ */
+export async function ListMemberEntityIdsForAccount(
+    d1: D1Database,
+    accountId: string,
+): Promise<string[]> {
+    const rows = await runD1(
+        d1,
+        'ListMemberEntityIdsForAccount',
+        sql =>
+            sql<{ id: string }>`
+                SELECT we.id
+                FROM entity_memberships em
+                JOIN workspace_entities we ON we.id = em.entity_id
+                WHERE em.account_id = ${accountId}
+                  AND we.type IN ('list', 'template')`,
+    );
+    return rows.map(r => r.id);
+}
+
 const SharedEntitySchema = z.object({
     id: z.string(),
     type: z.enum(['list', 'template']),

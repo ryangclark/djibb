@@ -16,6 +16,7 @@ import {
     handleVerifyOAuthGoogle,
 } from './oauth';
 import {
+    handleAccountRestoreRequest,
     handleMagicConsume,
     handleMagicLand,
     handleMagicRequest,
@@ -82,6 +83,14 @@ Auth_App.post('/connect/token', handleConnectToken);
 // AUTHORIZED_DOMAINS), so it stays under the normal CSRF Origin check —
 // unlike /magic/consume, it is NOT exempt.
 Auth_App.post('/sudo/request', handleSudoRequest);
+
+// Account restore — Phase 2 grace-window exit (GH #64). Public: a Phase-1
+// delete killed the session, so this starts cold from proof of email
+// control. Mints+emails a `purpose='restore'` link that, on consume,
+// un-tombstones a within-grace account and signs in. Posted from the
+// first-party UI (Origin in AUTHORIZED_DOMAINS), so it stays under the
+// normal CSRF Origin check like /magic/request.
+Auth_App.post('/account/restore', handleAccountRestoreRequest);
 
 // Account (identity) deletion — Phase 1 (ADR 0024 §3 withdraw path, GH
 // #58). Immediate soft-delete + synchronous hard-revoke of every session,

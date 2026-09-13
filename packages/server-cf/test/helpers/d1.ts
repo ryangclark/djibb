@@ -19,6 +19,7 @@ import migration0015 from '../../migrations/0015_issued_credentials.sql?raw';
 import migration0016 from '../../migrations/0016_connect_ceremony.sql?raw';
 import migration0017 from '../../migrations/0017_connect_pending.sql?raw';
 import migration0018 from '../../migrations/0018_account_deletion_and_sudo.sql?raw';
+import migration0019 from '../../migrations/0019_account_purge_marker.sql?raw';
 
 const ALL_MIGRATIONS = [
     migration0001,
@@ -39,6 +40,7 @@ const ALL_MIGRATIONS = [
     migration0016,
     migration0017,
     migration0018,
+    migration0019,
 ];
 
 function splitStatements(sql: string): string[] {

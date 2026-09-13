@@ -59,6 +59,7 @@ const ENTITY_METADATA_MUTATORS: ReadonlySet<string> = new Set([
     'leaveMember',
     'mintFromBlank',
     'moveList',
+    'relinquishOwnershipOnPurge',
     'removeMember',
     'renameList',
     'renameWorkspace',

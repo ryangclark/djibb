@@ -172,6 +172,10 @@ describe('garbageCollectReplicacheClients (version-lag reap)', () => {
         await seedClient(stub, 'cg_cascade:ws_1', 'c_cascade', 1);
         await seedClient(stub, 'cg_signup_acct_1', 'c_signup', 1);
         await seedClient(stub, 'cg_cli:op_1', 'c_cli', 1);
+        // cg_purge:<accountId> — the account-deletion Phase 2 purge writer
+        // (GH #64); its relinquish sweep is idempotent across days, so it
+        // must survive however far the list has advanced.
+        await seedClient(stub, 'cg_purge:acct_1', 'c_purge', 1);
 
         const res = await runInDurableObject(stub, (_i, state) =>
             garbageCollectReplicacheClients(state.storage.sql, 999999, 1000),
@@ -180,13 +184,14 @@ describe('garbageCollectReplicacheClients (version-lag reap)', () => {
         expect(res.clientsDeleted).toBe(0);
         const clients = await clientIds(stub);
         expect(clients).toEqual(
-            expect.arrayContaining(['c_cascade', 'c_cli', 'c_signup']),
+            expect.arrayContaining(['c_cascade', 'c_cli', 'c_purge', 'c_signup']),
         );
         const groups = await groupIds(stub);
         expect(groups).toEqual(
             expect.arrayContaining([
                 'cg_cascade:ws_1',
                 'cg_cli:op_1',
+                'cg_purge:acct_1',
                 'cg_signup_acct_1',
             ]),
         );

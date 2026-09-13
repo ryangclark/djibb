@@ -37,6 +37,7 @@ import * as inviteByIdentity from './inviteByIdentity';
 import * as moveList from './moveList';
 import * as renameList from './renameList';
 import * as renameWorkspace from './renameWorkspace';
+import * as relinquishOwnershipOnPurge from './relinquishOwnershipOnPurge';
 import * as revokeInvitation from './revokeInvitation';
 import * as reorderListGroup from './reorderListGroup';
 import * as reorderListItem from './reorderListItem';
@@ -108,6 +109,7 @@ export const Mutations = {
     [moveList.name]: moveList,
     [renameList.name]: renameList,
     [renameWorkspace.name]: renameWorkspace,
+    [relinquishOwnershipOnPurge.name]: relinquishOwnershipOnPurge,
     [revokeInvitation.name]: revokeInvitation,
     [reorderListGroup.name]: reorderListGroup,
     [reorderListItem.name]: reorderListItem,

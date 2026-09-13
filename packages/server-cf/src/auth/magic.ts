@@ -39,12 +39,14 @@ import {
 import { CreateAccount } from '../account/service';
 import { GetAccountByEmail } from './d1';
 import {
+    ACCOUNT_PURGE_GRACE_SECONDS,
     checkRateLimits,
     consumeMagicTokenRow,
     CreateSession,
     InsertMagicLinkToken,
     MAGIC_RATE_LIMITS,
     peekMagicTokenRow,
+    RestoreTombstonedAccountByEmail,
     StampSessionSudo,
 } from './d1';
 import { randomString } from '@djibb/protocol/id';
@@ -77,6 +79,15 @@ const MAGIC_PURPOSE_CONNECT = 'connect';
  * session cookie), so it is inherently same-device.
  */
 const MAGIC_PURPOSE_SUDO = 'sudo';
+/**
+ * An account-restore link (GH #64, account-deletion Phase 2). Consuming
+ * it un-tombstones a within-grace, not-yet-purged account for the proven
+ * email and signs in — the exit path from an accidental/coerced delete
+ * before the irreversible purge runs. Device-agnostic like sign-in
+ * (there is no live session to re-prove — Phase 1 killed it), so it
+ * flows through the consume-first branch, not the same-device sudo peek.
+ */
+const MAGIC_PURPOSE_RESTORE = 'restore';
 
 
 // Email matching — pragmatic shape check, not RFC 5321 compliant.
@@ -118,6 +129,18 @@ const RequestBodySchema = z.object({
 const ConsumeBodySchema = z.object({
     token: z.string().min(8).max(128),
     next: z.string().optional(),
+});
+
+/**
+ * Account-restore request (GH #64). Just an email + optional post-sign-in
+ * destination; no `connect` (restore always ends in a session, never a
+ * bearer credential) and no session gate (there is no live session to
+ * name). `_dev` mirrors the sign-in dev seam.
+ */
+const RestoreRequestBodySchema = z.object({
+    email: z.string().trim().min(3).max(254),
+    next: z.string().optional(),
+    _dev: z.boolean().optional(),
 });
 
 /**
@@ -274,6 +297,44 @@ async function resolveOrCreateAccountByEmail(
     }
 }
 
+/**
+ * Resolve the Account to sign in for a consumed `restore` link (GH #64).
+ * Three cases, in order:
+ *   1. A *live* account already exists for the email (a fresh signup
+ *      during the grace window) — sign into it; the tombstone stays and
+ *      purges on schedule. Checked first so we never create a duplicate
+ *      live row that would collide on the partial-unique email index.
+ *   2. A within-grace, unpurged tombstone exists — un-tombstone it and
+ *      sign in. A failed un-tombstone (e.g. the race in case 1) is
+ *      logged and falls through rather than 500-ing the user.
+ *   3. Nothing to restore (past grace / already purged) — resolve-or-
+ *      create a fresh identity, exactly like a normal sign-in.
+ */
+async function resolveAccountForRestore(
+    c: Context<HonoEnv>,
+    email: string,
+    now: number
+): Promise<Account> {
+    const live = await GetAccountByEmail(c.env.DJIBB_AUTH, email);
+    if (live) return live;
+
+    try {
+        const restored = await RestoreTombstonedAccountByEmail(
+            c.env.DJIBB_AUTH,
+            { email, now, graceSeconds: ACCOUNT_PURGE_GRACE_SECONDS }
+        );
+        if (restored) return restored;
+    } catch (err) {
+        console.error(
+            '`resolveAccountForRestore()` un-tombstone failed; ' +
+                'falling through to a fresh identity:',
+            err
+        );
+    }
+
+    return resolveOrCreateAccountByEmail(c, email);
+}
+
 // ─── Handlers ───────────────────────────────────────────────────────────────
 
 /**
@@ -381,6 +442,94 @@ export async function handleMagicRequest(c: Context<HonoEnv>) {
     if (shouldExposeDevSeam(c.env.ENV, parsed.data._dev)) {
         console.log(
             '`handleMagicRequest()` dev seam: returning landing_url ' +
+                'for email=%s. This must not happen in production.',
+            email
+        );
+        return c.json({ landing_url: landingUrl }, 200);
+    }
+
+    return c.body(null, 200);
+}
+
+/**
+ * POST /auth/account/restore  (GH #64, account-deletion Phase 2)
+ *
+ * Public and unauthenticated by design: a Phase-1 delete already killed
+ * every session and credential, so there is no live identity to gate on —
+ * the exit path from an accidental/coerced delete has to start cold, from
+ * proof of email control. Mints and emails a `purpose='restore'`
+ * magic-link; consuming it (`handleMagicConsume`) un-tombstones a
+ * within-grace, not-yet-purged account for that email and signs in.
+ *
+ * Mirrors `/magic/request`'s disclosure posture exactly: a well-formed
+ * request always soft-200s, whether or not a restorable tombstone exists,
+ * so it can't be used to probe which emails were recently deleted. Rate-
+ * limited on email + IP by the same ADR 0010 D1 limiter.
+ */
+export async function handleAccountRestoreRequest(c: Context<HonoEnv>) {
+    const body = await c.req.json().catch(() => null);
+    const parsed = RestoreRequestBodySchema.safeParse(body);
+    if (!parsed.success) {
+        throw new BadRequestError('invalid request');
+    }
+
+    const email = parsed.data.email.toLowerCase();
+    const next = sanitizeNext(parsed.data.next);
+
+    // Malformed email → soft 200, same disclosure-avoidance as sign-in.
+    if (!EMAIL_RE.test(email)) {
+        return c.body(null, 200);
+    }
+
+    const ip = c.req.header('CF-Connecting-IP') ?? null;
+    const now = Math.floor(Date.now() / 1000);
+
+    const limit = await checkRateLimits(c.env.DJIBB_AUTH, { email, ip, now });
+    if (!limit.ok) {
+        c.header('Retry-After', String(limit.retryAfterSec));
+        return c.json(
+            {
+                error: 'rate_limited',
+                reason: limit.reason,
+                retry_after_seconds: limit.retryAfterSec,
+            },
+            429
+        );
+    }
+
+    const rawToken = randomString(TOKEN_LENGTH);
+    const tokenHash = await hashToken(rawToken);
+    const expires = now + TOKEN_TTL_SECONDS;
+
+    try {
+        await InsertMagicLinkToken(c.env.DJIBB_AUTH, {
+            tokenHash,
+            targetEmail: email,
+            purpose: MAGIC_PURPOSE_RESTORE,
+            timeCreated: now,
+            timeExpires: expires,
+            requestIp: ip,
+            userAgent: c.req.header('User-Agent') ?? null,
+            connectOrigin: null,
+            connectCodeChallenge: null,
+            connectLabel: null,
+        });
+    } catch (err) {
+        console.error('`handleAccountRestoreRequest()` insert error:', err);
+        return c.body(null, 200);
+    }
+
+    const landingUrl = buildLandingUrl(c, rawToken, next);
+
+    try {
+        await sendMagicLinkEmailLocal(c, email, landingUrl);
+    } catch (err) {
+        console.error('`handleAccountRestoreRequest()` email send error:', err);
+    }
+
+    if (shouldExposeDevSeam(c.env.ENV, parsed.data._dev)) {
+        console.log(
+            '`handleAccountRestoreRequest()` dev seam: returning landing_url ' +
                 'for email=%s. This must not happen in production.',
             email
         );
@@ -642,7 +791,8 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
 
     if (
         updateResult.purpose !== MAGIC_PURPOSE_SIGNIN &&
-        updateResult.purpose !== MAGIC_PURPOSE_CONNECT
+        updateResult.purpose !== MAGIC_PURPOSE_CONNECT &&
+        updateResult.purpose !== MAGIC_PURPOSE_RESTORE
     ) {
         // Other purposes (e.g., 'verify_email_change') route through
         // dedicated handlers. Don't accidentally sign anyone in via
@@ -652,11 +802,14 @@ export async function handleMagicConsume(c: Context<HonoEnv>) {
 
     const email = updateResult.target_email.toLowerCase();
 
-    // Resolve-or-create the Account (ADR 0010 option C: email is the
-    // matching key; Account ID is the contract boundary). Shared by both
-    // terminal forms — the Account the user just proved control of is the
-    // same whether the ceremony ends in a session or a minted credential.
-    const account = await resolveOrCreateAccountByEmail(c, email);
+    // Resolve the Account. Sign-in/connect resolve-or-create (ADR 0010
+    // option C: email is the matching key; Account ID is the contract
+    // boundary). A `restore` link additionally un-tombstones a within-
+    // grace deleted account before signing in (GH #64).
+    const account =
+        updateResult.purpose === MAGIC_PURPOSE_RESTORE
+            ? await resolveAccountForRestore(c, email, now)
+            : await resolveOrCreateAccountByEmail(c, email);
 
     // Connect ceremony terminal (ADR 0024 §1, §3): no session, no cookie.
     // Rather than mint the authorization code here, open a *pending

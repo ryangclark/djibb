@@ -76,6 +76,7 @@ export function createSqlStorageEntityStore(storage: SqlStorage): EntityStore {
         getElementById: bind(sql.getElementById),
         getElementTypeAndSlot: bind(sql.getElementTypeAndSlot),
         getLiveEntityCasRow: bind(sql.getLiveEntityCasRow),
+        getEntityCasRow: bind(sql.getEntityCasRow),
         getLiveWorkspaceCasRow: bind(sql.getLiveWorkspaceCasRow),
         getLiveGroupParentRef: bind(sql.getLiveGroupParentRef),
         getLiveItemCasRow: bind(sql.getLiveItemCasRow),
@@ -107,6 +108,9 @@ export function createSqlStorageEntityStore(storage: SqlStorage): EntityStore {
         bumpWorkspaceVersion: bind(sql.bumpWorkspaceVersion),
         setEntityDescription: bind(sql.setEntityDescription),
         setEntityAuthorizationRules: bind(sql.setEntityAuthorizationRules),
+        setEntityAuthorizationRulesIncludingTrashed: bind(
+            sql.setEntityAuthorizationRulesIncludingTrashed
+        ),
         setEntityWorkspaceId: bind(sql.setEntityWorkspaceId),
         setItemValueAndVersion: bind(sql.setItemValueAndVersion),
         updateListItemFields: bind(sql.updateListItemFields),

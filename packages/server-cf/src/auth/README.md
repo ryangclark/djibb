@@ -83,9 +83,39 @@ deletion as a real exit path, so it's built as a **user-facing verb**
   link stamps the *current* session sudo-fresh (`sessions.time_sudo` +
   `sudo_account_id`, 5-minute window). It mints no session and creates no
   account; it must land in the browser holding the session, so it's same-device.
-- **Deferred to Phase 2 (a follow-up vs GH #15):** the scheduled hard purge of
-  PII and the owned-shared-entity handling (`transferOwnership`). The
-  `time_deleted` tombstone is what buys the grace window to do that safely.
+- **Phase 2 — the irreversible back half (GH #64).** A daily cron
+  (`wrangler.toml` `[triggers]` → the `scheduled` handler in `src/scheduled.ts`)
+  runs `PurgeTombstonedAccounts` (`d1.ts`) over every account tombstoned longer
+  than the **7-day** grace window (`ACCOUNT_PURGE_GRACE_SECONDS`) and not yet
+  purged (`accounts.time_purged IS NULL`, migration 0019). For each:
+  1. **Relinquish entities first.** The account is removed from every shared
+     List/Template it belongs to (found via the `entity_memberships` projection —
+     `ListMemberEntityIdsForAccount`, live *or* trashed, no DO enumeration) by the
+     `relinquishOwnershipOnPurge` DO mutator: where it's the `owner`, ownership is
+     handed off to the most-senior remaining member (admin → editor → checker) or
+     orphaned to `ownerless` when none remains; any other membership is simply
+     dropped — so no scrubbed identity is left dangling in an entity's rules. The
+     auth worker drives it exactly like the workspace cascade — a synthetic
+     `handlePush` with `authorizedRole: 'system'` and a reserved
+     `cg_purge:<accountId>` client group (`auth/purge.ts`), which throws on a
+     non-`gone` failure. Runs *before* the scrub, bounded to a batch per tick; a
+     failed relinquish leaves the account un-purged for the next tick (idempotent
+     retry).
+  2. **Scrub PII in place.** NULL the nullable PII columns and empty the NOT NULL
+     ones (`display_name`, `provider_client_id`), keeping the row (its `id` is
+     still referenced by authored content, and the tombstone keeps the re-signup
+     exclusion working). Stamp `time_purged` so the sweep never re-selects it,
+     and drop the account's `entity_memberships` rows. A single global reap of
+     the zero-account "orphan" sessions Phase 1 leaves behind runs at the end.
+- **Restore within grace (GH #64).** Because a tombstone makes ordinary
+  re-signup mint a *new* identity, restore is its own path: `POST
+  /auth/account/restore` (public — Phase 1 killed the session) emails a
+  `purpose='restore'` magic-link; consuming it un-tombstones a within-grace,
+  not-yet-purged account for the proven email and signs in. Revoked
+  sessions/credentials are **not** reinstated (the user re-establishes them);
+  past grace or already purged, it falls through to a normal new-identity
+  sign-in. The scheduled substrate is deliberately shared with GH #15 (orphaned
+  DO sweep) rather than forked.
 
 Two guards make "deleted" actually deny even before the purge: `GetSessionById`
 drops a tombstoned account from any session it loads, and
