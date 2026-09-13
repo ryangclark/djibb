@@ -765,6 +765,40 @@ export async function ListTrashedEntitiesForAccount(
     return parseRows(TrashedEntitySchema, rows, 'ListTrashedEntitiesForAccount');
 }
 
+/**
+ * Every List/Template the account principal-`'owner'`s, live or trashed
+ * — the input to account-deletion Phase 2's ownership-relinquish cascade
+ * (GH #64, `auth/purge.ts`). Reads the `entity_memberships` projection
+ * (`role = 'owner'`) rather than enumerating the DO namespace, the whole
+ * reason the purge can find owned entities from the D1-based worker.
+ *
+ * No `time_deleted` filter: a soft-deleted-but-owned entity still names
+ * the departing account in its `authorization_rules`, so it must be
+ * relinquished too. Workspaces are intentionally excluded — Phase 2's
+ * scope is owned *shared* Lists/Templates; a personal workspace's
+ * disposition is a separate cascade. Hard-deleted entities whose DO is
+ * already gone are handled idempotently downstream (the mutator no-ops
+ * `gone`), so a stale projection row is harmless.
+ */
+export async function ListOwnedEntityIdsForAccount(
+    d1: D1Database,
+    accountId: string,
+): Promise<string[]> {
+    const rows = await runD1(
+        d1,
+        'ListOwnedEntityIdsForAccount',
+        sql =>
+            sql<{ id: string }>`
+                SELECT we.id
+                FROM entity_memberships em
+                JOIN workspace_entities we ON we.id = em.entity_id
+                WHERE em.account_id = ${accountId}
+                  AND em.role = 'owner'
+                  AND we.type IN ('list', 'template')`,
+    );
+    return rows.map(r => r.id);
+}
+
 const SharedEntitySchema = z.object({
     id: z.string(),
     type: z.enum(['list', 'template']),

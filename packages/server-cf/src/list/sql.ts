@@ -2149,6 +2149,12 @@ export function setReplicacheClientGroup(
  *     (`workspace/service.ts`); one-shot but re-converges on retry.
  *   - `cg_cli:`                  — reserved for a future stable operator
  *     identity for `djibb promote` (GH #35 "Also worth deciding").
+ *   - `cg_purge:<accountId>`     — the account-deletion Phase 2 purge
+ *     writer (`auth/purge.ts`, GH #64) that drives
+ *     `relinquishOwnershipOnPurge` into each owned entity. One row-pair
+ *     per purged account per owned entity; the purge sweep is idempotent
+ *     and can retry across days, so its `last_mutation_id` continuity
+ *     must survive however far the list has advanced in between.
  *
  * Anonymous `contribute` / browser clients use random `cg_...` ids that
  * match none of these, so they remain eligible for GC.
@@ -2157,6 +2163,7 @@ const GC_RESERVED_CLIENT_GROUP_PREFIXES = [
     'cg_cascade:',
     'cg_signup_',
     'cg_cli:',
+    'cg_purge:',
 ] as const;
 
 /**

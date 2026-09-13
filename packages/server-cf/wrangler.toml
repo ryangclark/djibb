@@ -20,6 +20,12 @@ bindings = [
   { name = "DJIBB_LIST", class_name = "DjibbList" },
 ]
 
+# Cron trigger (GH #64 account-deletion Phase 2; shared substrate for #15).
+# Fires the `scheduled` handler (src/scheduled.ts) once daily at 04:00 UTC
+# to run the tombstoned-account PII purge + owned-entity relinquish sweep.
+[triggers]
+crons = ["0 4 * * *"]
+
 # Workers Rate Limiting bindings (GH #14, #40). Each binding is one fixed
 # {limit, period} sliding window with zero storage cost; distinct caps need
 # distinct bindings, and `period` must be 10 or 60. These are the in-code,

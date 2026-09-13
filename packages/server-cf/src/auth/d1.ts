@@ -34,6 +34,7 @@ import { newId, randomString } from '@djibb/protocol/id';
 import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
 import { d1Try, runD1 } from '../effect/d1';
 import { accountFromRow } from './account-row';
+import { relinquishOwnedEntities } from './purge';
 
 // ═══ from auth/session.ts ═══
 
@@ -393,6 +394,145 @@ export async function SoftDeleteAccountPhase1(
     await runD1(d1, 'SoftDeleteAccountPhase1', () =>
         d1Try(() => d1.batch(stmts)),
     );
+}
+
+/**
+ * Grace window between a Phase-1 soft-delete (`time_deleted`) and the
+ * Phase-2 hard purge (GH #64). 7 days: long enough to catch an
+ * accidental or coerced deletion via the within-grace restore path,
+ * short enough that PII doesn't linger. Unix seconds, matching every
+ * `accounts` timestamp column.
+ */
+export const ACCOUNT_PURGE_GRACE_SECONDS = 7 * 24 * 60 * 60;
+
+/**
+ * PII columns scrubbed at purge; `id` + timestamps are kept. Split by
+ * the `accounts` schema (migration 0001): nullable columns are NULLed,
+ * while the `NOT NULL` ones (`display_name`, `provider_client_id` — the
+ * latter holds the djibb-native email or the Google `sub`) are emptied to
+ * `''` since NULL would violate the constraint. `provider_name` is the
+ * auth method, not PII, so it's left intact. Purged rows carry
+ * `time_deleted`, which excludes them from the partial-unique
+ * `provider_client_id` index, so many `''` values never collide;
+ * `user_name` is globally `UNIQUE` but NULLable and NULLs don't collide.
+ */
+const ACCOUNT_PII_NULLED_COLUMNS = ['email', 'image', 'user_name', 'flags'] as const;
+const ACCOUNT_PII_EMPTIED_COLUMNS = ['display_name', 'provider_client_id'] as const;
+
+/**
+ * Account (identity) deletion — Phase 2 (GH #64). The scheduled,
+ * irreversible back half that Phase 1 (`SoftDeleteAccountPhase1`)
+ * deliberately deferred behind the `time_deleted` grace window. Driven by
+ * the daily `scheduled` cron (`src/scheduled.ts`).
+ *
+ * For every account tombstoned longer than {@link
+ * ACCOUNT_PURGE_GRACE_SECONDS} and not already purged (`time_purged IS
+ * NULL`):
+ *   1. **Relinquish owned entities first** — hand off ownership of every
+ *      shared List/Template the account owns (`auth/purge.ts`
+ *      `relinquishOwnedEntities`, via the `relinquishOwnershipOnPurge`
+ *      DO mutator). This runs *before* the scrub: if any relinquish push
+ *      fails (infrastructure error, not a `gone` no-op) the account is
+ *      left un-purged and the next tick retries. Idempotent — a second
+ *      run over an already-relinquished entity no-ops.
+ *   2. **Scrub PII in place** — NULL the {@link ACCOUNT_PII_COLUMNS} but
+ *      keep the row (`id` + `time_deleted` stay: authored content still
+ *      references the id, and the tombstone keeps the re-signup
+ *      uniqueness exclusion working). Stamp `time_purged` so the sweep
+ *      never re-selects this row, and drop the account's
+ *      `entity_memberships` projection rows so it stops surfacing in
+ *      catalog reads.
+ *
+ * A single orphan-session reap (the zero-account sessions Phase 1
+ * documented leaving behind) runs once at the end.
+ *
+ * Per-account failures are isolated (logged, skipped) so one bad account
+ * can't stall the whole sweep; the account simply retries next tick.
+ * Atomicity of each account's scrub needs the raw D1 batch API (sql-d1
+ * has none), lifted via `d1Try` like `SoftDeleteAccountPhase1`.
+ */
+export async function PurgeTombstonedAccounts(deps: {
+    d1: D1Database;
+    listNs: DurableObjectNamespace;
+    now: number;
+}): Promise<{ scanned: number; purged: number; entitiesRelinquished: number }> {
+    const { d1, listNs, now } = deps;
+    const cutoff = now - ACCOUNT_PURGE_GRACE_SECONDS;
+
+    const dueRows = await runD1(
+        d1,
+        'PurgeTombstonedAccounts.select',
+        sql =>
+            sql<{ id: string }>`
+                SELECT id FROM accounts
+                WHERE time_deleted IS NOT NULL
+                  AND time_deleted < ${cutoff}
+                  AND time_purged IS NULL`,
+    );
+
+    let purged = 0;
+    let entitiesRelinquished = 0;
+
+    for (const { id: accountId } of dueRows) {
+        try {
+            const { relinquished } = await relinquishOwnedEntities({
+                d1,
+                listNs,
+                accountId,
+            });
+            entitiesRelinquished += relinquished;
+
+            const scrubColumns = [
+                ...ACCOUNT_PII_NULLED_COLUMNS.map(c => `${c} = NULL`),
+                ...ACCOUNT_PII_EMPTIED_COLUMNS.map(c => `${c} = ''`),
+            ].join(', ');
+            await runD1(d1, 'PurgeTombstonedAccounts.scrub', () =>
+                d1Try(() =>
+                    d1.batch([
+                        d1
+                            .prepare(
+                                `UPDATE accounts
+                                 SET ${scrubColumns}, time_purged = ?, time_updated = ?
+                                 WHERE id = ? AND time_purged IS NULL`,
+                            )
+                            .bind(now, now, accountId),
+                        d1
+                            .prepare(
+                                `DELETE FROM entity_memberships WHERE account_id = ?`,
+                            )
+                            .bind(accountId),
+                    ]),
+                ),
+            );
+            purged += 1;
+        } catch (error) {
+            // Isolate the failure: leave this account un-purged (its
+            // `time_purged` stays NULL) so the next sweep tick retries,
+            // and keep going with the rest of the batch.
+            console.error(
+                `\`PurgeTombstonedAccounts\` skipped account "${accountId}":`,
+                error,
+            );
+        }
+    }
+
+    // Reap the zero-account "orphan" sessions Phase 1 leaves behind (a
+    // session whose last account was removed but that survived the scoped
+    // reap). They're inert — `GetSessionById` resolves a zero-account
+    // session to signed-out — so a global sweep of them is safe and is
+    // exactly the cleanup Phase 1's comment defers to here.
+    await runD1(d1, 'PurgeTombstonedAccounts.orphanSessions', () =>
+        d1Try(() =>
+            d1
+                .prepare(
+                    `DELETE FROM sessions
+                     WHERE id NOT IN (SELECT session_id FROM AccountSession)`,
+                )
+                .run(),
+        ),
+    );
+
+    return { scanned: dueRows.length, purged, entitiesRelinquished };
 }
 
 // TODO: change this function to not use a `batch` of querires, and
@@ -1532,6 +1672,66 @@ export async function GetAccountByEmail(
             WHERE LOWER(email) = LOWER(${email})
                 AND time_deleted IS NULL
             LIMIT 1`,
+    );
+    return shape_AccountRow(rows[0] ?? null);
+}
+
+/**
+ * Account-deletion Phase 2 restore (GH #64): un-tombstone the account a
+ * within-grace `purpose='restore'` magic-link proves control of, and
+ * return it for sign-in. Finds the most-recently tombstoned, not-yet-
+ * purged account for `email` inside the grace window
+ * ({@link ACCOUNT_PURGE_GRACE_SECONDS}) and clears its `time_deleted`.
+ *
+ * Returns `null` when there is nothing to restore (no tombstone, already
+ * hard-purged, or past grace) — the caller then falls through to the
+ * normal resolve-or-create sign-in (a fresh identity). Revoked sessions
+ * and credentials are deliberately NOT reinstated: restore brings back
+ * the *identity* (and the entities it still owns, which the purge hasn't
+ * touched pre-grace), not its access tokens — the user re-establishes
+ * those by signing in.
+ *
+ * The clearing UPDATE is guarded by the same tombstone/unpurged predicate
+ * so a concurrent purge or a second restore can't double-fire. If a fresh
+ * account was signed up for the same email during the window, the caller
+ * checks {@link GetAccountByEmail} first and never reaches here; in the
+ * unlikely race the partial-unique index makes the UPDATE fail and the
+ * caller falls back to the live account.
+ */
+export async function RestoreTombstonedAccountByEmail(
+    d1: D1Database,
+    args: { email: string; now: number; graceSeconds: number },
+): Promise<Account | null> {
+    const { email, now, graceSeconds } = args;
+    const cutoff = now - graceSeconds;
+
+    const candidates = await runD1(
+        d1,
+        'RestoreTombstonedAccountByEmail.select',
+        sql =>
+            sql<{ id: string }>`
+                SELECT id FROM accounts
+                WHERE LOWER(email) = LOWER(${email})
+                  AND time_deleted IS NOT NULL
+                  AND time_purged IS NULL
+                  AND time_deleted > ${cutoff}
+                ORDER BY time_deleted DESC
+                LIMIT 1`,
+    );
+    const id = candidates[0]?.id;
+    if (!id) return null;
+
+    const rows = await runD1(
+        d1,
+        'RestoreTombstonedAccountByEmail.update',
+        sql =>
+            sql`
+                UPDATE accounts
+                SET time_deleted = NULL, time_updated = ${now}
+                WHERE id = ${id}
+                  AND time_deleted IS NOT NULL
+                  AND time_purged IS NULL
+                RETURNING *`,
     );
     return shape_AccountRow(rows[0] ?? null);
 }

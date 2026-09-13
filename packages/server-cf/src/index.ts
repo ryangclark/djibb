@@ -12,6 +12,7 @@ import { Auth_App } from './auth/fetch';
 import { DjibbError } from '@djibb/protocol/errors';
 import { DjibbList } from './list/durable_object';
 import { AccountApp, UserApp } from './account/fetch';
+import { runScheduledSweeps } from './scheduled';
 
 /**
  * Associate bindings declared in wrangler.toml with TypeScript types.
@@ -211,4 +212,23 @@ app.onError(err => {
     return new Response('Unexpected Error', { status: 500 });
 });
 
-export default app;
+/**
+ * Cron trigger (wrangler.toml `[triggers]`). Fans out to the sweep
+ * dispatcher; `waitUntil` keeps the invocation alive until the sweeps
+ * finish. See `src/scheduled.ts`.
+ */
+const scheduled: ExportedHandlerScheduledHandler<Bindings> = (
+    _controller,
+    env,
+    ctx
+) => {
+    ctx.waitUntil(runScheduledSweeps(env));
+};
+
+// Default export is the handler object (fetch + scheduled) rather than
+// the bare Hono app, so the Workers runtime can dispatch the cron. The
+// DjibbList Durable Object stays a named export (above).
+export default {
+    fetch: app.fetch,
+    scheduled,
+} satisfies ExportedHandler<Bindings>;

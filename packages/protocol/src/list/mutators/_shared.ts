@@ -262,6 +262,14 @@ export function isFrictionTier(name: string): boolean {
  */
 export const TERMINAL_MUTATORS: readonly string[] = [
     'transferOwnership',
+    // Account-deletion Phase 2 (GH #64). Force-transfers or orphans a
+    // purged owner's entity; irreversible (ownership doesn't come back
+    // when a within-grace restore un-tombstones the account, because
+    // relinquish only runs *after* the grace window). System-only
+    // (`SYSTEM_ROLES`), so the credential-reachability consequence of
+    // this list is moot — it's listed for the auditable one-place record
+    // of genuinely-terminal registry mutators.
+    'relinquishOwnershipOnPurge',
 ] as const;
 
 export function isTerminal(name: string): boolean {
@@ -392,6 +400,106 @@ export function assertSingleOwner(rules: AuthorizationRules): void {
             `single-owner invariant: rules would set ${n} owners`
         );
     }
+}
+
+/**
+ * Ownership-succession order for an owner-departure event (account
+ * deletion Phase 2, GH #64). When a purged account is the principal
+ * `'owner'` of a shared entity, ownership is force-transferred to the
+ * most-senior *remaining* member. Only edit-capable collaborators are
+ * eligible successors — promoting a `viewer`/`submitter`/`restricted`
+ * to `owner` would hand powers they were never granted, so those roles
+ * are deliberately absent: an entity whose only survivors are read-only
+ * is orphaned (made ownerless) rather than surprise-promoted.
+ *
+ * Earlier entries are more senior. `admin` first (the co-principal with
+ * full powers), then `editor`, then `checker` as the last collaborator
+ * tier before orphaning.
+ */
+export const OWNER_SUCCESSION_ORDER: readonly AuthorizationRole[] = [
+    AuthorizationRoleEnum.enum.admin,
+    AuthorizationRoleEnum.enum.editor,
+    AuthorizationRoleEnum.enum.checker,
+] as const;
+
+/**
+ * Pick the account that should inherit ownership from a departing owner,
+ * or `null` if no remaining member is an eligible successor (see
+ * {@link OWNER_SUCCESSION_ORDER}). `rules` must already have the
+ * departing account removed from `authorized_accounts`. Ties within a
+ * seniority tier break on the lowest account id, so the choice is
+ * deterministic (the same input always yields the same successor —
+ * important for an idempotent, retry-safe purge sweep).
+ */
+export function pickSuccessorAccountId(
+    rules: AuthorizationRules
+): string | null {
+    let best: { accountId: string; rank: number } | null = null;
+    for (const [accountId, grant] of Object.entries(
+        rules.authorized_accounts
+    )) {
+        const rank = OWNER_SUCCESSION_ORDER.indexOf(grant.role);
+        if (rank === -1) continue; // not an eligible successor role
+        if (
+            best === null ||
+            rank < best.rank ||
+            (rank === best.rank && accountId < best.accountId)
+        ) {
+            best = { accountId, rank };
+        }
+    }
+    return best?.accountId ?? null;
+}
+
+/**
+ * Pure rules transform for account-deletion Phase 2 (GH #64): remove a
+ * departing account from an entity's `authorization_rules` and, if it
+ * held `'owner'`, either force-transfer ownership to the most-senior
+ * remaining member ({@link pickSuccessorAccountId}) or — when no
+ * eligible member remains — orphan the entity to `default_role:
+ * 'ownerless'`. Shared by the `relinquishOwnershipOnPurge` server and
+ * client mutators so both sides compute the identical post-image.
+ *
+ * A no-op (returns the input unchanged) when the account isn't a member
+ * — the D1 `entity_memberships` projection that drives the purge can lag
+ * the DO's authoritative rules, so the sweep must tolerate targeting an
+ * entity the account no longer belongs to.
+ */
+export function relinquishOwnership(
+    rules: AuthorizationRules,
+    departingAccountId: string
+): AuthorizationRules {
+    const departing = rules.authorized_accounts[departingAccountId];
+    if (!departing) return rules;
+
+    const remaining = { ...rules.authorized_accounts };
+    delete remaining[departingAccountId];
+
+    const next: AuthorizationRules = {
+        ...rules,
+        authorized_accounts: remaining,
+    };
+
+    // Removing a non-owner member is the whole change.
+    if (departing.role !== 'owner') return next;
+
+    const successor = pickSuccessorAccountId(next);
+    if (successor) {
+        next.authorized_accounts = {
+            ...remaining,
+            [successor]: { role: AuthorizationRoleEnum.enum.owner },
+        };
+    } else {
+        // No eligible member to inherit — orphan the entity. Making it
+        // ownerless (rather than leaving a dangling non-ownerless
+        // default with no owner) keeps the model coherent: the entity
+        // behaves like any anonymous world-editable list, and its data
+        // survives for the grace-window's tail rather than vanishing.
+        next.default_role = AuthorizationRoleEnum.enum.ownerless;
+    }
+
+    assertSingleOwner(next);
+    return next;
 }
 
 /**
