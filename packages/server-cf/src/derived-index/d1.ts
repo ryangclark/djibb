@@ -766,34 +766,39 @@ export async function ListTrashedEntitiesForAccount(
 }
 
 /**
- * Every List/Template the account principal-`'owner'`s, live or trashed
- * — the input to account-deletion Phase 2's ownership-relinquish cascade
+ * Every List/Template the account is a member of — *any* role, live or
+ * trashed — the input to account-deletion Phase 2's relinquish cascade
  * (GH #64, `auth/purge.ts`). Reads the `entity_memberships` projection
- * (`role = 'owner'`) rather than enumerating the DO namespace, the whole
- * reason the purge can find owned entities from the D1-based worker.
+ * rather than enumerating the DO namespace, which is what lets the purge
+ * find them from the D1-based worker.
  *
- * No `time_deleted` filter: a soft-deleted-but-owned entity still names
- * the departing account in its `authorization_rules`, so it must be
+ * All roles, not just `owner`: a full identity erasure must remove the
+ * departing account from every entity's `authorization_rules`, otherwise
+ * a scrubbed identity is left dangling as an admin/editor/viewer member
+ * (GH #64 review). `relinquishOwnershipOnPurge` transfers ownership when
+ * the account is the owner and simply drops it otherwise.
+ *
+ * No `time_deleted` filter: a soft-deleted (trashed) entity still names
+ * the account in its rules and could be restored, so it must be
  * relinquished too. Workspaces are intentionally excluded — Phase 2's
- * scope is owned *shared* Lists/Templates; a personal workspace's
- * disposition is a separate cascade. Hard-deleted entities whose DO is
- * already gone are handled idempotently downstream (the mutator no-ops
- * `gone`), so a stale projection row is harmless.
+ * scope is shared Lists/Templates; a personal workspace's disposition is a
+ * separate cascade. Hard-deleted entities whose DO is gone are handled
+ * idempotently downstream (the mutator no-ops `gone`), so a stale
+ * projection row is harmless.
  */
-export async function ListOwnedEntityIdsForAccount(
+export async function ListMemberEntityIdsForAccount(
     d1: D1Database,
     accountId: string,
 ): Promise<string[]> {
     const rows = await runD1(
         d1,
-        'ListOwnedEntityIdsForAccount',
+        'ListMemberEntityIdsForAccount',
         sql =>
             sql<{ id: string }>`
                 SELECT we.id
                 FROM entity_memberships em
                 JOIN workspace_entities we ON we.id = em.entity_id
                 WHERE em.account_id = ${accountId}
-                  AND em.role = 'owner'
                   AND we.type IN ('list', 'template')`,
     );
     return rows.map(r => r.id);

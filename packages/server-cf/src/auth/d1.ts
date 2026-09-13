@@ -34,7 +34,7 @@ import { newId, randomString } from '@djibb/protocol/id';
 import { OAUTH_PROVIDER } from '@djibb/protocol/auth/constants';
 import { d1Try, runD1 } from '../effect/d1';
 import { accountFromRow } from './account-row';
-import { relinquishOwnedEntities } from './purge';
+import { relinquishAccountFromEntities } from './purge';
 
 // ═══ from auth/session.ts ═══
 
@@ -406,6 +406,16 @@ export async function SoftDeleteAccountPhase1(
 export const ACCOUNT_PURGE_GRACE_SECONDS = 7 * 24 * 60 * 60;
 
 /**
+ * Max accounts purged per cron tick. Each account fans out to a sequential
+ * DO round-trip per entity it belongs to, so an unbounded batch could
+ * breach the Workers per-invocation subrequest / wall-clock limits and
+ * abort the whole sweep. The sweep is retry-safe and runs daily, so a
+ * backlog drains over successive ticks (oldest-tombstoned first) instead
+ * of dying mid-run. A starting value to tune.
+ */
+export const ACCOUNT_PURGE_BATCH_SIZE = 100;
+
+/**
  * PII columns scrubbed at purge; `id` + timestamps are kept. Split by
  * the `accounts` schema (migration 0001): nullable columns are NULLed,
  * while the `NOT NULL` ones (`display_name`, `provider_client_id` — the
@@ -428,23 +438,30 @@ const ACCOUNT_PII_EMPTIED_COLUMNS = ['display_name', 'provider_client_id'] as co
  * For every account tombstoned longer than {@link
  * ACCOUNT_PURGE_GRACE_SECONDS} and not already purged (`time_purged IS
  * NULL`):
- *   1. **Relinquish owned entities first** — hand off ownership of every
- *      shared List/Template the account owns (`auth/purge.ts`
- *      `relinquishOwnedEntities`, via the `relinquishOwnershipOnPurge`
- *      DO mutator). This runs *before* the scrub: if any relinquish push
- *      fails (infrastructure error, not a `gone` no-op) the account is
- *      left un-purged and the next tick retries. Idempotent — a second
- *      run over an already-relinquished entity no-ops.
- *   2. **Scrub PII in place** — NULL the {@link ACCOUNT_PII_COLUMNS} but
- *      keep the row (`id` + `time_deleted` stay: authored content still
- *      references the id, and the tombstone keeps the re-signup
- *      uniqueness exclusion working). Stamp `time_purged` so the sweep
- *      never re-selects this row, and drop the account's
- *      `entity_memberships` projection rows so it stops surfacing in
- *      catalog reads.
+ *   1. **Relinquish member entities first** — remove the account from
+ *      every shared List/Template it belongs to (`auth/purge.ts`
+ *      `relinquishAccountFromEntities`, via the `relinquishOwnershipOnPurge`
+ *      DO mutator): ownership is handed off where it's the owner, and any
+ *      other membership is dropped, so no scrubbed identity is left
+ *      dangling in an entity's rules. Runs *before* the scrub: if any
+ *      relinquish push fails (infrastructure error, not a `gone` no-op)
+ *      the account is left un-purged and the next tick retries.
+ *      Idempotent — a second run over an already-relinquished entity
+ *      no-ops.
+ *   2. **Scrub PII in place** — NULL the {@link ACCOUNT_PII_NULLED_COLUMNS}
+ *      and empty the {@link ACCOUNT_PII_EMPTIED_COLUMNS}, but keep the row
+ *      (`id` + `time_deleted` stay: authored content still references the
+ *      id, and the tombstone keeps the re-signup uniqueness exclusion
+ *      working). Stamp `time_purged` so the sweep never re-selects this
+ *      row, and drop the account's `entity_memberships` projection rows.
  *
- * A single orphan-session reap (the zero-account sessions Phase 1
- * documented leaving behind) runs once at the end.
+ * Bounded to {@link ACCOUNT_PURGE_BATCH_SIZE} accounts per tick
+ * (oldest-tombstoned first); a larger backlog drains over successive
+ * daily ticks. A single orphan-session reap (the zero-account sessions
+ * Phase 1 leaves behind) runs at the end, but only when something was
+ * actually purged — those orphans are born from the same Phase-1 deletes
+ * these purges finish, so a purge tick is the natural time to sweep them
+ * and a quiet tick skips the full-table scan.
  *
  * Per-account failures are isolated (logged, skipped) so one bad account
  * can't stall the whole sweep; the account simply retries next tick.
@@ -467,7 +484,9 @@ export async function PurgeTombstonedAccounts(deps: {
                 SELECT id FROM accounts
                 WHERE time_deleted IS NOT NULL
                   AND time_deleted < ${cutoff}
-                  AND time_purged IS NULL`,
+                  AND time_purged IS NULL
+                ORDER BY time_deleted ASC
+                LIMIT ${ACCOUNT_PURGE_BATCH_SIZE}`,
     );
 
     let purged = 0;
@@ -475,7 +494,7 @@ export async function PurgeTombstonedAccounts(deps: {
 
     for (const { id: accountId } of dueRows) {
         try {
-            const { relinquished } = await relinquishOwnedEntities({
+            const { relinquished } = await relinquishAccountFromEntities({
                 d1,
                 listNs,
                 accountId,
@@ -520,17 +539,22 @@ export async function PurgeTombstonedAccounts(deps: {
     // session whose last account was removed but that survived the scoped
     // reap). They're inert — `GetSessionById` resolves a zero-account
     // session to signed-out — so a global sweep of them is safe and is
-    // exactly the cleanup Phase 1's comment defers to here.
-    await runD1(d1, 'PurgeTombstonedAccounts.orphanSessions', () =>
-        d1Try(() =>
-            d1
-                .prepare(
-                    `DELETE FROM sessions
-                     WHERE id NOT IN (SELECT session_id FROM AccountSession)`,
-                )
-                .run(),
-        ),
-    );
+    // exactly the cleanup Phase 1's comment defers to here. Only when a
+    // purge actually happened: it's the sole path that finishes off the
+    // Phase-1 deletes those orphans came from, so a quiet tick skips the
+    // full-table `NOT IN` scan.
+    if (purged > 0) {
+        await runD1(d1, 'PurgeTombstonedAccounts.orphanSessions', () =>
+            d1Try(() =>
+                d1
+                    .prepare(
+                        `DELETE FROM sessions
+                         WHERE id NOT IN (SELECT session_id FROM AccountSession)`,
+                    )
+                    .run(),
+            ),
+        );
+    }
 
     return { scanned: dueRows.length, purged, entitiesRelinquished };
 }

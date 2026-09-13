@@ -274,6 +274,49 @@ export function getLiveEntityCasRow(
 }
 
 /**
+ * Like {@link getLiveEntityCasRow} but **includes soft-deleted (trashed)
+ * entities** — no `time_deleted IS NULL` filter. Used by the
+ * account-deletion Phase 2 relinquish cascade (`relinquishOwnershipOnPurge`,
+ * GH #64): a departing account can own or be a member of a *trashed*
+ * List/Template, and its `authorization_rules` must still be rewritten so
+ * the purged identity isn't left dangling on a row that could later be
+ * restored. `undefined` ⇒ no such entity row at all (hard-deleted / never
+ * existed), which the caller treats as a benign no-op.
+ */
+export function getEntityCasRow(
+    sql: SqlStorage,
+    entityId: string
+):
+    | {
+          type: string;
+          slot: string | null;
+          name: string | null;
+          description: string | null;
+          authorization_rules: unknown;
+          workspace_id: string | null;
+      }
+    | undefined {
+    return sql
+        .exec(
+            `SELECT type, slot, name, description, authorization_rules, workspace_id
+             FROM list_elements
+             WHERE id = ?
+               AND type IN (${ENTITY_ROW_TYPES_SQL_LIST});`,
+            entityId
+        )
+        .toArray()[0] as
+        | {
+              type: string;
+              slot: string | null;
+              name: string | null;
+              description: string | null;
+              authorization_rules: unknown;
+              workspace_id: string | null;
+          }
+        | undefined;
+}
+
+/**
  * Read the CAS-relevant columns of a live `workspace` row (`name` and the
  * stringified `meta` blob). `undefined` ⇒ no live workspace row.
  */
@@ -1263,6 +1306,48 @@ export function setEntityAuthorizationRules(
     if (changed !== 1) {
         throw new NotFoundError(
             `\`setEntityAuthorizationRules()\` entity "${entityId}" not found (changes=${changed})`
+        );
+    }
+}
+
+/**
+ * Like {@link setEntityAuthorizationRules} but writes to the entity row
+ * regardless of `time_deleted` — the trashed-inclusive counterpart of
+ * {@link getEntityCasRow}. Used only by the account-deletion Phase 2
+ * relinquish cascade (`relinquishOwnershipOnPurge`, GH #64): a purged
+ * account can own or be a member of a *soft-deleted* entity, and the
+ * live-only setter would match 0 rows and throw, permanently wedging the
+ * account's purge. Callers pre-read the row via `getEntityCasRow`, so a
+ * `changed !== 1` here is a genuine anomaly and still throws.
+ */
+export function setEntityAuthorizationRulesIncludingTrashed(
+    sql: SqlStorage,
+    {
+        entityId,
+        authorization_rules,
+        version,
+    }: {
+        entityId: string;
+        authorization_rules: AuthorizationRules;
+        version: number;
+    }
+): void {
+    sql.exec(
+        `UPDATE list_elements
+        SET
+            authorization_rules = ?,
+            version = ?,
+            time_updated = CURRENT_TIMESTAMP
+        WHERE id = ?
+            AND type IN (${ENTITY_ROW_TYPES_SQL_LIST});`,
+        JSON.stringify(authorization_rules),
+        version,
+        entityId
+    );
+    const changed = affectedRows(sql);
+    if (changed !== 1) {
+        throw new NotFoundError(
+            `\`setEntityAuthorizationRulesIncludingTrashed()\` entity "${entityId}" not found (changes=${changed})`
         );
     }
 }

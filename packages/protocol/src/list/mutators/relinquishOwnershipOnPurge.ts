@@ -68,9 +68,12 @@ export const server: ServerMutator<Args> = (
     { listId, departingAccountId },
     { store, nextVersion }
 ) => {
-    const row = store.getLiveEntityCasRow(listId);
-    // Idempotent against a retry that already ran, or a stale
-    // `entity_memberships` projection pointing at a now-gone entity.
+    // Trashed-inclusive read: a purged account can own or be a member of a
+    // *soft-deleted* entity, and its rules must still be rewritten so the
+    // scrubbed identity isn't left dangling on a row that could later be
+    // restored (GH #64 review). `gone` now means the entity truly doesn't
+    // exist (hard-deleted / never existed) — a benign idempotent no-op.
+    const row = store.getEntityCasRow(listId);
     if (!row) return { status: 'gone' };
 
     const current = parseStoredAuthorizationRules(row.authorization_rules);
@@ -79,7 +82,10 @@ export const server: ServerMutator<Args> = (
     // Account wasn't a member (projection lag) — nothing to write.
     if (updated === current) return;
 
-    store.setEntityAuthorizationRules({
+    // Trashed-inclusive write to match the trashed-inclusive read above:
+    // the live-only setter would match 0 rows on a soft-deleted entity and
+    // throw, permanently wedging the account's purge.
+    store.setEntityAuthorizationRulesIncludingTrashed({
         entityId: listId,
         authorization_rules: updated,
         version: nextVersion,

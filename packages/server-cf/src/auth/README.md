@@ -88,16 +88,19 @@ deletion as a real exit path, so it's built as a **user-facing verb**
   runs `PurgeTombstonedAccounts` (`d1.ts`) over every account tombstoned longer
   than the **7-day** grace window (`ACCOUNT_PURGE_GRACE_SECONDS`) and not yet
   purged (`accounts.time_purged IS NULL`, migration 0019). For each:
-  1. **Relinquish owned entities first.** Every shared List/Template the account
-     principal-`owner`s (found via the `entity_memberships` projection —
-     `ListOwnedEntityIdsForAccount`, no DO enumeration) has its ownership handed
-     off by the `relinquishOwnershipOnPurge` DO mutator: force-transferred to the
-     most-senior remaining member (admin → editor → checker), or orphaned to
-     `ownerless` when none remains. The auth worker drives it exactly like the
-     workspace cascade — a synthetic `handlePush` with `authorizedRole: 'system'`
-     and a reserved `cg_purge:<accountId>` client group (`auth/purge.ts`). Runs
-     *before* the scrub; a failed relinquish leaves the account un-purged for the
-     next tick (idempotent retry).
+  1. **Relinquish entities first.** The account is removed from every shared
+     List/Template it belongs to (found via the `entity_memberships` projection —
+     `ListMemberEntityIdsForAccount`, live *or* trashed, no DO enumeration) by the
+     `relinquishOwnershipOnPurge` DO mutator: where it's the `owner`, ownership is
+     handed off to the most-senior remaining member (admin → editor → checker) or
+     orphaned to `ownerless` when none remains; any other membership is simply
+     dropped — so no scrubbed identity is left dangling in an entity's rules. The
+     auth worker drives it exactly like the workspace cascade — a synthetic
+     `handlePush` with `authorizedRole: 'system'` and a reserved
+     `cg_purge:<accountId>` client group (`auth/purge.ts`), which throws on a
+     non-`gone` failure. Runs *before* the scrub, bounded to a batch per tick; a
+     failed relinquish leaves the account un-purged for the next tick (idempotent
+     retry).
   2. **Scrub PII in place.** NULL the nullable PII columns and empty the NOT NULL
      ones (`display_name`, `provider_client_id`), keeping the row (its `id` is
      still referenced by authored content, and the tombstone keeps the re-signup

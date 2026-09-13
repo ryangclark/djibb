@@ -294,6 +294,46 @@ describe('relinquishOwnershipOnPurge (DO mutator)', () => {
         expect(after.authorized_accounts[ownerA]).toBeUndefined();
         expect(after.default_role).toBe('ownerless');
     });
+
+    it('rewrites rules even for a trashed (soft-deleted) entity (GH #64 review #1)', async () => {
+        const ownerA = newId('account');
+        const editorB = newId('account');
+        const { listId, stub } = await initOwnedList('rel_trashed', ownerA, {
+            [editorB]: 'editor',
+        });
+        // Trash the entity directly, then relinquish: the live-only
+        // read/write would no-op/throw and leave ownerA dangling.
+        await runInDurableObject(stub, (_i, state) => {
+            state.storage.sql.exec(
+                `UPDATE list_elements SET time_deleted = ? WHERE id = ?;`,
+                Date.now(),
+                listId,
+            );
+        });
+
+        const res = await pushRelinquish(stub, listId, ownerA);
+        expect(res.error).toBeNull();
+
+        const after = await readRules(stub, listId);
+        expect(after.authorized_accounts[ownerA]).toBeUndefined();
+        expect(after.authorized_accounts[editorB]?.role).toBe('owner');
+    });
+
+    it('drops a non-owner member without changing ownership (GH #64 review #4)', async () => {
+        const ownerA = newId('account');
+        const editorB = newId('account');
+        const { listId, stub } = await initOwnedList('rel_nonowner', ownerA, {
+            [editorB]: 'editor',
+        });
+
+        // editorB (not the owner) is the departing account.
+        const res = await pushRelinquish(stub, listId, editorB);
+        expect(res.error).toBeNull();
+
+        const after = await readRules(stub, listId);
+        expect(after.authorized_accounts[editorB]).toBeUndefined();
+        expect(after.authorized_accounts[ownerA]?.role).toBe('owner');
+    });
 });
 
 // ─── D1 sweep ────────────────────────────────────────────────────────────────
@@ -439,6 +479,9 @@ describe('PurgeTombstonedAccounts', () => {
     });
 
     it('reaps a zero-account orphan session left by Phase 1', async () => {
+        // The reap only runs on a tick that actually purged something, so
+        // give the sweep a past-grace account to purge.
+        await insertAccount({ email: 'p@example.com', time_deleted: PAST_GRACE });
         const orphanId = newId('session');
         await env.DJIBB_AUTH.prepare(
             `INSERT INTO sessions (id, time_created, time_expires, ip_country)

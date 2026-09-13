@@ -77,6 +77,19 @@ export interface MutatorStore {
               workspace_id: string | null;
           }
         | undefined;
+    /** Like {@link getLiveEntityCasRow} but includes soft-deleted
+     *  (trashed) entities — see the account-deletion Phase 2 relinquish
+     *  cascade (`relinquishOwnershipOnPurge`, GH #64). */
+    getEntityCasRow(entityId: string):
+        | {
+              type: string;
+              slot: string | null;
+              name: string | null;
+              description: string | null;
+              authorization_rules: unknown;
+              workspace_id: string | null;
+          }
+        | undefined;
     getLiveWorkspaceCasRow(
         workspaceId: string
     ): { name: string | null; meta: unknown } | undefined;
@@ -121,6 +134,14 @@ export interface MutatorStore {
         version: number;
     }): void;
     setEntityAuthorizationRules(args: {
+        entityId: string;
+        authorization_rules: AuthorizationRules;
+        version: number;
+    }): void;
+    /** Like {@link setEntityAuthorizationRules} but writes regardless of
+     *  `time_deleted` — the trashed-inclusive counterpart of
+     *  {@link getEntityCasRow} (account-deletion Phase 2, GH #64). */
+    setEntityAuthorizationRulesIncludingTrashed(args: {
         entityId: string;
         authorization_rules: AuthorizationRules;
         version: number;

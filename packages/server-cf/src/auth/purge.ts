@@ -1,13 +1,13 @@
 /**
- * Account-deletion Phase 2 (GH #64) — the owned-entity relinquish
- * cascade.
+ * Account-deletion Phase 2 (GH #64) — the entity relinquish cascade.
  *
  * When the purge sweep (`d1.ts` `PurgeTombstonedAccounts`) hard-purges a
- * tombstoned account past its grace window, any shared List/Template the
- * account still principal-`'owner'`s must first have its ownership handed
- * off — force-transferred to the most-senior remaining member, or
- * orphaned to `ownerless` when none remains — so the scrubbed identity
- * isn't left dangling in the entity's `authorization_rules`.
+ * tombstoned account past its grace window, the account must be removed
+ * from every shared List/Template it belongs to before it's scrubbed:
+ * an entity it *owns* has ownership handed off (force-transferred to the
+ * most-senior remaining member, or orphaned to `ownerless` when none
+ * remains), and any other membership is simply dropped — so the scrubbed
+ * identity is never left dangling in an entity's `authorization_rules`.
  *
  * The disposition itself is a DO mutator (`relinquishOwnershipOnPurge`,
  * `@djibb/protocol`); this module is only the worker→DO *driver*. It
@@ -25,32 +25,34 @@
  * a partial failure reuses the same bookkeeping row instead of minting a
  * fresh one every night.
  */
-import { ListOwnedEntityIdsForAccount } from '../derived-index/d1';
+import { ListMemberEntityIdsForAccount } from '../derived-index/d1';
+import { UnexpectedError } from '@djibb/protocol/errors';
 import type { DjibbList } from '../list/durable_object';
 
 export interface RelinquishDeps {
     d1: D1Database; // env.DJIBB_AUTH — the entity_memberships projection
-    listNs: DurableObjectNamespace; // env.DJIBB_LIST — the owned entity DOs
+    listNs: DurableObjectNamespace; // env.DJIBB_LIST — the member entity DOs
     accountId: string;
 }
 
 /**
- * Relinquish every List/Template the account owns. Throws if any single
- * relinquish push rejects (an infrastructure failure, not a `gone`
- * no-op) — the caller must then leave the account un-purged so the next
- * sweep tick retries. Returns the number of owned entities the cascade
+ * Relinquish the account from every List/Template it belongs to. Throws
+ * if any single relinquish push fails to apply (a rejected RPC or a
+ * non-null result error — an infrastructure/DjibbError failure, not a
+ * benign `gone` no-op) so the caller leaves the account un-purged and the
+ * next sweep tick retries. Returns the number of entities the cascade
  * drove a relinquish into.
  */
-export async function relinquishOwnedEntities(
+export async function relinquishAccountFromEntities(
     deps: RelinquishDeps,
 ): Promise<{ relinquished: number }> {
     const { d1, listNs, accountId } = deps;
 
-    const ownedEntityIds = await ListOwnedEntityIdsForAccount(d1, accountId);
-    for (const entityId of ownedEntityIds) {
+    const memberEntityIds = await ListMemberEntityIdsForAccount(d1, accountId);
+    for (const entityId of memberEntityIds) {
         await relinquishOne(listNs, accountId, entityId);
     }
-    return { relinquished: ownedEntityIds.length };
+    return { relinquished: memberEntityIds.length };
 }
 
 async function relinquishOne(
@@ -61,7 +63,7 @@ async function relinquishOne(
     const stubId = listNs.idFromName(entityId);
     const stub = listNs.get(stubId) as unknown as DurableObjectStub<DjibbList>;
 
-    await stub.handlePush({
+    const result = await stub.handlePush({
         authorizedAccounts: [],
         authorizedRole: 'system',
         listId: entityId,
@@ -90,4 +92,15 @@ async function relinquishOne(
             ],
         },
     });
+
+    // `handlePush` returns a Result rather than throwing on a transport /
+    // DjibbError failure. Surface it as a throw so the sweep leaves the
+    // account un-purged (retry next tick) instead of counting a failed
+    // relinquish as done and scrubbing the still-dangling owner. A benign
+    // `gone` (entity truly absent) does not set `error`.
+    if (result.error) {
+        throw new UnexpectedError(
+            `relinquishOwnershipOnPurge failed for entity "${entityId}"`,
+        );
+    }
 }
