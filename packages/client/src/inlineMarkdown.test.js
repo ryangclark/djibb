@@ -95,6 +95,29 @@ describe('renderInlineMarkdown — GH #4 review regressions', () => {
 		expect(renderInlineMarkdown('_soon_')).toBe('<em>soon</em>');
 	});
 
+	it('leaves whitespace-flanked asterisks (arithmetic / dimensions) literal', () => {
+		expect(renderInlineMarkdown('multiply 2 * 3 = 6 and 4 * 5')).toBe(
+			'multiply 2 * 3 = 6 and 4 * 5'
+		);
+		expect(renderInlineMarkdown('Length * Width * Height')).toBe('Length * Width * Height');
+		expect(renderInlineMarkdown('a * b * c')).toBe('a * b * c');
+	});
+
+	it('still emphasizes asterisks with no adjacent whitespace, including intraword', () => {
+		expect(renderInlineMarkdown('*soon*')).toBe('<em>soon</em>');
+		expect(renderInlineMarkdown('foo*bar*baz')).toBe('foo<em>bar</em>baz');
+	});
+
+	it('renders mixed **/* runs without stray asterisks', () => {
+		expect(renderInlineMarkdown('**a*b**')).toBe('<strong>a*b</strong>');
+	});
+
+	it('keeps a rejected-scheme link fully literal (no emphasis inside its url)', () => {
+		const out = renderInlineMarkdown('[a](data:x*y*z)');
+		expect(out).toBe('[a](data:x*y*z)');
+		expect(out).not.toContain('<em>');
+	});
+
 	it('returns empty string for null/undefined', () => {
 		expect(renderInlineMarkdown(null)).toBe('');
 		expect(renderInlineMarkdown(undefined)).toBe('');

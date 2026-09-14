@@ -71,7 +71,10 @@ export function renderInlineMarkdown(input) {
 						text
 					)}</a>`
 				)
-			: m
+			: // Rejected scheme: keep the whole thing as inert literal text.
+				// Stash it (rather than returning `m`) so the emphasis pass in
+				// step 3 can't turn `*`/`_` inside the bad url into <em>.
+				stash(m)
 	);
 
 	// 3. Emphasis over what remains — pure escaped text plus placeholders
@@ -91,17 +94,23 @@ export function renderInlineMarkdown(input) {
 /**
  * Apply emphasis to already-escaped literal text that contains no generated
  * markup. Bold before italic so `**x**` isn't consumed by the single-`*` rule.
- * Underscore emphasis is word-boundary-gated per the CommonMark intraword rule:
- * a `_` flanked by alphanumerics/underscores does not open or close emphasis,
- * so `snake_case` and URLs with `_` are left literal (asterisks intentionally
- * are not gated — CommonMark treats intraword `*` as emphasis).
+ *
+ * Delimiters are flanking-gated so ordinary text isn't mangled (GH #4 review):
+ *   - `*`/`**`: the opening delimiter may not be followed by whitespace and the
+ *     closing may not be preceded by whitespace, so `2 * 3`, `Length * Width`,
+ *     and `** loose **` stay literal while `*word*` and intraword `foo*bar*`
+ *     still emphasize. Bold content may contain a lone `*` (`**a*b**` →
+ *     `<strong>a*b</strong>`). Expressed via a leading `(?!\s)` and a trailing
+ *     non-whitespace char — no lookbehind (older Safari SyntaxErrors on it).
+ *   - `_`: additionally word-boundary-gated per CommonMark's intraword rule, so
+ *     `snake_case` and URLs with `_` are left literal.
  *
  * @param {string} s
  */
 function applyEmphasis(s) {
 	return s
-		.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-		.replace(/\*([^*]+)\*/g, '<em>$1</em>')
+		.replace(/\*\*(?!\s)((?:[^*]|\*(?!\*))*?[^\s*])\*\*/g, '<strong>$1</strong>')
+		.replace(/\*(?!\s)([^*]*[^\s*])\*/g, '<em>$1</em>')
 		.replace(/(^|[^A-Za-z0-9_])_([^_\s](?:[^_]*[^_\s])?)_(?![A-Za-z0-9_])/g, '$1<em>$2</em>');
 }
 
