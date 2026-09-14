@@ -53,6 +53,48 @@ describe('renderInlineMarkdown — supported subset', () => {
 		expect(renderInlineMarkdown('just a normal name')).toBe('just a normal name');
 	});
 
+	it('renders emphasis inside link text', () => {
+		expect(renderInlineMarkdown('[**bold** link](https://x.com)')).toBe(
+			'<a href="https://x.com" target="_blank" rel="noopener noreferrer nofollow">' +
+				'<strong>bold</strong> link</a>'
+		);
+	});
+});
+
+describe('renderInlineMarkdown — GH #4 review regressions', () => {
+	it('renders two links without corrupting either (target="_blank" underscores)', () => {
+		const out = renderInlineMarkdown('See [a](https://a.com) and [b](https://b.com)');
+		expect(out).toBe(
+			'See ' +
+				'<a href="https://a.com" target="_blank" rel="noopener noreferrer nofollow">a</a>' +
+				' and ' +
+				'<a href="https://b.com" target="_blank" rel="noopener noreferrer nofollow">b</a>'
+		);
+		expect(out).not.toContain('<em>');
+	});
+
+	it('keeps underscores in a URL intact (no emphasis in the href)', () => {
+		const out = renderInlineMarkdown('[wiki](https://en.wikipedia.org/wiki/Foo_bar_baz)');
+		expect(out).toContain('href="https://en.wikipedia.org/wiki/Foo_bar_baz"');
+		expect(out).not.toContain('<em>');
+	});
+
+	it('leaves intraword snake_case as literal text', () => {
+		expect(renderInlineMarkdown('run set_config_value now')).toBe('run set_config_value now');
+	});
+
+	it('captures a URL with a balanced closing paren in full', () => {
+		const out = renderInlineMarkdown('[w](https://en.wikipedia.org/wiki/Foo_(bar))');
+		expect(out).toContain('href="https://en.wikipedia.org/wiki/Foo_(bar)"');
+		// No stray trailing paren emitted after the anchor.
+		expect(out).not.toMatch(/<\/a>\)/);
+	});
+
+	it('still emphasizes underscores at word boundaries', () => {
+		expect(renderInlineMarkdown('a _word_ here')).toBe('a <em>word</em> here');
+		expect(renderInlineMarkdown('_soon_')).toBe('<em>soon</em>');
+	});
+
 	it('returns empty string for null/undefined', () => {
 		expect(renderInlineMarkdown(null)).toBe('');
 		expect(renderInlineMarkdown(undefined)).toBe('');
