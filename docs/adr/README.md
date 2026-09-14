@@ -21,6 +21,7 @@ To learn the contract you build against, read the **protocol** row and ignore th
 - [0020](0020-push-auth-reconciliation.md) — Push-time authorization reconciliation (ack vs. throw)
 - [0021](0021-role-gated-reads-and-read-write-role-lattice.md) — Role-gated reads (view-floor) and the read/write lattice
 - [0023](0023-recoverability-over-step-up-for-destructive-actions.md) — Recoverability over step-up for destructive actions *(cross-client policy)*
+- [0027](0027-read-secrecy-via-entity-decomposition.md) — Read secrecy through entity decomposition, not item-level ACLs *(the Secret Santa model)*
 
 ### server-cf
 - [0001](0001-entity-metadata-in-d1-with-do-mirror.md) — Entity metadata in D1, elements in DO *(superseded by 0003)*
