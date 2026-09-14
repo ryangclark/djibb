@@ -7,6 +7,7 @@
     "license": "Apache-2.0",
     "exports": {
         "./undoStack": "./src/undoStack.js",
+        "./inlineMarkdown": "./src/inlineMarkdown.js",
         "./replicache": "./src/replicache.js",
         "./syncStatus": "./src/syncStatus.js",
         "./unflushed": "./src/unflushed.js",

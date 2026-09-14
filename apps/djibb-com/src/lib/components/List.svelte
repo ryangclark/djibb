@@ -14,6 +14,7 @@
 	import { tryCatch, tryCatchAsync } from '@djibb/protocol/trycatch';
 	import { fetchOwnedEntities } from '$lib/entities.js';
 	import { getSessionState } from '$lib/session.svelte.js';
+	import { renderInlineMarkdown } from '@djibb/client/inlineMarkdown';
 	import { createListViewVerbs } from '$lib/keymap/listViewVerbs.svelte.js';
 	import { buildKeymapRegistry } from '$lib/keymap/registry.js';
 	import { goto } from '$app/navigation';
@@ -651,7 +652,8 @@
 			<span class="text-slate-500 select-none w-3 inline-block">
 				{is_collapsed ? '▸' : '▾'}
 			</span>
-			{elem.name}
+			<!-- Display-only inline markdown (GH #4); stored name is unchanged. -->
+			{@html renderInlineMarkdown(elem.name)}
 		</h3>
 		{#if !is_collapsed}
 			<div class="flex flex-col">
@@ -686,7 +688,8 @@
 				type="checkbox"
 				checked={elem.value.value === elem.value.target_value}
 			/>
-			<span>{elem.name}</span>
+			<!-- Display-only inline markdown (GH #4); stored name is unchanged. -->
+			<span>{@html renderInlineMarkdown(elem.name)}</span>
 		</label>
 
 		{#if elem.references_entity_id}
@@ -792,7 +795,8 @@
 	description
 )}
 	{#if list.description}
-		<p class="my-2">{description}</p>
+		<!-- Display-only inline markdown (GH #4); stored description is unchanged. -->
+		<p class="my-2">{@html renderInlineMarkdown(description)}</p>
 		<!-- TODO: -->
 		<!-- Need a "Add description" button if none -->
 		<!-- Need an "Edit" button if description -->
